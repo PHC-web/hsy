@@ -1,0 +1,91 @@
+{
+	"bsonType": "object",
+	"required": ["brand_id", "brand_name", "activation_condition"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": {
+			"description": "ID"
+		},
+		"brand_id": {
+			"bsonType": "string",
+			"description": "品牌标识"
+		},
+		"brand_name": {
+			"bsonType": "string",
+			"description": "品牌名称"
+		},
+		"activation_condition": {
+			"bsonType": "number",
+			"description": "激活条件（元）"
+		},
+		"return_type": {
+			"bsonType": "number",
+			"description": "激活返邮，1=返邮，0=不返邮",
+			"default": 0
+		},
+		"public_key": {
+			"bsonType": "string",
+			"description": "公钥"
+		},
+		"private_key": {
+			"bsonType": "string",
+			"description": "私钥"
+		},
+		"activation_salary": {
+			"bsonType": "number",
+			"description": "激活薪资（元）"
+		},
+		"in_stock_count": {
+			"bsonType": "number",
+			"description": "入库台数",
+			"default": 0
+		},
+		"bind_count": {
+			"bsonType": "number",
+			"description": "绑定数",
+			"default": 0
+		},
+		"activated_count": {
+			"bsonType": "number",
+			"description": "激活台数",
+			"default": 0
+		},
+		"return_machine": {
+			"bsonType": "number",
+			"description": "返邮机具",
+			"default": 0
+		},
+		"return_payment": {
+			"bsonType": "number",
+			"description": "返邮到账",
+			"default": 0
+		},
+		"status": {
+			"bsonType": "bool",
+			"description": "使用状态",
+			"default": true
+		},
+		"status_time": {
+			"bsonType": "timestamp",
+			"description": "状态时间"
+		},
+		"add_time": {
+			"bsonType": "timestamp",
+			"description": "添加时间"
+		},
+		"is_deleted": {
+			"bsonType": "bool",
+			"description": "删除标记，true=已删除，false=未删除",
+			"default": false
+		},
+		"delete_time": {
+			"bsonType": "timestamp",
+			"description": "删除时间"
+		}
+	}
+}

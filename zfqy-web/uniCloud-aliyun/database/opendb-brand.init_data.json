@@ -1,0 +1,32 @@
+[
+	{
+		"brand_id": "cashier",
+		"brand_name": "收银台",
+		"activation_condition": 100,
+		"return_type": 0,
+		"activation_salary": 0,
+		"in_stock_count": 0,
+		"bind_count": 0,
+		"activated_count": 0,
+		"return_machine": 0,
+		"return_payment": 0,
+		"status": true,
+		"status_time": 1731429066000,
+		"add_time": 1731429066000
+	},
+	{
+		"brand_id": "xingyifu",
+		"brand_name": "星驿付",
+		"activation_condition": 100,
+		"return_type": 0,
+		"activation_salary": 0,
+		"in_stock_count": 3,
+		"bind_count": 2,
+		"activated_count": 2,
+		"return_machine": 0,
+		"return_payment": 0,
+		"status": true,
+		"status_time": 1752635328000,
+		"add_time": 1752635328000
+	}
+]
