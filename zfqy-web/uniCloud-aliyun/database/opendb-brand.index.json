@@ -1,0 +1,23 @@
+{
+	"indexes": [
+		{
+			"keys": {
+				"brand_id": 1
+			},
+			"name": "brand_id_index",
+			"unique": true
+		},
+		{
+			"keys": {
+				"brand_name": 1
+			},
+			"name": "brand_name_index"
+		},
+		{
+			"keys": {
+				"status": 1
+			},
+			"name": "status_index"
+		}
+	]
+}
