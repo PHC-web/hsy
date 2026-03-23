@@ -1,0 +1,9 @@
+{
+	"name": "third-party-push",
+	"version": "1.0.0",
+	"description": "国通星驿第三方数据推送接收（交易流水/商户/终端/通讯费）",
+	"main": "index.js",
+	"cloudfunction-config": {
+		"url": true
+	}
+}

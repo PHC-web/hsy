@@ -1,0 +1,103 @@
+{
+	"bsonType": "object",
+	"required": ["user_id", "device_id"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": {
+			"description": "ID"
+		},
+		"user_id": {
+			"bsonType": "string",
+			"description": "用户ID（uni-id 或业务ID）"
+		},
+		"mobile": {
+			"bsonType": "string",
+			"description": "手机号"
+		},
+		"device_id": {
+			"bsonType": "string",
+			"description": "绑定机具号"
+		},
+		"brand_name": {
+			"bsonType": "string",
+			"description": "品牌名"
+		},
+		"wx_nickname": {
+			"bsonType": "string",
+			"description": "微信用户（昵称）"
+		},
+		"wx_avatar": {
+			"bsonType": "string",
+			"description": "头像URL"
+		},
+		"agreement_img": {
+			"bsonType": "string",
+			"description": "协议图片URL"
+		},
+		"remaining_quota": {
+			"bsonType": "number",
+			"description": "剩余额度",
+			"default": 0
+		},
+		"pending_withdraw": {
+			"bsonType": "number",
+			"description": "待提现",
+			"default": 0
+		},
+		"withdrawn": {
+			"bsonType": "number",
+			"description": "已提现",
+			"default": 0
+		},
+		"frozen_amount": {
+			"bsonType": "number",
+			"description": "冻结金额",
+			"default": 0
+		},
+		"coupon_count": {
+			"bsonType": "number",
+			"description": "优惠券数量",
+			"default": 0
+		},
+		"use_status": {
+			"bsonType": "number",
+			"description": "使用状态：1正常，0异常",
+			"default": 1
+		},
+		"status": {
+			"bsonType": "bool",
+			"description": "使用状态开关（true启用/false禁用）",
+			"default": true
+		},
+		"flag1": {
+			"bsonType": "bool",
+			"description": "开关1",
+			"default": false
+		},
+		"flag2": {
+			"bsonType": "bool",
+			"description": "开关2",
+			"default": false
+		},
+		"flag3": {
+			"bsonType": "bool",
+			"description": "开关3",
+			"default": false
+		},
+		"micro_merchant": {
+			"bsonType": "bool",
+			"description": "小微商户",
+			"default": false
+		},
+		"login_time": {
+			"bsonType": "timestamp",
+			"description": "登录时间"
+		}
+	}
+}
+

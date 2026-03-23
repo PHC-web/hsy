@@ -65,7 +65,8 @@ async function addBrand(data, event) {
 			return_payment: 0,
 			status: true,
 			status_time: now,
-			add_time: now
+			add_time: now,
+			is_deleted: false
 		};
 		
 		const result = await brandCollection.add(brandData);
@@ -92,7 +93,12 @@ async function getBrandList(data) {
 	try {
 		const { page = 1, pageSize = 10, branch, brandName, status, statusTime, addTime } = data || {};
 		
-		let query = brandCollection.where({ is_deleted: false });
+		let query = brandCollection.where(
+			db.command.or([
+				{ is_deleted: false },
+				{ is_deleted: db.command.exists(false) }
+			])
+		);
 		
 		// 构建查询条件
 		if (brandName) {

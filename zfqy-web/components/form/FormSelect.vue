@@ -51,8 +51,10 @@ export default {
 	},
 	methods: {
 		handleChange(e) {
-			this.$emit('input', e.target.value);
-			this.$emit('change', e.target.value);
+			// uni-app 在不同端 select 的值可能在 e.detail.value 或 e.target.value
+			const val = (e && e.detail && e.detail.value !== undefined) ? e.detail.value : (e && e.target ? e.target.value : '');
+			this.$emit('input', val);
+			this.$emit('change', val);
 		},
 		handleFocus(e) {
 			this.$emit('focus', e);

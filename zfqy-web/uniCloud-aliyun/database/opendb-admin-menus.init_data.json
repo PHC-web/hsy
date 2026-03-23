@@ -586,5 +586,65 @@
 		"enable": true,
 		"create_date": 1773382941000,
 		"_id": "risk_management"
+	},
+	{
+		"menu_id": "merchant_management",
+		"name": "商户管理",
+		"icon": "admin-icons-manager-user",
+		"url": "",
+		"sort": 1600,
+		"parent_id": "",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_management"
+	},
+	{
+		"menu_id": "merchant_list",
+		"name": "商户列表",
+		"icon": "",
+		"url": "/pages/merchant/list/index",
+		"sort": 1610,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_list"
+	},
+	{
+		"menu_id": "merchant_withdraw_list",
+		"name": "提现列表",
+		"icon": "",
+		"url": "/pages/merchant/withdraw/index",
+		"sort": 1620,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_withdraw_list"
+	},
+	{
+		"menu_id": "merchant_coupon",
+		"name": "优惠券管理",
+		"icon": "",
+		"url": "/pages/merchant/coupon/index",
+		"sort": 1630,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_coupon"
+	},
+	{
+		"menu_id": "merchant_quota",
+		"name": "额度包管理",
+		"icon": "",
+		"url": "/pages/merchant/quota/index",
+		"sort": 1640,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_quota"
 	}
 ]

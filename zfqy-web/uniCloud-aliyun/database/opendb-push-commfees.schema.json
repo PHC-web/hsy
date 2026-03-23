@@ -1,0 +1,25 @@
+{
+	"bsonType": "object",
+	"description": "第三方推送-通讯费缴费成功(TYY0004)",
+	"required": ["id", "receive_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": false,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"firstagentid": { "bsonType": "string", "description": "一级代理商编号" },
+		"receive_time": { "bsonType": "timestamp", "description": "接收时间" },
+		"push_id": { "bsonType": "string", "description": "推送主键ID" },
+		"mercid": { "bsonType": "string", "description": "商户号" },
+		"policyid": { "bsonType": "string", "description": "政策ID" },
+		"feeid": { "bsonType": "string", "description": "通讯费ID" },
+		"feetime": { "bsonType": "string", "description": "缴费完成时间yyyyMMddHHmmss" },
+		"receivefee": { "bsonType": "number", "description": "已收取金额(元)" },
+		"agentid": { "bsonType": "string", "description": "代理商编号" },
+		"sn": { "bsonType": "string", "description": "终端机身号" },
+		"raw": { "bsonType": "object", "description": "原始推送body快照" }
+	}
+}

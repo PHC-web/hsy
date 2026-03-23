@@ -1,0 +1,21 @@
+{
+	"bsonType": "object",
+	"description": "第三方推送接收日志",
+	"required": ["push_type", "receive_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": false,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"push_type": { "bsonType": "string", "description": "TYY0001/TYY0002/TYY0003/TYY0004" },
+		"receive_time": { "bsonType": "timestamp", "description": "接收时间" },
+		"success": { "bsonType": "bool", "description": "是否处理成功", "default": true },
+		"error_msg": { "bsonType": "string", "description": "失败原因" },
+		"data_id": { "bsonType": "string", "description": "入库记录_id" },
+		"firstagentid": { "bsonType": "string", "description": "一级代理商编号" },
+		"summary": { "bsonType": "string", "description": "摘要(如流水号/商户号等)" }
+	}
+}

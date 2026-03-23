@@ -45,6 +45,10 @@
 			"bsonType": "string",
 			"description": "绑定用户名称"
 		},
+		"bind_user_mobile": {
+			"bsonType": "string",
+			"description": "绑定用户手机号"
+		},
 		"is_activated": {
 			"bsonType": "bool",
 			"description": "是否激活",

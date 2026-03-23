@@ -1,0 +1,27 @@
+{
+	"bsonType": "object",
+	"description": "第三方推送-商户信息(TYY0002)",
+	"required": ["mercid", "receive_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": false,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"firstagentid": { "bsonType": "string", "description": "一级代理商编号" },
+		"receive_time": { "bsonType": "timestamp", "description": "接收时间" },
+		"agentid": { "bsonType": "string", "description": "代理商编号" },
+		"mercid": { "bsonType": "string", "description": "商户号(主键)" },
+		"mercname": { "bsonType": "string", "description": "商户名称" },
+		"applydat": { "bsonType": "string", "description": "注册日期yyyyMMdd" },
+		"status": { "bsonType": "string", "description": "商户状态0开通其余关停" },
+		"reqdata": { "bsonType": "string", "description": "敏感信息加密串" },
+		"reqseqid": { "bsonType": "string", "description": "请求流水号" },
+		"mertype": { "bsonType": "string", "description": "商户类型" },
+		"provid": { "bsonType": "string", "description": "省份ID" },
+		"cityid": { "bsonType": "string", "description": "城市ID" },
+		"raw": { "bsonType": "object", "description": "原始推送body快照" }
+	}
+}

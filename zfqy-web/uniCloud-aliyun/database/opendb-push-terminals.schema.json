@@ -1,0 +1,27 @@
+{
+	"bsonType": "object",
+	"description": "第三方推送-终端信息绑定/解绑(TYY0003)",
+	"required": ["termno", "termphyno", "receive_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": false,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"firstagentid": { "bsonType": "string", "description": "一级代理商编号" },
+		"receive_time": { "bsonType": "timestamp", "description": "接收时间" },
+		"termno": { "bsonType": "string", "description": "终端号(主键)" },
+		"termphyno": { "bsonType": "string", "description": "终端机身号" },
+		"agentid": { "bsonType": "string", "description": "代理商编号" },
+		"mercid": { "bsonType": "string", "description": "绑定商户号(空表示解绑)" },
+		"policyid": { "bsonType": "string", "description": "政策ID" },
+		"merextdat": { "bsonType": "string", "description": "绑定日期yyyyMMdd" },
+		"equiptype": { "bsonType": "string", "description": "设备类型1码牌2POS3音箱" },
+		"allinone": { "bsonType": "string", "description": "是否一体机" },
+		"spno": { "bsonType": "string", "description": "绑定音箱号" },
+		"merexttime": { "bsonType": "string", "description": "绑定时间hhmmss" },
+		"raw": { "bsonType": "object", "description": "原始推送body快照" }
+	}
+}

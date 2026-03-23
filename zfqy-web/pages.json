@@ -513,6 +513,41 @@
 					}
 				}
 			]
+		},
+		{
+			"root": "pages/merchant",
+			"pages": [
+				{
+					"path": "list/index",
+					"style": {
+						"navigationBarTitleText": "商户列表"
+					}
+				},
+				{
+					"path": "list/add",
+					"style": {
+						"navigationBarTitleText": "模拟商户注册"
+					}
+				},
+				{
+					"path": "withdraw/index",
+					"style": {
+						"navigationBarTitleText": "提现列表"
+					}
+				},
+				{
+					"path": "coupon/index",
+					"style": {
+						"navigationBarTitleText": "优惠券管理"
+					}
+				},
+				{
+					"path": "quota/index",
+					"style": {
+						"navigationBarTitleText": "额度包管理"
+					}
+				}
+			]
 		}
 	],
 	"globalStyle": {
