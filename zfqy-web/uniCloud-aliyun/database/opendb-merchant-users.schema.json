@@ -19,6 +19,14 @@
 			"bsonType": "string",
 			"description": "手机号"
 		},
+		"wx_openid": {
+			"bsonType": "string",
+			"description": "微信公众号openid"
+		},
+		"wx_unionid": {
+			"bsonType": "string",
+			"description": "微信unionid"
+		},
 		"device_id": {
 			"bsonType": "string",
 			"description": "绑定机具号"
@@ -39,9 +47,36 @@
 			"bsonType": "string",
 			"description": "协议图片URL"
 		},
+		"agreement_signed_at": {
+			"bsonType": "timestamp",
+			"description": "协议签署时间"
+		},
+		"agreement_version": {
+			"bsonType": "string",
+			"description": "协议版本"
+		},
+		"bind_time": {
+			"bsonType": "timestamp",
+			"description": "绑定时间"
+		},
 		"remaining_quota": {
 			"bsonType": "number",
 			"description": "剩余额度",
+			"default": 0
+		},
+		"available_reward": {
+			"bsonType": "number",
+			"description": "可用奖励",
+			"default": 0
+		},
+		"estimated_free_quota": {
+			"bsonType": "number",
+			"description": "预估免额度",
+			"default": 0
+		},
+		"account_points": {
+			"bsonType": "number",
+			"description": "账号积分",
 			"default": 0
 		},
 		"pending_withdraw": {

@@ -5,6 +5,8 @@ const brandCollection = db.collection('opendb-brand');
 const operationLogCollection = db.collection('opendb-operation-logs');
 const tradeCollection = db.collection('opendb-machine-trades');
 const merchantCollection = db.collection('opendb-merchant-users');
+const riskCollection = db.collection('opendb-risk-records');
+const riskRecordCollection = db.collection('opendb-risk-records');
 
 // 格式化时间
 function formatTime(timestamp) {
@@ -76,69 +78,88 @@ async function getMachineList(data) {
 			pageSize = 10, 
 			deviceId = '', 
 			brandId = '', 
+			brandIds,
 			speakerId = '', 
 			isBound = '', 
+			isBoundList,
 			bindTimeStart = '', 
 			bindTimeEnd = '', 
 			bindUserId = '', 
 			isActivated = '', 
+			isActivatedList,
 			activatedTimeStart = '', 
 			activatedTimeEnd = '', 
 			inStockTimeStart = '', 
 			inStockTimeEnd = '' 
 		} = data || {};
 		
-		// 构建查询条件
-		let query = machineCollection.where({ is_deleted: false });
-		
+		// 单次 where 合并条件，避免部分环境下链式 where 未按预期叠加
+		const where = { is_deleted: false };
 		if (deviceId) {
-			query = query.where({ device_id: new RegExp(deviceId) });
+			where.device_id = new RegExp(String(deviceId));
 		}
-		
-		if (brandId) {
-			query = query.where({ brand_id: brandId });
+		const brandIdTrim = brandId !== undefined && brandId !== null ? String(brandId).trim() : '';
+		const brandIdArr = Array.isArray(brandIds)
+			? [...new Set(brandIds.map((id) => String(id).trim()).filter(Boolean))]
+			: [];
+		if (brandIdArr.length === 1) {
+			where.brand_id = brandIdArr[0];
+		} else if (brandIdArr.length > 1) {
+			where.brand_id = db.command.in(brandIdArr);
+		} else if (brandIdTrim) {
+			where.brand_id = brandIdTrim;
 		}
-		
 		if (speakerId) {
-			query = query.where({ speaker_id: new RegExp(speakerId) });
+			where.speaker_id = new RegExp(String(speakerId));
 		}
-		
-		if (isBound !== '' && isBound !== undefined) {
-			query = query.where({ is_bound: parseInt(isBound) });
+		const boundArr = Array.isArray(isBoundList)
+			? [...new Set(isBoundList.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n)))]
+			: [];
+		if (boundArr.length === 1) {
+			where.is_bound = boundArr[0];
+		} else if (boundArr.length > 1) {
+			where.is_bound = db.command.in(boundArr);
+		} else if (isBound !== '' && isBound !== undefined && isBound !== null) {
+			where.is_bound = parseInt(isBound, 10);
 		}
-		
 		if (bindTimeStart) {
-			query = query.where({ bind_time: db.command.gte(parseInt(bindTimeStart)) });
+			where.bind_time = db.command.gte(parseInt(bindTimeStart, 10));
 		}
-		
 		if (bindTimeEnd) {
-			query = query.where({ bind_time: db.command.lte(parseInt(bindTimeEnd)) });
+			where.bind_time = where.bind_time
+				? db.command.and([where.bind_time, db.command.lte(parseInt(bindTimeEnd, 10))])
+				: db.command.lte(parseInt(bindTimeEnd, 10));
 		}
-		
 		if (bindUserId) {
-			query = query.where({ bind_user_id: bindUserId });
+			where.bind_user_id = String(bindUserId).trim();
 		}
-		
-		if (isActivated !== '' && isActivated !== undefined) {
-			query = query.where({ is_activated: isActivated === '1' });
+		const actArr = Array.isArray(isActivatedList)
+			? [...new Set(isActivatedList.map((x) => String(x)))]
+			: [];
+		if (actArr.length === 1) {
+			where.is_activated = actArr[0] === '1';
+		} else if (actArr.length === 0 && isActivated !== '' && isActivated !== undefined && isActivated !== null) {
+			where.is_activated = isActivated === '1';
 		}
-		
 		if (activatedTimeStart) {
-			query = query.where({ activated_time: db.command.gte(parseInt(activatedTimeStart)) });
+			where.activated_time = db.command.gte(parseInt(activatedTimeStart, 10));
 		}
-		
 		if (activatedTimeEnd) {
-			query = query.where({ activated_time: db.command.lte(parseInt(activatedTimeEnd)) });
+			where.activated_time = where.activated_time
+				? db.command.and([where.activated_time, db.command.lte(parseInt(activatedTimeEnd, 10))])
+				: db.command.lte(parseInt(activatedTimeEnd, 10));
 		}
-		
 		if (inStockTimeStart) {
-			query = query.where({ in_stock_time: db.command.gte(parseInt(inStockTimeStart)) });
+			where.in_stock_time = db.command.gte(parseInt(inStockTimeStart, 10));
 		}
-		
 		if (inStockTimeEnd) {
-			query = query.where({ in_stock_time: db.command.lte(parseInt(inStockTimeEnd)) });
+			where.in_stock_time = where.in_stock_time
+				? db.command.and([where.in_stock_time, db.command.lte(parseInt(inStockTimeEnd, 10))])
+				: db.command.lte(parseInt(inStockTimeEnd, 10));
 		}
-		
+
+		let query = machineCollection.where(where);
+
 		// 计算总数
 		const countResult = await query.count();
 		const total = countResult.total;
@@ -298,21 +319,33 @@ async function getCardRecordList(data) {
 			pageSize = 10,
 			deviceId = '',
 			brandId = '',
+			brandIds,
 			tradeNo = '',
 			merchantUserId = '',
+			merchantUserIds,
 			isActivated = '',
+			isActivatedList,
 			isCashback = '',
+			isCashbackList,
 			releaseAmount = '',
 			riskStatus = '',
+			riskStatusList,
 			timeStart = '',
 			timeEnd = '',
-			tradeType = ''
+			tradeType = '',
+			tradeTypeList
 		} = data || {};
 
 		let query = tradeCollection;
 
-		if (brandId) {
-			const machines = await machineCollection.where({ brand_id: brandId, is_deleted: false }).field({ device_id: true }).get();
+		const brandKeyArr = Array.isArray(brandIds) && brandIds.length
+			? [...new Set(brandIds.map((id) => String(id).trim()).filter(Boolean))]
+			: (String(brandId || '').trim() ? [String(brandId).trim()] : []);
+		if (brandKeyArr.length) {
+			const brandWhere = brandKeyArr.length === 1
+				? { brand_id: brandKeyArr[0] }
+				: { brand_id: db.command.in(brandKeyArr) };
+			const machines = await machineCollection.where({ ...brandWhere, is_deleted: false }).field({ device_id: true }).get();
 			const deviceIds = (machines.data || []).map(m => m.device_id);
 			if (deviceIds.length === 0) {
 				return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
@@ -326,18 +359,45 @@ async function getCardRecordList(data) {
 		if (tradeNo) {
 			query = query.where({ trade_no: new RegExp(String(tradeNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
 		}
-		if (merchantUserId) {
-			query = query.where({ user_id: merchantUserId });
+		const muidArr = Array.isArray(merchantUserIds) && merchantUserIds.length
+			? [...new Set(merchantUserIds.map((id) => String(id).trim()).filter(Boolean))]
+			: (String(merchantUserId || '').trim() ? [String(merchantUserId).trim()] : []);
+		if (muidArr.length === 1) {
+			query = query.where({ user_id: muidArr[0] });
+		} else if (muidArr.length > 1) {
+			query = query.where({ user_id: db.command.in(muidArr) });
 		}
-		if (isActivated === '1') {
-			query = query.where({ is_activated: true });
-		} else if (isActivated === '0') {
-			query = query.where({ is_activated: false });
+		const actArr = Array.isArray(isActivatedList)
+			? [...new Set(isActivatedList.map((x) => String(x)))]
+			: [];
+		if (actArr.length === 1) {
+			if (actArr[0] === '1') {
+				query = query.where({ is_activated: true });
+			} else if (actArr[0] === '0') {
+				query = query.where({ is_activated: false });
+			}
+		} else if (actArr.length === 0) {
+			if (isActivated === '1') {
+				query = query.where({ is_activated: true });
+			} else if (isActivated === '0') {
+				query = query.where({ is_activated: false });
+			}
 		}
-		if (isCashback === '1') {
-			query = query.where({ cashback: db.command.gt(0) });
-		} else if (isCashback === '0') {
-			query = query.where(db.command.or([{ cashback: 0 }, { cashback: null }]));
+		const cbArr = Array.isArray(isCashbackList)
+			? [...new Set(isCashbackList.map((x) => String(x)))]
+			: [];
+		if (cbArr.length === 1) {
+			if (cbArr[0] === '1') {
+				query = query.where({ cashback: db.command.gt(0) });
+			} else if (cbArr[0] === '0') {
+				query = query.where(db.command.or([{ cashback: 0 }, { cashback: null }]));
+			}
+		} else if (cbArr.length === 0) {
+			if (isCashback === '1') {
+				query = query.where({ cashback: db.command.gt(0) });
+			} else if (isCashback === '0') {
+				query = query.where(db.command.or([{ cashback: 0 }, { cashback: null }]));
+			}
 		}
 		if (releaseAmount !== '' && releaseAmount !== undefined) {
 			const num = Number(releaseAmount);
@@ -345,7 +405,32 @@ async function getCardRecordList(data) {
 				query = query.where({ release_amount: db.command.gte(num) });
 			}
 		}
-		if (riskStatus === 'risk') {
+		const rsArr = Array.isArray(riskStatusList)
+			? [...new Set(riskStatusList.map((x) => String(x)))]
+			: [];
+		if (rsArr.length === 1) {
+			if (rsArr[0] === 'risk') {
+				query = query.where({ risk_control_status: 'risk' });
+			} else if (rsArr[0] === 'release') {
+				query = query.where({ risk_control_status: 'release' });
+			} else if (rsArr[0] === 'no') {
+				query = query.where(db.command.or([{ risk_control_status: 'no' }, { risk_control_status: null }]));
+			}
+		} else if (rsArr.length > 1) {
+			const ors = [];
+			for (const r of rsArr) {
+				if (r === 'risk') {
+					ors.push({ risk_control_status: 'risk' });
+				} else if (r === 'release') {
+					ors.push({ risk_control_status: 'release' });
+				} else if (r === 'no') {
+					ors.push(db.command.or([{ risk_control_status: 'no' }, { risk_control_status: null }]));
+				}
+			}
+			if (ors.length) {
+				query = query.where(db.command.or(ors));
+			}
+		} else if (riskStatus === 'risk') {
 			query = query.where({ risk_control_status: 'risk' });
 		} else if (riskStatus === 'release') {
 			query = query.where({ risk_control_status: 'release' });
@@ -358,7 +443,14 @@ async function getCardRecordList(data) {
 		if (timeEnd) {
 			query = query.where({ create_time: db.command.lte(Number(timeEnd)) });
 		}
-		if (tradeType === 'virtual') {
+		const ttArr = Array.isArray(tradeTypeList)
+			? [...new Set(tradeTypeList.map((x) => String(x)))]
+			: [];
+		if (ttArr.length === 1) {
+			query = query.where({ trade_type: ttArr[0] });
+		} else if (ttArr.length > 1) {
+			query = query.where({ trade_type: db.command.in(ttArr) });
+		} else if (tradeType === 'virtual') {
 			query = query.where({ trade_type: 'virtual' });
 		} else if (tradeType === 'real') {
 			query = query.where({ trade_type: 'real' });
@@ -388,10 +480,13 @@ async function getCardRecordList(data) {
 			const releaseAmt = Number(item.release_amount || 0);
 			const releaseRatio = item.release_ratio != null ? item.release_ratio : (totalTx > 0 && releaseAmt > 0 ? (releaseAmt / totalTx * 100) : 0);
 			const ssfl = totalTx > 0 ? (amount / totalTx * 100).toFixed(2) + '%' : '-';
+			const bn = brandMap[item.device_id] || '';
 			return {
 				id: item._id,
 				deviceId: item.device_id,
-				deviceDisplay: brandMap[item.device_id] ? `(${brandMap[item.device_id]})${item.device_id}` : item.device_id,
+				devicePlain: item.device_id,
+				brandName: bn,
+				deviceDisplay: bn ? `(${bn})${item.device_id}` : item.device_id,
 				tradeNo: item.trade_no,
 				userInfo: item.user_name ? `${item.user_name || ''}${item.user_mobile ? '\n' + item.user_mobile : ''}` : (item.user_mobile || '-'),
 				tradeTypeText: item.trade_type === 'real' ? '实际消费' : '虚拟刷卡',
@@ -428,6 +523,145 @@ async function getCardRecordList(data) {
 		};
 	} catch (error) {
 		console.error('刷卡记录列表失败:', error);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+function riskRecordStatusText(status) {
+	const m = {
+		pending: '待审核',
+		approved: '审核通过',
+		rejected: '审核驳回',
+		reviewing: '审核中'
+	};
+	return m[status] || status || '-';
+}
+
+function escapeReg(s) {
+	return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 风控管理列表
+async function getRiskList(data) {
+	try {
+		const {
+			page = 1,
+			pageSize = 10,
+			userKeyword = '',
+			snTradeKeyword = '',
+			amountMin = '',
+			amountMax = '',
+			status = '',
+			statusList,
+			createTimeStart = '',
+			createTimeEnd = '',
+			updateTimeStart = '',
+			updateTimeEnd = '',
+			scenarioKeyword = '',
+			sortField = '',
+			sortOrder = ''
+		} = data || {};
+
+		const parts = [{ is_deleted: false }];
+
+		if (userKeyword) {
+			const r = new RegExp(escapeReg(userKeyword), 'i');
+			parts.push(db.command.or([{ user_nickname: r }, { user_mobile: r }]));
+		}
+		if (snTradeKeyword) {
+			const r = new RegExp(escapeReg(snTradeKeyword), 'i');
+			parts.push(db.command.or([{ sn: r }, { trade_no: r }]));
+		}
+
+		const minOk = amountMin !== '' && amountMin !== undefined && Number.isFinite(Number(amountMin));
+		const maxOk = amountMax !== '' && amountMax !== undefined && Number.isFinite(Number(amountMax));
+		if (minOk && maxOk) {
+			parts.push(db.command.and([
+				{ amount: db.command.gte(Number(amountMin)) },
+				{ amount: db.command.lte(Number(amountMax)) }
+			]));
+		} else if (minOk) {
+			parts.push({ amount: db.command.gte(Number(amountMin)) });
+		} else if (maxOk) {
+			parts.push({ amount: db.command.lte(Number(amountMax)) });
+		}
+
+		const stArr = Array.isArray(statusList)
+			? [...new Set(statusList.map((x) => String(x)))]
+			: [];
+		if (stArr.length === 1) {
+			parts.push({ status: stArr[0] });
+		} else if (stArr.length > 1) {
+			parts.push({ status: db.command.in(stArr) });
+		} else if (status) {
+			parts.push({ status: String(status) });
+		}
+
+		if (scenarioKeyword) {
+			parts.push({ business_scenario: new RegExp(escapeReg(scenarioKeyword), 'i') });
+		}
+
+		if (createTimeStart) {
+			parts.push({ create_time: db.command.gte(Number(createTimeStart)) });
+		}
+		if (createTimeEnd) {
+			parts.push({ create_time: db.command.lte(Number(createTimeEnd)) });
+		}
+		if (updateTimeStart) {
+			parts.push({ update_time: db.command.gte(Number(updateTimeStart)) });
+		}
+		if (updateTimeEnd) {
+			parts.push({ update_time: db.command.lte(Number(updateTimeEnd)) });
+		}
+
+		const whereExpr = parts.length === 1 ? parts[0] : db.command.and(parts);
+		let query = riskCollection.where(whereExpr);
+
+		let orderByField = 'create_time';
+		let orderByDir = 'desc';
+		if (sortField === 'amount' && (sortOrder === 'asc' || sortOrder === 'ascending')) {
+			orderByField = 'amount';
+			orderByDir = 'asc';
+		} else if (sortField === 'amount' && (sortOrder === 'desc' || sortOrder === 'descending')) {
+			orderByField = 'amount';
+			orderByDir = 'desc';
+		}
+
+		const countRes = await query.count();
+		const total = countRes.total;
+
+		const res = await query
+			.orderBy(orderByField, orderByDir)
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.get();
+
+		const list = (res.data || []).map((item) => ({
+			id: item._id,
+			userDisplay: [item.user_nickname || '', item.user_mobile || ''].filter(Boolean).join('\n') || '-',
+			snTradeDisplay: [item.sn || '-', item.trade_no || '-'].filter((x) => x !== '-').length
+				? `${item.sn || '-'} / ${item.trade_no || '-'}`
+				: '-',
+			sn: item.sn || '',
+			tradeNo: item.trade_no || '',
+			amount: Number(item.amount || 0),
+			amountText: `￥${Number(item.amount || 0).toFixed(2)}`,
+			businessLicense: item.business_license || '',
+			tradeProof: item.trade_proof || '',
+			businessScenario: item.business_scenario || '-',
+			status: item.status || 'pending',
+			statusText: riskRecordStatusText(item.status),
+			createTime: formatTime(item.create_time),
+			updateTime: formatTime(item.update_time)
+		}));
+
+		return {
+			code: 0,
+			message: '获取成功',
+			data: { list, total, page, pageSize }
+		};
+	} catch (error) {
+		console.error('风控列表失败:', error);
 		return { code: 500, message: '获取失败' };
 	}
 }
@@ -727,6 +961,8 @@ exports.main = async (event, context) => {
 			return await getTradeList(actualData);
 		case 'cardRecordList':
 			return await getCardRecordList(actualData);
+		case 'riskList':
+			return await getRiskList(actualData);
 		default:
 			return {
 				code: 400,

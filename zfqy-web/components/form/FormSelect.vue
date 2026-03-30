@@ -8,14 +8,14 @@
 			<view class="form-divider" v-if="label"></view>
 			<view class="form-select-section">
 				<select
-					:value="value"
+					:value="stringValue"
 					:disabled="disabled"
 					@change="handleChange"
 					@focus="handleFocus"
 					@blur="handleBlur"
 					class="form-select"
 				>
-					<slot></slot>
+					<option v-for="(opt, idx) in renderedOptions" :key="`${idx}-${opt.value}`" :value="opt.value">{{ opt.label }}</option>
 				</select>
 				<view class="form-select-arrow">▼</view>
 			</view>
@@ -36,6 +36,16 @@ export default {
 			type: String,
 			default: ''
 		},
+		placeholder: {
+			type: String,
+			default: '选择'
+		},
+		options: {
+			type: Array,
+			default() {
+				return [];
+			}
+		},
 		disabled: {
 			type: Boolean,
 			default: false
@@ -49,12 +59,69 @@ export default {
 			default: ''
 		}
 	},
+	computed: {
+		stringValue() {
+			return this.value === null || this.value === undefined ? '' : String(this.value);
+		},
+		placeholderText() {
+			return this.placeholder || '选择';
+		},
+		renderedOptions() {
+			if (Array.isArray(this.options) && this.options.length > 0) {
+				return this.options.map(opt => ({
+					value: opt && opt.value !== undefined && opt.value !== null ? String(opt.value) : '',
+					label: opt && opt.label !== undefined && opt.label !== null ? String(opt.label) : ''
+				}));
+			}
+			const nodes = this.$slots.default || [];
+			const result = [];
+			const walk = (list) => {
+				(list || []).forEach(node => {
+					if (!node) return;
+					if (node.tag === 'option') {
+						const attrs = (node.data && node.data.attrs) || {};
+						const val = attrs.value === undefined || attrs.value === null ? '' : String(attrs.value);
+						const label = ((node.children || []).map(c => c.text || '').join('')).trim();
+						result.push({ value: val, label: label || val || this.placeholderText });
+						return;
+					}
+					if (node.children && node.children.length) {
+						walk(node.children);
+					}
+				});
+			};
+			walk(nodes);
+			return result;
+		},
+	},
 	methods: {
 		handleChange(e) {
-			// uni-app 在不同端 select 的值可能在 e.detail.value 或 e.target.value
-			const val = (e && e.detail && e.detail.value !== undefined) ? e.detail.value : (e && e.target ? e.target.value : '');
-			this.$emit('input', val);
-			this.$emit('change', val);
+			// 最稳：用原生 select 的 selectedIndex 映射到 options（避免各端 value/detail 不一致）
+			const el = (e && e.target) || (e && e.currentTarget);
+			let next = '';
+			if (el && typeof el.selectedIndex === 'number' && el.selectedIndex >= 0) {
+				const opt = this.renderedOptions[el.selectedIndex];
+				next = opt ? String(opt.value) : '';
+			} else {
+				const targetVal = el ? el.value : undefined;
+				let raw;
+				if (targetVal !== undefined && targetVal !== null) {
+					raw = targetVal;
+				} else if (e && e.detail && e.detail.value !== undefined) {
+					const detailVal = e.detail.value;
+					if (/^\d+$/.test(String(detailVal))) {
+						const idx = Number(detailVal);
+						raw = this.renderedOptions[idx] ? this.renderedOptions[idx].value : detailVal;
+					} else {
+						raw = detailVal;
+					}
+				} else {
+					raw = '';
+				}
+				next = raw === undefined || raw === null ? '' : String(raw);
+			}
+			this.$emit('input', next);
+			this.$emit('change', next);
 		},
 		handleFocus(e) {
 			this.$emit('focus', e);

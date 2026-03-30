@@ -35,6 +35,15 @@
 				'background:#35495e ; padding: 1px; border-radius: 3px 0 0 3px;  color: #fff',
 				'background:#007aff ;padding: 1px; border-radius: 0 3px 3px 0;  color: #fff; font-weight: bold;'
 			)
+			// 本地与线上双入口分流：
+			// /admin/ -> 管理后台；/ -> 公众号H5
+			const pathname = (window.location && window.location.pathname) || '/'
+			const hash = (window.location && window.location.hash) || ''
+			const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/')
+			if (!isAdminPath && hash.indexOf('/pages/h5/') === -1) {
+				window.location.replace(`${pathname}#/pages/h5/auth/index`)
+				return
+			}
 			// #endif
 			// #ifdef H5
 			// 此处为强制用户必须登录才能访问其他页面，如果需要部分页面不登录也能访问，需要在此过滤这些页面不执行下面的代码或直接注释掉此代码

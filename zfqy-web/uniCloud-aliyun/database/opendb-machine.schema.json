@@ -37,6 +37,10 @@
 			"bsonType": "timestamp",
 			"description": "绑定时间"
 		},
+		"unbind_time": {
+			"bsonType": "timestamp",
+			"description": "解绑时间（清空统计时记录）"
+		},
 		"bind_user_id": {
 			"bsonType": "string",
 			"description": "绑定用户ID"
@@ -100,6 +104,10 @@
 		"delete_time": {
 			"bsonType": "timestamp",
 			"description": "删除时间"
+		},
+		"last_reset_reason": {
+			"bsonType": "string",
+			"description": "最近一次清空统计原因"
 		}
 	}
 }

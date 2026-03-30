@@ -40,6 +40,22 @@
 			"bsonType": "string",
 			"description": "操作内容详情"
 		},
+		"operator_source": {
+			"bsonType": "string",
+			"description": "操作来源：admin/h5/system"
+		},
+		"reason": {
+			"bsonType": "string",
+			"description": "操作原因"
+		},
+		"before_merchant_snapshot": {
+			"bsonType": "object",
+			"description": "解绑前商户快照"
+		},
+		"before_machine_snapshot": {
+			"bsonType": "object",
+			"description": "解绑前机具快照"
+		},
 		"ip": {
 			"bsonType": "string",
 			"description": "操作IP地址"

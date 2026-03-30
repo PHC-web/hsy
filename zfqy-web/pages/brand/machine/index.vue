@@ -3,104 +3,31 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
+				<input class="uni-search" type="text" v-model="searchForm.deviceId" maxlength="50" @confirm="runSearchFromHeader"
+					placeholder="设备编号" />
+				<button class="uni-button hide-on-phone" type="default" size="mini" @click="runSearchFromHeader">搜索</button>
 				<button class="uni-button" type="primary" size="mini" @click="addMachine">添加机具</button>
 			</view>
 		</view>
 		<view class="uni-container">
-			<view class="search-form">
-				<view class="search-grid">
-					<view class="form-item">
-						<form-input 
-							v-model="searchForm.deviceId" 
-							label="设备编号" 
-							placeholder="请输入设备编号" 
-							:maxlength="50"
-						/>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.brandId" label="机具品牌">
-							<option value="">选择</option>
-							<option v-for="brand in brandList" :key="brand.value" :value="brand.value">{{ brand.label }}</option>
-						</form-select>
-					</view>
-					<view class="form-item">
-						<form-input 
-							v-model="searchForm.speakerId" 
-							label="自有音箱号" 
-							placeholder="请输入自有音箱号" 
-							:maxlength="50"
-						/>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.isBound" label="是否绑定">
-							<option value="">全部</option>
-							<option value="0">未绑定</option>
-							<option value="1">已绑定</option>
-							<option value="2">已解绑</option>
-						</form-select>
-					</view>
-
-					<view class="form-item">
-						<form-date-picker 
-							v-model="searchForm.bindTime" 
-							label="绑定时间" 
-							placeholder="选择绑定时间"
-							@change="onBindTimeChange"
-						/>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.bindUserId" label="绑定用户">
-							<option value="">选择</option>
-							<!-- 用户列表功能尚未开发，先留空 -->
-						</form-select>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.isActivated" label="是否激活">
-							<option value="">全部</option>
-							<option value="1">已激活</option>
-							<option value="0">未激活</option>
-						</form-select>
-					</view>
-					<view class="form-item">
-						<form-date-picker 
-							v-model="searchForm.activatedTime" 
-							label="激活时间" 
-							placeholder="选择激活时间"
-							@change="onActivatedTimeChange"
-						/>
-					</view>
-
-					<view class="form-item">
-						<form-date-picker 
-							v-model="searchForm.inStockTime" 
-							label="入库时间" 
-							placeholder="选择入库时间"
-							@change="onInStockTimeChange"
-						/>
-					</view>
-					<view class="form-item submit-btn">
-						<button size="mini" type="primary" @click="search">提交</button>
-						<button size="mini" type="default" @click="reset">重置</button>
-					</view>
-				</view>
-			</view>
 			<view class="table-container-wrapper">
 				<view class="table-container">
 					<uni-table ref="table" border stripe :loading="loading">
 						<uni-tr>
-							<uni-th>设备编码</uni-th>
-							<uni-th>机具品牌</uni-th>
-							<uni-th>累计交易</uni-th>
-							<uni-th>待提/已提</uni-th>
-							<uni-th>冻结金额</uni-th>
-							<uni-th>自有音箱号</uni-th>
-							<uni-th>是否绑定</uni-th>
-							<uni-th>绑定人/时间/手机</uni-th>
-							<uni-th>是否激活</uni-th>
-							<uni-th>所属商户</uni-th>
-							<uni-th>业务员</uni-th>
-							<uni-th>入库时间</uni-th>
-							<uni-th>操作</uni-th>
+							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">设备编码</uni-th>
+							<uni-th align="center" width="100" filter-type="select" :filter-data="brandFilterData" @filter-change="headerFilterChange($event, 'brandId')">机具品牌</uni-th>
+							<uni-th align="center" width="90">累计交易</uni-th>
+							<uni-th align="center" width="100">待提/已提</uni-th>
+							<uni-th align="center" width="90">冻结金额</uni-th>
+							<uni-th align="center" width="110" filter-type="search" @filter-change="headerFilterChange($event, 'speakerId')">自有音箱号</uni-th>
+							<uni-th align="center" width="100" filter-type="select" :filter-data="isBoundFilterData" @filter-change="headerFilterChange($event, 'isBound')">是否绑定</uni-th>
+							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'bindTime')">绑定人/时间/手机</uni-th>
+							<uni-th align="center" width="100" filter-type="select" :filter-data="isActivatedFilterData" @filter-change="headerFilterChange($event, 'isActivated')">是否激活</uni-th>
+							<uni-th align="center" width="130" filter-type="timestamp" @filter-change="headerFilterChange($event, 'activatedTime')">激活时间</uni-th>
+							<uni-th align="center" width="100">所属商户</uni-th>
+							<uni-th align="center" width="90">业务员</uni-th>
+							<uni-th align="center" width="130" filter-type="timestamp" @filter-change="headerFilterChange($event, 'inStockTime')">入库时间</uni-th>
+							<uni-th align="center" width="220">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="(item, idx) in machineList" :key="item ? item.id : idx" v-if="item">
 							<uni-td>{{ item.deviceId }}</uni-td>
@@ -118,13 +45,11 @@
 								</view>
 								<text v-else>-</text>
 							</uni-td>
-							<uni-td>
-								{{ item.isActivatedText }}
-								<text v-if="item.isActivated" class="time-text">({{ item.activatedTime }})</text>
-							</uni-td>
+							<uni-td align="center">{{ item.isActivatedText }}</uni-td>
+							<uni-td align="center">{{ item.isActivated ? item.activatedTime : '-' }}</uni-td>
 							<uni-td>{{ item.merchant }}</uni-td>
 							<uni-td>{{ item.salesman }}</uni-td>
-							<uni-td>{{ item.inStockTime }}</uni-td>
+							<uni-td align="center">{{ item.inStockTime }}</uni-td>
 							<uni-td>
 								<view class="op-actions">
 									<view class="op-row">
@@ -241,18 +166,12 @@
 </template>
 
 <script>
-import FormInput from '@/components/form/FormInput.vue';
-import FormSelect from '@/components/form/FormSelect.vue';
-import FormDatePicker from '@/components/form/FormDatePicker.vue';
 import UniForms from "@/uni_modules/uni-forms/components/uni-forms/uni-forms";
 import UniFormsItem from "@/uni_modules/uni-forms/components/uni-forms-item/uni-forms-item";
 import UniEasyinput from "@/uni_modules/uni-easyinput/components/uni-easyinput/uni-easyinput";
 
 export default {
 	components: {
-		FormInput,
-		FormSelect,
-		FormDatePicker,
 		UniForms,
 		UniFormsItem,
 		UniEasyinput
@@ -262,20 +181,28 @@ export default {
 			searchForm: {
 				deviceId: '',
 				brandId: '',
+				brandIds: [],
 				speakerId: '',
 				isBound: '',
-				bindTime: '',
+				isBoundList: [],
 				bindTimeStart: '',
 				bindTimeEnd: '',
-				bindUserId: '',
 				isActivated: '',
-				activatedTime: '',
+				isActivatedList: [],
 				activatedTimeStart: '',
 				activatedTimeEnd: '',
-				inStockTime: '',
 				inStockTimeStart: '',
 				inStockTimeEnd: ''
 			},
+			isBoundFilterData: [
+				{ text: '未绑定', value: '0', checked: false },
+				{ text: '已绑定', value: '1', checked: false },
+				{ text: '已解绑', value: '2', checked: false }
+			],
+			isActivatedFilterData: [
+				{ text: '已激活', value: '1', checked: false },
+				{ text: '未激活', value: '0', checked: false }
+			],
 			machineList: [],
 			brandList: [],
 			loading: false,
@@ -333,6 +260,15 @@ export default {
 			}
 		};
 	},
+	computed: {
+		brandFilterData() {
+			return (this.brandList || []).map((brand) => ({
+				text: brand.label,
+				value: String(brand.value),
+				checked: false
+			}));
+		}
+	},
 	mounted() {
 			this.getBrandList();
 			this.search();
@@ -345,7 +281,7 @@ export default {
 				}).then(res => {
 					if (res.code === 0) {
 						this.brandList = (res.data?.list || []).map(item => ({
-							value: item.id,
+							value: String(item.id),
 							label: item.brandName
 						}));
 					}
@@ -355,21 +291,24 @@ export default {
 			// 搜索
 			search() {
 				this.loading = true;
+				const sf = this.searchForm;
 				this.$request('list', {
 					page: this.pageInfo.currentPage,
 					pageSize: this.pageInfo.pageSize,
-					deviceId: this.searchForm.deviceId,
-					brandId: this.searchForm.brandId,
-					speakerId: this.searchForm.speakerId,
-					isBound: this.searchForm.isBound,
-					bindTimeStart: this.searchForm.bindTimeStart,
-					bindTimeEnd: this.searchForm.bindTimeEnd,
-					bindUserId: this.searchForm.bindUserId,
-					isActivated: this.searchForm.isActivated,
-					activatedTimeStart: this.searchForm.activatedTimeStart,
-					activatedTimeEnd: this.searchForm.activatedTimeEnd,
-					inStockTimeStart: this.searchForm.inStockTimeStart,
-					inStockTimeEnd: this.searchForm.inStockTimeEnd
+					deviceId: sf.deviceId,
+					brandId: sf.brandIds.length ? '' : sf.brandId,
+					brandIds: sf.brandIds,
+					speakerId: sf.speakerId,
+					isBound: sf.isBoundList.length ? '' : sf.isBound,
+					isBoundList: sf.isBoundList,
+					bindTimeStart: sf.bindTimeStart,
+					bindTimeEnd: sf.bindTimeEnd,
+					isActivated: sf.isActivatedList.length ? '' : sf.isActivated,
+					isActivatedList: sf.isActivatedList,
+					activatedTimeStart: sf.activatedTimeStart,
+					activatedTimeEnd: sf.activatedTimeEnd,
+					inStockTimeStart: sf.inStockTimeStart,
+					inStockTimeEnd: sf.inStockTimeEnd
 				}, {
 					functionName: 'machine'
 				}).then(res => {
@@ -382,26 +321,53 @@ export default {
 					this.loading = false;
 				});
 			},
-			
-			// 重置
-			reset() {
-				this.searchForm = {
-					deviceId: '',
-					brandId: '',
-					speakerId: '',
-					isBound: '',
-					bindTime: '',
-					bindTimeStart: '',
-					bindTimeEnd: '',
-					bindUserId: '',
-					isActivated: '',
-					activatedTime: '',
-					activatedTimeStart: '',
-					activatedTimeEnd: '',
-					inStockTime: '',
-					inStockTimeStart: '',
-					inStockTimeEnd: ''
+
+			runSearchFromHeader() {
+				this.pageInfo.currentPage = 1;
+				this.search();
+			},
+
+			parseTimestampRange(filter) {
+				if (!Array.isArray(filter) || filter.length < 2) {
+					return { start: '', end: '' };
+				}
+				const a = Number(filter[0]);
+				const b = Number(filter[1]);
+				return {
+					start: Number.isFinite(a) ? a : '',
+					end: Number.isFinite(b) ? b : ''
 				};
+			},
+
+			headerFilterChange(e, field) {
+				const { filterType, filter } = e || {};
+				const sf = this.searchForm;
+				if (field === 'deviceId' && filterType === 'search') {
+					sf.deviceId = String(filter == null ? '' : filter).slice(0, 50);
+				} else if (field === 'speakerId' && filterType === 'search') {
+					sf.speakerId = String(filter == null ? '' : filter).slice(0, 50);
+				} else if (field === 'brandId' && filterType === 'select') {
+					sf.brandIds = Array.isArray(filter) ? filter.map(String) : [];
+					sf.brandId = '';
+				} else if (field === 'isBound' && filterType === 'select') {
+					sf.isBoundList = Array.isArray(filter) ? filter.map(String) : [];
+					sf.isBound = '';
+				} else if (field === 'isActivated' && filterType === 'select') {
+					sf.isActivatedList = Array.isArray(filter) ? filter.map(String) : [];
+					sf.isActivated = '';
+				} else if (field === 'bindTime' && filterType === 'timestamp') {
+					const { start, end } = this.parseTimestampRange(filter);
+					sf.bindTimeStart = start;
+					sf.bindTimeEnd = end;
+				} else if (field === 'activatedTime' && filterType === 'timestamp') {
+					const { start, end } = this.parseTimestampRange(filter);
+					sf.activatedTimeStart = start;
+					sf.activatedTimeEnd = end;
+				} else if (field === 'inStockTime' && filterType === 'timestamp') {
+					const { start, end } = this.parseTimestampRange(filter);
+					sf.inStockTimeStart = start;
+					sf.inStockTimeEnd = end;
+				}
 				this.pageInfo.currentPage = 1;
 				this.search();
 			},
@@ -498,27 +464,6 @@ export default {
 				}).finally(() => {
 					this.tradeLoading = false;
 				});
-			},
-			
-			// 绑定时间变化
-			onBindTimeChange(value, range) {
-				this.searchForm.bindTime = value;
-				this.searchForm.bindTimeStart = range ? range.start : '';
-				this.searchForm.bindTimeEnd = range ? range.end : '';
-			},
-			
-			// 激活时间变化
-			onActivatedTimeChange(value, range) {
-				this.searchForm.activatedTime = value;
-				this.searchForm.activatedTimeStart = range ? range.start : '';
-				this.searchForm.activatedTimeEnd = range ? range.end : '';
-			},
-			
-			// 入库时间变化
-			onInStockTimeChange(value, range) {
-				this.searchForm.inStockTime = value;
-				this.searchForm.inStockTimeStart = range ? range.start : '';
-				this.searchForm.inStockTimeEnd = range ? range.end : '';
 			},
 		
 		// 刷卡
@@ -632,65 +577,10 @@ export default {
 	overflow: hidden;
 }
 
-.search-form {
-	background-color: #ffffff;
-	padding: 14px 16px;
-	border-radius: 4px;
-	box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-	margin-bottom: 12px;
-	flex-shrink: 0;
-}
-
-.search-grid {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 12px 14px;
-	align-items: end;
-}
-
 .table-container-wrapper {
 	flex: 1;
 	overflow: hidden;
 	min-height: 0;
-}
-
-.form-item {
-	min-width: 0;
-}
-
-.form-item label {
-	display: block;
-	margin-bottom: 8px;
-	font-size: 14px;
-	color: #606266;
-}
-
-.form-item input,
-.form-item select {
-	width: 100%;
-	padding: 8px 12px;
-	border: 1px solid #dcdfe6;
-	border-radius: 4px;
-	font-size: 14px;
-	max-width: none;
-}
-
-.form-item input:focus,
-.form-item select:focus {
-	outline: none;
-	border-color: #409eff;
-	box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.2);
-}
-
-.submit-btn {
-	display: flex;
-	align-items: end;
-	justify-content: flex-start;
-	gap: 10px;
-}
-
-.submit-btn button {
-	margin-right: 0;
 }
 
 .table-container {
@@ -707,12 +597,6 @@ export default {
 	padding: 12px 16px;
 	text-align: right;
 	flex-shrink: 0;
-}
-
-.time-text {
-	font-size: 12px;
-	color: #909399;
-	margin-left: 5px;
 }
 
 .bind-info {
@@ -850,24 +734,6 @@ export default {
 	color: #6b7280;
 }
 
-@media (max-width: 1200px) {
-	.search-grid {
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-	}
-}
-
-@media (max-width: 992px) {
-	.search-grid {
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-	}
-}
-
-@media (max-width: 768px) {
-	.search-grid {
-		grid-template-columns: 1fr;
-	}
-}
-
 /* 屏幕高度较小时允许表格区域滚动，避免内容被截断 */
 @media (max-height: 900px) {
 	.table-container-wrapper {
@@ -875,25 +741,4 @@ export default {
 	}
 }
 
-.datetime-shortcut {
-	display: flex;
-	flex-wrap: wrap;
-	padding: 10px;
-	background-color: #f5f7fa;
-	border-bottom: 1px solid #ebeef5;
-}
-
-.datetime-shortcut button {
-	margin: 5px;
-	padding: 5px 10px;
-	font-size: 12px;
-	border: 1px solid #dcdfe6;
-	border-radius: 4px;
-	background-color: #ffffff;
-}
-
-.datetime-shortcut button:hover {
-	border-color: #409eff;
-	color: #409eff;
-}
 </style>

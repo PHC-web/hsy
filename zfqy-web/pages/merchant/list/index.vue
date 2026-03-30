@@ -88,10 +88,10 @@
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
-								<image class="avatar" :src="item.avatar || defaultAvatar" mode="aspectFill" />
+								<image class="avatar" :src="item.avatar || defaultAvatar" mode="aspectFill" @click="previewImg(item.avatar || defaultAvatar)" />
 							</uni-td>
 							<uni-td align="center">
-								<image class="agreement" :src="item.agreement || defaultAgreement" mode="aspectFill" />
+								<image class="agreement" :src="item.agreement || defaultAgreement" mode="aspectFill" @click="previewImg(item.agreement || defaultAgreement)" />
 							</uni-td>
 							<uni-td align="center">
 								<view class="cell-multiline">{{ item.deviceDisplay }}</view>
@@ -171,6 +171,10 @@ export default {
 		this.search();
 	},
 	methods: {
+		previewImg(url) {
+			if (!url) return;
+			uni.previewImage({ urls: [url], current: url });
+		},
 		onMobileInput(val) {
 			this.searchForm.mobile = String(val || '').replace(/\D/g, '').slice(0, 11);
 		},

@@ -548,6 +548,47 @@
 					}
 				}
 			]
+		},
+		{
+			"root": "pages/h5",
+			"pages": [
+				{
+					"path": "auth/index",
+					"style": {
+						"navigationBarTitleText": "登录绑定",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "home/index",
+					"style": {
+						"navigationBarTitleText": "首页",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "income/index",
+					"style": {
+						"navigationBarTitleText": "收益",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "mine/index",
+					"style": {
+						"navigationBarTitleText": "我的",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				}
+			]
 		}
 	],
 	"globalStyle": {
@@ -577,7 +618,7 @@
 	"uniIdRouter": {
 		"loginPage": "uni_modules/uni-id-pages/pages/login/login-withpwd",
 		"needLogin": [
-			"^(?!.*uni-id-pages\/pages\/(login|register|retrieve)\/).*$"
+			"^/?(pages\\/index\\/index|pages\\/(system|uni-stat|brand|merchant)\\/.*)$"
 		],
 		"resToLogin": true
 	}
