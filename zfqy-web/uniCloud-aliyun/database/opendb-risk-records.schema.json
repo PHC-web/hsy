@@ -1,0 +1,66 @@
+{
+	"bsonType": "object",
+	"required": ["create_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": {
+			"description": "主键"
+		},
+		"user_nickname": {
+			"bsonType": "string",
+			"description": "用户昵称"
+		},
+		"user_mobile": {
+			"bsonType": "string",
+			"description": "用户手机"
+		},
+		"sn": {
+			"bsonType": "string",
+			"description": "SN/机具序列号"
+		},
+		"trade_no": {
+			"bsonType": "string",
+			"description": "交易单号"
+		},
+		"amount": {
+			"bsonType": "number",
+			"description": "金额",
+			"default": 0
+		},
+		"business_license": {
+			"bsonType": "string",
+			"description": "营业执照图片 URL"
+		},
+		"trade_proof": {
+			"bsonType": "string",
+			"description": "交易证明图片 URL"
+		},
+		"business_scenario": {
+			"bsonType": "string",
+			"description": "经营场景"
+		},
+		"status": {
+			"bsonType": "string",
+			"description": "状态：pending=待审核，approved=已通过，rejected=已拒绝，reviewing=审核中",
+			"default": "pending"
+		},
+		"create_time": {
+			"bsonType": "timestamp",
+			"description": "创建时间"
+		},
+		"update_time": {
+			"bsonType": "timestamp",
+			"description": "更新时间"
+		},
+		"is_deleted": {
+			"bsonType": "bool",
+			"description": "软删",
+			"default": false
+		}
+	}
+}
