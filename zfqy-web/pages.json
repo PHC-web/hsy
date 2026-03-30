@@ -550,6 +550,40 @@
 			]
 		},
 		{
+			"root": "pages/finance",
+			"pages": [
+				{
+					"path": "device-order/index",
+					"style": {
+						"navigationBarTitleText": "设备订单"
+					}
+				},
+				{
+					"path": "trade-bill/index",
+					"style": {
+						"navigationBarTitleText": "交易账单"
+					}
+				}
+			]
+		},
+		{
+			"root": "pages/wechat",
+			"pages": [
+				{
+					"path": "official-account/index",
+					"style": {
+						"navigationBarTitleText": "微信公众号"
+					}
+				},
+				{
+					"path": "menu/index",
+					"style": {
+						"navigationBarTitleText": "底部菜单"
+					}
+				}
+			]
+		},
+		{
 			"root": "pages/h5",
 			"pages": [
 				{
@@ -618,7 +652,7 @@
 	"uniIdRouter": {
 		"loginPage": "uni_modules/uni-id-pages/pages/login/login-withpwd",
 		"needLogin": [
-			"^/?(pages\\/index\\/index|pages\\/(system|uni-stat|brand|merchant)\\/.*)$"
+			"^/?(pages\\/index\\/index|pages\\/(system|uni-stat|brand|merchant|finance|wechat)\\/.*)$"
 		],
 		"resToLogin": true
 	}

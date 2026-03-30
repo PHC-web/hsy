@@ -80,6 +80,14 @@
 			"bsonType": "timestamp",
 			"description": "更新时间"
 		},
+		"delete_time": {
+			"bsonType": "timestamp",
+			"description": "删除时间"
+		},
+		"delete_user": {
+			"bsonType": "string",
+			"description": "删除人"
+		},
 		"is_deleted": {
 			"bsonType": "bool",
 			"description": "软删",

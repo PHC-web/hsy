@@ -3,10 +3,24 @@
 const db = uniCloud.database();
 const merchantCollection = db.collection('opendb-merchant-users');
 const withdrawCollection = db.collection('opendb-withdraw-records');
+const couponCollection = db.collection('opendb-coupons');
+const quotaCollection = db.collection('opendb-quota-packages');
 const machineCollection = db.collection('opendb-machine');
 const operationLogCollection = db.collection('opendb-operation-logs');
 const incomePacketCollection = db.collection('opendb-income-packets');
 const machineTradeCollection = db.collection('opendb-machine-trades');
+const uniPayOrderCollection = db.collection('uni-pay-orders');
+
+function getOperator(event) {
+	const ctx = event?.context || {};
+	return (
+		ctx?.userInfo?.username ||
+		ctx?.userInfo?.nickname ||
+		ctx?.uid ||
+		ctx?.OPENID ||
+		'system'
+	);
+}
 
 function formatTime(timestamp) {
 	if (!timestamp) return '';
@@ -216,6 +230,261 @@ async function simulateRegister(data) {
 	}
 }
 
+async function offlineFirstRecharge(data, event) {
+	try {
+		const mobile = safeText(data?.mobile, 20);
+		const packageId = safeText(data?.packageId, 80);
+		if (!mobile) return { code: 400, message: '请输入手机号' };
+		if (!packageId) return { code: 400, message: '请选择套餐' };
+
+		const merchantRes = await merchantCollection.where({ mobile }).limit(1).get();
+		if (!merchantRes.data || !merchantRes.data.length) {
+			return { code: 404, message: '未找到该手机号对应的商户' };
+		}
+		const merchant = merchantRes.data[0];
+
+		let pkgRes = await quotaCollection.where({ package_id: packageId, is_deleted: false }).limit(1).get();
+		if (!pkgRes.data || !pkgRes.data.length) {
+			pkgRes = await quotaCollection.where({ _id: packageId, is_deleted: false }).limit(1).get();
+		}
+		if (!pkgRes.data || !pkgRes.data.length) {
+			return { code: 404, message: '套餐不存在或已删除' };
+		}
+		const pkg = pkgRes.data[0];
+		const quota = Number(pkg.real_quota || 0);
+		if (!Number.isFinite(quota) || quota <= 0) {
+			return { code: 400, message: '套餐额度无效' };
+		}
+
+		const now = nowTs();
+		const offlineOrderNo = `XX${now}${Math.random().toString().slice(2, 10)}`;
+		const beforeQuota = Number(merchant.remaining_quota || 0);
+		const afterQuota = beforeQuota + quota;
+		await merchantCollection.doc(merchant._id).update({
+			remaining_quota: afterQuota,
+			update_time: now
+		});
+
+		await operationLogCollection.add({
+			user_id: merchant.user_id || merchant._id,
+			user_name: merchant.wx_nickname || merchant.mobile || '商户',
+			action: 'offline_first_recharge',
+			module: 'merchant',
+			target_id: merchant._id,
+			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+			content: `线下首冲额度: 手机号 ${mobile}，套餐 ${pkg.title || pkg.package_id || pkg._id}，额度 +${quota}`,
+			operator_source: 'admin',
+			operator: getOperator(event),
+			offline_order_no: offlineOrderNo,
+			mobile,
+			package_id: pkg.package_id || pkg._id,
+			package_title: pkg.title || '',
+			package_price: Number(pkg.price || 0),
+			package_quota: quota,
+			before_remaining_quota: beforeQuota,
+			after_remaining_quota: afterQuota,
+			ip: event?.context?.CLIENTIP || '',
+			create_time: now
+		});
+
+		return {
+			code: 0,
+			message: '充值成功',
+			data: {
+				merchantId: merchant._id,
+				mobile,
+				packageId: pkg.package_id || pkg._id,
+				offlineOrderNo,
+				packageTitle: pkg.title || '',
+				addedQuota: quota,
+				remainingQuota: afterQuota
+			}
+		};
+	} catch (error) {
+		console.error('offlineFirstRecharge failed:', error);
+		return { code: 500, message: '充值失败' };
+	}
+}
+
+async function buildTradeBillListData(data) {
+	const {
+		page = 1,
+		pageSize = 10,
+		salesmanKeyword = '',
+		firstCharge = '',
+		userKeyword = '',
+		platformNo = '',
+		wxTradeNo = '',
+		refunded = '',
+		payTimeStart = '',
+		payTimeEnd = ''
+	} = data || {};
+
+	const payWhereParts = [{ status: db.command.in([1, 2, 3]) }, db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])];
+	if (platformNo) {
+		const r = new RegExp(escapeReg(platformNo), 'i');
+		payWhereParts.push(db.command.or([{ out_trade_no: r }, { order_no: r }]));
+	}
+	if (wxTradeNo) payWhereParts.push({ transaction_id: new RegExp(escapeReg(wxTradeNo), 'i') });
+	if (payTimeStart && payTimeEnd) {
+		payWhereParts.push(
+			db.command.or([
+				db.command.and([{ pay_date: db.command.gte(Number(payTimeStart)) }, { pay_date: db.command.lte(Number(payTimeEnd)) }]),
+				db.command.and([{ create_date: db.command.gte(Number(payTimeStart)) }, { create_date: db.command.lte(Number(payTimeEnd)) }])
+			])
+		);
+	} else if (payTimeStart) {
+		payWhereParts.push(db.command.or([{ pay_date: db.command.gte(Number(payTimeStart)) }, { create_date: db.command.gte(Number(payTimeStart)) }]));
+	} else if (payTimeEnd) {
+		payWhereParts.push(db.command.or([{ pay_date: db.command.lte(Number(payTimeEnd)) }, { create_date: db.command.lte(Number(payTimeEnd)) }]));
+	}
+	const payWhere = payWhereParts.length === 1 ? payWhereParts[0] : db.command.and(payWhereParts);
+
+	const logWhereParts = [{ action: 'offline_first_recharge' }, db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])];
+	if (platformNo) logWhereParts.push({ target_id: new RegExp(escapeReg(platformNo), 'i') });
+	if (payTimeStart && payTimeEnd) {
+		logWhereParts.push(db.command.and([{ create_time: db.command.gte(Number(payTimeStart)) }, { create_time: db.command.lte(Number(payTimeEnd)) }]));
+	} else if (payTimeStart) {
+		logWhereParts.push({ create_time: db.command.gte(Number(payTimeStart)) });
+	} else if (payTimeEnd) {
+		logWhereParts.push({ create_time: db.command.lte(Number(payTimeEnd)) });
+	}
+	const logWhere = logWhereParts.length === 1 ? logWhereParts[0] : db.command.and(logWhereParts);
+
+	const [payRes, logRes] = await Promise.all([
+		uniPayOrderCollection.where(payWhere).orderBy('create_date', 'desc').limit(10000).get(),
+		operationLogCollection.where(logWhere).orderBy('create_time', 'desc').limit(10000).get()
+	]);
+	const payRows = payRes.data || [];
+	const logRows = logRes.data || [];
+
+	const merchantIds = [...new Set(logRows.map((x) => String(x.target_id || '')).filter(Boolean))];
+	const userIds = [...new Set(payRows.map((x) => String(x.user_id || '')).filter(Boolean))];
+	const merchantMap = {};
+	if (merchantIds.length) {
+		const r = await merchantCollection.where({ _id: db.command.in(merchantIds) }).limit(10000).get();
+		(r.data || []).forEach((m) => {
+			merchantMap[String(m._id)] = m;
+		});
+	}
+	if (userIds.length) {
+		const r = await merchantCollection.where({ user_id: db.command.in(userIds) }).limit(10000).get();
+		(r.data || []).forEach((m) => {
+			merchantMap[String(m.user_id || '')] = m;
+		});
+	}
+
+	const payList = payRows.map((row) => {
+		const merchant = merchantMap[String(row.user_id || '')] || null;
+		const ts = Number(row.pay_date || row.create_date || 0);
+		const amount = Number(row.total_fee || 0) / 100;
+		const platformNo = row.transaction_id || row.out_trade_no || row.order_no || row._id;
+		return {
+			recordKey: `pay:${row._id}`,
+			source: 'h5_recharge',
+			salesman: merchant?.salesman || '-',
+			firstCharge: '否',
+			tradeUser: merchant?.wx_nickname || row.nickname || '-',
+			avatar: merchant?.wx_avatar || '',
+			platformNo: platformNo || '-',
+			wxTradeNo: row.transaction_id || '-',
+			goodsName: row.description || row.type || 'H5充值',
+			payType: row.provider || '-',
+			amount,
+			amountText: `CNY￥${amount.toFixed(4)}`,
+			refunded: row.status === 2 || row.status === 3 ? '是' : '否',
+			payTime: formatTime(ts),
+			_ts: ts
+		};
+	});
+
+	const offlineList = logRows.map((row) => {
+		const merchant = merchantMap[String(row.target_id || '')] || null;
+		const ts = Number(row.create_time || 0);
+		const amount = Number(row.package_price || 0);
+		const title = row.package_title || '';
+		const quota = Number(row.package_quota || 0);
+		const offlineOrderNo = safeText(row.offline_order_no || '', 60) || `XX${String(row._id || '').slice(-12)}`;
+		return {
+			recordKey: `offline:${row._id}`,
+			source: 'offline_first_recharge',
+			salesman: merchant?.salesman || '-',
+			firstCharge: '是',
+			tradeUser: merchant?.wx_nickname || row.target_name || '-',
+			avatar: merchant?.wx_avatar || '',
+			platformNo: offlineOrderNo,
+			wxTradeNo: '-',
+			goodsName: title ? `${title}${quota ? `（额度${quota}）` : ''}` : '线下首冲额度',
+			payType: '线下首冲',
+			amount,
+			amountText: `CNY￥${amount.toFixed(4)}`,
+			refunded: '否',
+			payTime: formatTime(ts),
+			_ts: ts
+		};
+	});
+
+	let merged = [...payList, ...offlineList];
+	if (salesmanKeyword) merged = merged.filter((x) => String(x.salesman || '').toLowerCase().includes(String(salesmanKeyword).toLowerCase()));
+	if (firstCharge !== '') merged = merged.filter((x) => x.firstCharge === (String(firstCharge) === '1' ? '是' : '否'));
+	if (userKeyword) merged = merged.filter((x) => String(x.tradeUser || '').toLowerCase().includes(String(userKeyword).toLowerCase()));
+	if (platformNo) merged = merged.filter((x) => String(x.platformNo || '').toLowerCase().includes(String(platformNo).toLowerCase()));
+	if (wxTradeNo) merged = merged.filter((x) => String(x.wxTradeNo || '').toLowerCase().includes(String(wxTradeNo).toLowerCase()));
+	if (refunded !== '') merged = merged.filter((x) => x.refunded === (String(refunded) === '1' ? '是' : '否'));
+	if (payTimeStart) merged = merged.filter((x) => Number(x._ts || 0) >= Number(payTimeStart));
+	if (payTimeEnd) merged = merged.filter((x) => Number(x._ts || 0) <= Number(payTimeEnd));
+
+	merged.sort((a, b) => Number(b._ts || 0) - Number(a._ts || 0));
+	const total = merged.length;
+	const s = (Number(page) - 1) * Number(pageSize);
+	const e = s + Number(pageSize);
+	const list = merged.slice(s, e).map(({ _ts, ...rest }) => rest);
+	return { list, total, page: Number(page), pageSize: Number(pageSize) };
+}
+
+async function tradeBillList(data) {
+	try {
+		const result = await buildTradeBillListData(data);
+		return { code: 0, message: 'ok', data: result };
+	} catch (error) {
+		console.error('tradeBillList failed:', error);
+		return { code: 500, message: '获取交易账单失败' };
+	}
+}
+
+async function tradeBillDelete(data, event) {
+	try {
+		const ids = Array.isArray(data?.recordKeys) ? data.recordKeys.map((x) => safeText(x, 120)).filter(Boolean) : [];
+		if (!ids.length) return { code: 400, message: '请选择要删除的记录' };
+		const payIds = [];
+		const offlineIds = [];
+		ids.forEach((k) => {
+			if (k.startsWith('pay:')) payIds.push(k.slice(4));
+			else if (k.startsWith('offline:')) offlineIds.push(k.slice(8));
+		});
+		const now = nowTs();
+		const operator = getOperator(event);
+		if (payIds.length) {
+			await uniPayOrderCollection.where({ _id: db.command.in(payIds) }).update({
+				is_deleted: true,
+				delete_time: now,
+				delete_user: operator
+			});
+		}
+		if (offlineIds.length) {
+			await operationLogCollection.where({ _id: db.command.in(offlineIds), action: 'offline_first_recharge' }).update({
+				is_deleted: true,
+				delete_time: now,
+				delete_user: operator
+			});
+		}
+		return { code: 0, message: '删除成功' };
+	} catch (error) {
+		console.error('tradeBillDelete failed:', error);
+		return { code: 500, message: '删除失败' };
+	}
+}
+
 function escapeReg(s) {
 	return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -250,7 +519,8 @@ function mapWithdrawItem(item) {
 		payTime: formatTime(item.pay_time),
 		arrivalStatus: item.arrival_status || 'pending',
 		arrivalStatusText: arrivalStatusText(item.arrival_status),
-		arrivalTime: formatTime(item.arrival_time)
+		arrivalTime: formatTime(item.arrival_time),
+		createTime: formatTime(item.create_time)
 	};
 }
 
@@ -270,7 +540,9 @@ function buildWithdrawWhere(data) {
 		arrivalStatus = '',
 		arrivalStatusList,
 		arrivalTimeStart = '',
-		arrivalTimeEnd = ''
+		arrivalTimeEnd = '',
+		createTimeStart = '',
+		createTimeEnd = ''
 	} = data || {};
 
 	const parts = [{ is_deleted: false }];
@@ -346,6 +618,19 @@ function buildWithdrawWhere(data) {
 		parts.push({ arrival_time: db.command.lte(Number(arrivalTimeEnd)) });
 	}
 
+	if (createTimeStart && createTimeEnd) {
+		parts.push(
+			db.command.and([
+				{ create_time: db.command.gte(Number(createTimeStart)) },
+				{ create_time: db.command.lte(Number(createTimeEnd)) }
+			])
+		);
+	} else if (createTimeStart) {
+		parts.push({ create_time: db.command.gte(Number(createTimeStart)) });
+	} else if (createTimeEnd) {
+		parts.push({ create_time: db.command.lte(Number(createTimeEnd)) });
+	}
+
 	return parts.length === 1 ? parts[0] : db.command.and(parts);
 }
 
@@ -414,6 +699,66 @@ async function getWithdrawList(data) {
 	} catch (error) {
 		console.error('提现列表失败:', error);
 		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function withdrawApprove(data) {
+	try {
+		const id = safeText(data?.id, 80);
+		const actionType = safeText(data?.actionType, 20); // pay | arrival | returned | expired
+		if (!id) return { code: 400, message: '缺少提现记录ID' };
+		if (!['pay', 'arrival', 'returned', 'expired'].includes(actionType)) {
+			return { code: 400, message: '审批动作无效' };
+		}
+
+		const oldRes = await withdrawCollection.doc(id).get();
+		const row = oldRes.data && oldRes.data[0];
+		if (!row) return { code: 404, message: '提现记录不存在' };
+
+		const now = nowTs();
+		if (actionType === 'pay') {
+			if (row.is_paid) return { code: 400, message: '该记录已打款' };
+			await withdrawCollection.doc(id).update({
+				is_paid: true,
+				pay_time: now,
+				update_time: now
+			});
+			return { code: 0, message: '已标记为打款' };
+		}
+
+		if (!row.is_paid) return { code: 400, message: '请先完成打款' };
+		const nextStatus = actionType === 'arrival' ? 'received' : actionType;
+		if (row.arrival_status === nextStatus) {
+			return { code: 400, message: `该记录已是${arrivalStatusText(nextStatus)}` };
+		}
+		await withdrawCollection.doc(id).update({
+			arrival_status: nextStatus,
+			arrival_time: nextStatus === 'received' ? now : row.arrival_time || null,
+			update_time: now
+		});
+		return { code: 0, message: `已标记为${arrivalStatusText(nextStatus)}` };
+	} catch (error) {
+		console.error('withdrawApprove failed:', error);
+		return { code: 500, message: '审批失败' };
+	}
+}
+
+async function withdrawDelete(data, event) {
+	try {
+		const ids = Array.isArray(data?.ids) ? data.ids.map((x) => safeText(x, 80)).filter(Boolean) : [];
+		if (!ids.length) return { code: 400, message: '请选择要删除的记录' };
+		const now = nowTs();
+		const operator = getOperator(event);
+		await withdrawCollection.where({ _id: db.command.in(ids), is_deleted: false }).update({
+			is_deleted: true,
+			update_time: now,
+			delete_time: now,
+			delete_user: operator
+		});
+		return { code: 0, message: '删除成功' };
+	} catch (error) {
+		console.error('withdrawDelete failed:', error);
+		return { code: 500, message: '删除失败' };
 	}
 }
 
@@ -909,6 +1254,244 @@ async function h5Unbind(data, event) {
 	}
 }
 
+async function couponList(data) {
+	try {
+		const {
+			page = 1,
+			pageSize = 10,
+			name = '',
+			description = '',
+			type = '',
+			amount = '',
+			monthlyThreshold = '',
+			validDays = '',
+			updateTimeStart = '',
+			updateTimeEnd = '',
+			createTimeStart = '',
+			createTimeEnd = ''
+		} = data || {};
+		const where = { is_deleted: false };
+		if (name) where.name = new RegExp(escapeReg(name), 'i');
+		if (description) where.description = new RegExp(escapeReg(description), 'i');
+		if (type) where.type = String(type);
+		if (amount !== '' && amount !== null && amount !== undefined) where.amount = Number(amount);
+		if (monthlyThreshold !== '' && monthlyThreshold !== null && monthlyThreshold !== undefined) where.monthly_threshold = Number(monthlyThreshold);
+		if (validDays !== '' && validDays !== null && validDays !== undefined) where.valid_days = Number(validDays);
+		if (updateTimeStart && updateTimeEnd) {
+			where.update_time = db.command.and([db.command.gte(Number(updateTimeStart)), db.command.lte(Number(updateTimeEnd))]);
+		} else if (updateTimeStart) where.update_time = db.command.gte(Number(updateTimeStart));
+		else if (updateTimeEnd) where.update_time = db.command.lte(Number(updateTimeEnd));
+		if (createTimeStart && createTimeEnd) {
+			where.create_time = db.command.and([db.command.gte(Number(createTimeStart)), db.command.lte(Number(createTimeEnd))]);
+		} else if (createTimeStart) where.create_time = db.command.gte(Number(createTimeStart));
+		else if (createTimeEnd) where.create_time = db.command.lte(Number(createTimeEnd));
+		const totalRes = await couponCollection.where(where).count();
+		const listRes = await couponCollection
+			.where(where)
+			.orderBy('create_time', 'desc')
+			.skip((Number(page) - 1) * Number(pageSize))
+			.limit(Number(pageSize))
+			.get();
+		const list = (listRes.data || []).map((item) => ({
+			id: item._id,
+			name: item.name || '',
+			description: item.description || '',
+			type: item.type || 'cash',
+			typeText: item.type === 'discount' ? '折扣券' : '现金券',
+			amount: Number(item.amount || 0),
+			monthlyThreshold: Number(item.monthly_threshold || 0),
+			validDays: Number(item.valid_days || 0),
+			createTime: formatTime(item.create_time),
+			updateTime: formatTime(item.update_time)
+		}));
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				list,
+				total: totalRes.total || 0,
+				page: Number(page),
+				pageSize: Number(pageSize)
+			}
+		};
+	} catch (error) {
+		console.error('couponList failed:', error);
+		return { code: 500, message: '获取优惠券列表失败' };
+	}
+}
+
+async function couponSave(data) {
+	try {
+		const now = nowTs();
+		const id = safeText(data?.id, 80);
+		const payload = {
+			name: safeText(data?.name, 60),
+			description: safeText(data?.description, 200),
+			type: safeText(data?.type || 'cash', 20) === 'discount' ? 'discount' : 'cash',
+			amount: Number(data?.amount || 0),
+			monthly_threshold: Number(data?.monthlyThreshold || 0),
+			valid_days: Number(data?.validDays || 0),
+			update_time: now
+		};
+		if (!payload.name) return { code: 400, message: '请输入名称' };
+		if (payload.amount <= 0) return { code: 400, message: '金额必须大于0' };
+		if (payload.monthly_threshold < 0) return { code: 400, message: '月需消费总额不能小于0' };
+		if (payload.valid_days < 0) return { code: 400, message: '有效天数不能小于0' };
+
+		if (id) {
+			await couponCollection.doc(id).update(payload);
+			return { code: 0, message: '更新成功' };
+		}
+		await couponCollection.add({
+			...payload,
+			is_deleted: false,
+			create_time: now
+		});
+		return { code: 0, message: '新增成功' };
+	} catch (error) {
+		console.error('couponSave failed:', error);
+		return { code: 500, message: '保存失败' };
+	}
+}
+
+async function couponDelete(data, event) {
+	try {
+		const ids = Array.isArray(data?.ids) ? data.ids.map((x) => safeText(x, 80)).filter(Boolean) : [];
+		if (!ids.length) return { code: 400, message: '请选择要删除的记录' };
+		const now = nowTs();
+		const operator = getOperator(event);
+		await couponCollection.where({ _id: db.command.in(ids) }).update({
+			is_deleted: true,
+			update_time: now,
+			delete_time: now,
+			delete_user: operator
+		});
+		return { code: 0, message: '删除成功' };
+	} catch (error) {
+		console.error('couponDelete failed:', error);
+		return { code: 500, message: '删除失败' };
+	}
+}
+
+async function quotaList(data) {
+	try {
+		const {
+			page = 1,
+			pageSize = 10,
+			packageId = '',
+			title = '',
+			bonusQuota = '',
+			realQuota = '',
+			price = '',
+			description = '',
+			updateTimeStart = '',
+			updateTimeEnd = '',
+			createTimeStart = '',
+			createTimeEnd = ''
+		} = data || {};
+		const where = { is_deleted: false };
+		if (packageId) where.package_id = new RegExp(escapeReg(packageId), 'i');
+		if (title) where.title = new RegExp(escapeReg(title), 'i');
+		if (bonusQuota) where.bonus_quota = new RegExp(escapeReg(bonusQuota), 'i');
+		if (description) where.description = new RegExp(escapeReg(description), 'i');
+		if (realQuota !== '' && realQuota !== null && realQuota !== undefined) where.real_quota = Number(realQuota);
+		if (price !== '' && price !== null && price !== undefined) where.price = Number(price);
+		if (updateTimeStart && updateTimeEnd) {
+			where.update_time = db.command.and([db.command.gte(Number(updateTimeStart)), db.command.lte(Number(updateTimeEnd))]);
+		} else if (updateTimeStart) where.update_time = db.command.gte(Number(updateTimeStart));
+		else if (updateTimeEnd) where.update_time = db.command.lte(Number(updateTimeEnd));
+		if (createTimeStart && createTimeEnd) {
+			where.create_time = db.command.and([db.command.gte(Number(createTimeStart)), db.command.lte(Number(createTimeEnd))]);
+		} else if (createTimeStart) where.create_time = db.command.gte(Number(createTimeStart));
+		else if (createTimeEnd) where.create_time = db.command.lte(Number(createTimeEnd));
+		const totalRes = await quotaCollection.where(where).count();
+		const listRes = await quotaCollection
+			.where(where)
+			.orderBy('create_time', 'desc')
+			.skip((Number(page) - 1) * Number(pageSize))
+			.limit(Number(pageSize))
+			.get();
+		const list = (listRes.data || []).map((item) => ({
+			id: item._id,
+			packageId: item.package_id || '',
+			title: item.title || '',
+			bonusQuota: item.bonus_quota || '',
+			realQuota: Number(item.real_quota || 0),
+			price: Number(item.price || 0),
+			description: item.description || '',
+			createTime: formatTime(item.create_time),
+			updateTime: formatTime(item.update_time)
+		}));
+		return {
+			code: 0,
+			message: 'ok',
+			data: { list, total: totalRes.total || 0, page: Number(page), pageSize: Number(pageSize) }
+		};
+	} catch (error) {
+		console.error('quotaList failed:', error);
+		return { code: 500, message: '获取额度包列表失败' };
+	}
+}
+
+async function quotaSave(data) {
+	try {
+		const now = nowTs();
+		const id = safeText(data?.id, 80);
+		const payload = {
+			package_id: safeText(data?.packageId, 40),
+			title: safeText(data?.title, 80),
+			bonus_quota: safeText(data?.bonusQuota, 120),
+			real_quota: Number(data?.realQuota || 0),
+			price: Number(data?.price || 0),
+			description: safeText(data?.description, 300),
+			update_time: now
+		};
+		if (!payload.package_id) return { code: 400, message: '请输入套餐id' };
+		if (!payload.title) return { code: 400, message: '请输入标题' };
+		if (payload.real_quota < 0) return { code: 400, message: '实际额度不能小于0' };
+		if (payload.price < 0) return { code: 400, message: '套餐价格不能小于0' };
+		if (!payload.description) return { code: 400, message: '请输入套餐说明' };
+
+		const dupWhere = { package_id: payload.package_id, is_deleted: false };
+		if (id) dupWhere._id = db.command.neq(id);
+		const dup = await quotaCollection.where(dupWhere).limit(1).get();
+		if (dup.data && dup.data.length) return { code: 400, message: '套餐id已存在，请勿重复' };
+
+		if (id) {
+			await quotaCollection.doc(id).update(payload);
+			return { code: 0, message: '更新成功' };
+		}
+		await quotaCollection.add({
+			...payload,
+			is_deleted: false,
+			create_time: now
+		});
+		return { code: 0, message: '新增成功' };
+	} catch (error) {
+		console.error('quotaSave failed:', error);
+		return { code: 500, message: '保存失败' };
+	}
+}
+
+async function quotaDelete(data, event) {
+	try {
+		const ids = Array.isArray(data?.ids) ? data.ids.map((x) => safeText(x, 80)).filter(Boolean) : [];
+		if (!ids.length) return { code: 400, message: '请选择要删除的记录' };
+		const now = nowTs();
+		const operator = getOperator(event);
+		await quotaCollection.where({ _id: db.command.in(ids) }).update({
+			is_deleted: true,
+			update_time: now,
+			delete_time: now,
+			delete_user: operator
+		});
+		return { code: 0, message: '删除成功' };
+	} catch (error) {
+		console.error('quotaDelete failed:', error);
+		return { code: 500, message: '删除失败' };
+	}
+}
+
 exports.main = async (event, context) => {
 	const { action, data, params } = event;
 	const actualData = data || params;
@@ -920,10 +1503,20 @@ exports.main = async (event, context) => {
 			return await updateSwitch(actualData);
 		case 'simulateRegister':
 			return await simulateRegister(actualData);
+		case 'offlineFirstRecharge':
+			return await offlineFirstRecharge(actualData, event);
 		case 'withdrawList':
 			return await getWithdrawList(actualData);
+		case 'tradeBillList':
+			return await tradeBillList(actualData);
+		case 'tradeBillDelete':
+			return await tradeBillDelete(actualData, event);
 		case 'withdrawExportCsv':
 			return await exportWithdrawCsv(actualData);
+		case 'withdrawApprove':
+			return await withdrawApprove(actualData);
+		case 'withdrawDelete':
+			return await withdrawDelete(actualData, event);
 		case 'h5AuthSync':
 			return await h5AuthSync(actualData);
 		case 'h5BindMachine':
@@ -940,6 +1533,18 @@ exports.main = async (event, context) => {
 			return await h5IncomeClaimAll(actualData);
 		case 'h5Unbind':
 			return await h5Unbind(actualData, event);
+		case 'couponList':
+			return await couponList(actualData);
+		case 'couponSave':
+			return await couponSave(actualData);
+		case 'couponDelete':
+			return await couponDelete(actualData, event);
+		case 'quotaList':
+			return await quotaList(actualData);
+		case 'quotaSave':
+			return await quotaSave(actualData);
+		case 'quotaDelete':
+			return await quotaDelete(actualData, event);
 		default:
 			return { code: 400, message: '无效的操作' };
 	}

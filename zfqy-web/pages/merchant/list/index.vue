@@ -3,88 +3,45 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
-				<view class="uni-sub-title hide-on-phone">商户列表</view>
-				<button size="mini" type="primary" @click="goAdd">模拟商户注册</button>
+				<view class="header-actions">
+					<button size="mini" @click="reset">重置</button>
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button size="mini" class="export-trigger" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view v-for="opt in exportTypeOptions" :key="opt.value" class="export-menu-item" @click="selectAndExport(opt.value)">
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button size="mini" type="warn" @click="openOfflineRecharge">线下首冲额度</button>
+					<button size="mini" type="primary" @click="goAdd">模拟商户注册</button>
+				</view>
 			</view>
 		</view>
 		<view class="uni-container">
-			<view class="search-form">
-				<view class="search-grid">
-					<view class="form-item">
-						<form-input v-model="searchForm.mobile" label="手机号码" placeholder="请输入手机号码" :maxlength="11" @input="onMobileInput" />
-					</view>
-					<view class="form-item">
-						<form-input v-model="searchForm.deviceId" label="机具号码" placeholder="请输入机具号码" :maxlength="50" @input="onDeviceInput" />
-					</view>
-					<view class="form-item">
-						<form-input v-model="searchForm.wxNickname" label="微信用户" placeholder="请输入微信用户" :maxlength="20" />
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.useStatus" label="使用状态">
-							<option value="">全部</option>
-							<option value="1">正常</option>
-							<option value="0">异常</option>
-						</form-select>
-					</view>
-
-					<view class="form-item">
-						<form-select v-model="searchForm.flag1" label="1">
-							<option value="">全部</option>
-							<option value="0">禁用</option>
-							<option value="1">启用</option>
-						</form-select>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.flag2" label="2">
-							<option value="">全部</option>
-							<option value="0">禁用</option>
-							<option value="1">启用</option>
-						</form-select>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.flag3" label="3">
-							<option value="">全部</option>
-							<option value="0">禁用</option>
-							<option value="1">启用</option>
-						</form-select>
-					</view>
-					<view class="form-item">
-						<form-select v-model="searchForm.microMerchant" label="小微商户">
-							<option value="">全部</option>
-							<option value="0">禁用</option>
-							<option value="1">启用</option>
-						</form-select>
-					</view>
-
-					<view class="form-item">
-						<form-date-picker v-model="searchForm.loginTime" label="登录时间" placeholder="选择登录时间" @change="onLoginTimeChange" />
-					</view>
-					<view class="form-item submit-btn">
-						<button size="mini" type="primary" @click="search">提交</button>
-						<button size="mini" type="default" @click="reset">重置</button>
-					</view>
-				</view>
-			</view>
-
 			<view class="table-container-wrapper">
 				<view class="table-container">
-					<uni-table ref="table" border stripe :loading="loading">
+					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 						<uni-tr>
 							<uni-th align="center" width="60">头像</uni-th>
 							<uni-th align="center" width="60">协议</uni-th>
-							<uni-th align="center" width="120">机具号码</uni-th>
-							<uni-th align="center" width="160">微信用户</uni-th>
+							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具号码</uni-th>
+							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'wxNickname')">微信用户</uni-th>
 							<uni-th align="center" width="90">剩余额度</uni-th>
 							<uni-th align="center" width="90">待提现</uni-th>
 							<uni-th align="center" width="90">已提现</uni-th>
 							<uni-th align="center" width="90">冻结金额</uni-th>
 							<uni-th align="center" width="70">优惠券</uni-th>
-							<uni-th align="center" width="80">使用状态</uni-th>
-							<uni-th align="center" width="60">1</uni-th>
-							<uni-th align="center" width="60">2</uni-th>
-							<uni-th align="center" width="60">3</uni-th>
-							<uni-th align="center" width="80">小微商户</uni-th>
-							<uni-th align="center" width="150">登录时间</uni-th>
+							<uni-th align="center" width="90" filter-type="select" :filter-data="useStatusFilterData" @filter-change="headerFilterChange($event, 'useStatus')">使用状态</uni-th>
+							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag1')">1</uni-th>
+							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag2')">2</uni-th>
+							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
+							<uni-th align="center" width="90" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'microMerchant')">小微商户</uni-th>
+							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
@@ -131,16 +88,34 @@
 		<!-- #ifndef H5 -->
 		<fix-window />
 		<!-- #endif -->
+		<uni-popup ref="offlineRechargePopup" type="dialog">
+			<view class="offline-popup">
+				<view class="offline-title">线下首充额度</view>
+				<view class="offline-label required">手机号码</view>
+				<input v-model="offlineForm.mobile" class="offline-input" type="number" maxlength="11" placeholder="手机号" />
+				<view class="offline-label required">选择套餐</view>
+				<scroll-view class="offline-packages" scroll-y>
+					<radio-group>
+						<label v-for="item in offlinePackages" :key="item.value" class="offline-package-item" @click="offlineForm.packageId = item.value">
+							<radio :value="item.value" :checked="offlineForm.packageId === item.value" />
+							<view class="offline-package-content">
+								<view class="offline-package-main">额度：{{ item.quotaText }}；价格：{{ item.priceText }}元</view>
+								<view v-if="item.desc" class="offline-package-desc">{{ item.desc }}</view>
+							</view>
+						</label>
+					</radio-group>
+				</scroll-view>
+				<view class="offline-actions">
+					<button size="mini" @click="closeOfflineRecharge">取消</button>
+					<button size="mini" type="primary" :loading="offlineSubmitting" @click="submitOfflineRecharge">提交</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
 <script>
-import FormInput from '@/components/form/FormInput.vue';
-import FormSelect from '@/components/form/FormSelect.vue';
-import FormDatePicker from '@/components/form/FormDatePicker.vue';
-
 export default {
-	components: { FormInput, FormSelect, FormDatePicker },
 	data() {
 		return {
 			searchForm: {
@@ -156,6 +131,15 @@ export default {
 				loginTimeStart: '',
 				loginTimeEnd: ''
 			},
+			tableKey: 1,
+			useStatusFilterData: [
+				{ text: '正常', value: '1', checked: false },
+				{ text: '异常', value: '0', checked: false }
+			],
+			flagBoolFilterData: [
+				{ text: '禁用', value: '0', checked: false },
+				{ text: '启用', value: '1', checked: false }
+			],
 			list: [],
 			loading: false,
 			pageInfo: {
@@ -163,6 +147,21 @@ export default {
 				pageSize: 10,
 				total: 0
 			},
+			showExportMenu: false,
+			exportTypeOptions: [
+				{ text: 'JSON', value: 'json' },
+				{ text: 'XML', value: 'xml' },
+				{ text: 'CSV', value: 'csv' },
+				{ text: 'TXT', value: 'txt' },
+				{ text: 'MS-Word', value: 'word' },
+				{ text: 'MS-Excel', value: 'excel' }
+			],
+			offlineSubmitting: false,
+			offlineForm: {
+				mobile: '',
+				packageId: ''
+			},
+			offlinePackages: [],
 			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E',
 			defaultAgreement: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M15 12h14l4 4v20H15V12Zm14 1.5V17h3.5L29 13.5ZM18 20h12v2H18v-2Zm0 5h12v2H18v-2Zm0 5h9v2h-9v-2Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
 		};
@@ -175,16 +174,26 @@ export default {
 			if (!url) return;
 			uni.previewImage({ urls: [url], current: url });
 		},
-		onMobileInput(val) {
-			this.searchForm.mobile = String(val || '').replace(/\D/g, '').slice(0, 11);
+		parseTimestampRange(filter) {
+			if (!Array.isArray(filter) || filter.length < 2) return { start: '', end: '' };
+			return { start: Number(filter[0]) || '', end: Number(filter[1]) || '' };
 		},
-		onDeviceInput(val) {
-			this.searchForm.deviceId = String(val || '').replace(/\D/g, '').slice(0, 50);
-		},
-		onLoginTimeChange(value, range) {
-			this.searchForm.loginTime = value;
-			this.searchForm.loginTimeStart = range ? range.start : '';
-			this.searchForm.loginTimeEnd = range ? range.end : '';
+		headerFilterChange(e, field) {
+			const { filterType, filter } = e || {};
+			const sf = this.searchForm;
+			if (field === 'deviceId' && filterType === 'search') {
+				sf.deviceId = String(filter == null ? '' : filter).trim().slice(0, 50);
+			} else if (field === 'wxNickname' && filterType === 'search') {
+				sf.wxNickname = String(filter == null ? '' : filter).trim().slice(0, 50);
+			} else if (['useStatus', 'flag1', 'flag2', 'flag3', 'microMerchant'].includes(field) && filterType === 'select') {
+				sf[field] = Array.isArray(filter) && filter.length ? String(filter[0]) : '';
+			} else if (field === 'loginTime' && filterType === 'timestamp') {
+				const { start, end } = this.parseTimestampRange(filter);
+				sf.loginTimeStart = start;
+				sf.loginTimeEnd = end;
+			}
+			this.pageInfo.currentPage = 1;
+			this.search();
 		},
 		search() {
 			this.loading = true;
@@ -227,6 +236,7 @@ export default {
 				loginTimeStart: '',
 				loginTimeEnd: ''
 			};
+			this.tableKey += 1;
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
@@ -241,6 +251,159 @@ export default {
 		},
 		goAdd() {
 			uni.navigateTo({ url: '/pages/merchant/list/add' });
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		async fetchExportRows() {
+			const sf = this.searchForm;
+			const ret = await this.$request('list', {
+				page: 1,
+				pageSize: 10000,
+				mobile: sf.mobile,
+				deviceId: sf.deviceId,
+				wxNickname: sf.wxNickname,
+				useStatus: sf.useStatus,
+				flag1: sf.flag1,
+				flag2: sf.flag2,
+				flag3: sf.flag3,
+				microMerchant: sf.microMerchant,
+				loginTimeStart: sf.loginTimeStart,
+				loginTimeEnd: sf.loginTimeEnd
+			}, { functionName: 'merchant' });
+			if (ret.code !== 0) throw new Error(ret.message || '导出数据获取失败');
+			return (ret.data?.list || []).map((x) => ({
+				机具号码: x.deviceNo || '',
+				微信用户: x.wxUser || '',
+				剩余额度: x.remainingQuota || '',
+				待提现: x.pendingWithdraw || '',
+				已提现: x.withdrawn || '',
+				冻结金额: x.frozenAmount || '',
+				优惠券: x.couponCount || 0,
+				使用状态: x.useStatus || '',
+				开关1: x.flag1 ? '启用' : '禁用',
+				开关2: x.flag2 ? '启用' : '禁用',
+				开关3: x.flag3 ? '启用' : '禁用',
+				小微商户: x.microMerchant ? '启用' : '禁用',
+				登录时间: x.loginTime || ''
+			}));
+		},
+		downloadFile(filename, content, mimeType) {
+			// #ifdef H5
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			a.click();
+			URL.revokeObjectURL(url);
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({ data: String(content || '') });
+			// #endif
+		},
+		toCsv(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const esc = (s) => {
+				const t = String(s == null ? '' : s);
+				return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+			};
+			const lines = [keys.join(',')];
+			rows.forEach((r) => lines.push(keys.map((k) => esc(r[k])).join(',')));
+			return '\uFEFF' + lines.join('\r\n');
+		},
+		toTxt(rows) {
+			return rows.map((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' | ')).join('\n');
+		},
+		toXml(rows) {
+			const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const items = rows.map((r) => `<item>${Object.entries(r).map(([k, v]) => `<${k}>${esc(v)}</${k}>`).join('')}</item>`).join('');
+			return `<?xml version="1.0" encoding="UTF-8"?><merchants>${items}</merchants>`;
+		},
+		toHtmlTable(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const th = keys.map((k) => `<th>${k}</th>`).join('');
+			const tr = rows.map((r) => `<tr>${keys.map((k) => `<td>${r[k] == null ? '' : r[k]}</td>`).join('')}</tr>`).join('');
+			return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></body></html>`;
+		},
+		async exportData(type) {
+			try {
+				uni.showLoading({ title: '导出中...', mask: true });
+				const rows = await this.fetchExportRows();
+				if (!rows.length) return uni.showToast({ title: '暂无可导出数据', icon: 'none' });
+				const ts = Date.now();
+				if (type === 'json') this.downloadFile(`商户列表_${ts}.json`, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
+				else if (type === 'xml') this.downloadFile(`商户列表_${ts}.xml`, this.toXml(rows), 'application/xml;charset=utf-8');
+				else if (type === 'csv') this.downloadFile(`商户列表_${ts}.csv`, this.toCsv(rows), 'text/csv;charset=utf-8');
+				else if (type === 'txt') this.downloadFile(`商户列表_${ts}.txt`, this.toTxt(rows), 'text/plain;charset=utf-8');
+				else if (type === 'word') this.downloadFile(`商户列表_${ts}.doc`, this.toHtmlTable(rows), 'application/msword');
+				else if (type === 'excel') this.downloadFile(`商户列表_${ts}.xls`, this.toHtmlTable(rows), 'application/vnd.ms-excel');
+			} catch (e) {
+				uni.showToast({ title: e.message || '导出失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		async openOfflineRecharge() {
+			this.offlineForm = { mobile: '', packageId: '' };
+			await this.loadOfflinePackages();
+			this.$refs.offlineRechargePopup.open();
+		},
+		closeOfflineRecharge() {
+			this.$refs.offlineRechargePopup.close();
+		},
+		async loadOfflinePackages() {
+			try {
+				const ret = await this.$request('quotaList', { page: 1, pageSize: 100 }, { functionName: 'merchant' });
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '套餐加载失败', icon: 'none' });
+					this.offlinePackages = [];
+					return;
+				}
+				const rows = ret.data?.list || [];
+				this.offlinePackages = rows.map((x) => ({
+					value: x.packageId || x.id,
+					quotaText: Number(x.realQuota || 0).toFixed(0),
+					priceText: Number(x.price || 0).toFixed(2),
+					desc: x.description || '',
+					title: x.title || ''
+				}));
+				if (this.offlinePackages.length) this.offlineForm.packageId = this.offlinePackages[0].value;
+			} catch (e) {
+				this.offlinePackages = [];
+				uni.showToast({ title: '套餐加载失败', icon: 'none' });
+			}
+		},
+		async submitOfflineRecharge() {
+			const mobile = String(this.offlineForm.mobile || '').trim();
+			const packageId = String(this.offlineForm.packageId || '').trim();
+			if (!/^1\d{10}$/.test(mobile)) {
+				uni.showToast({ title: '请输入正确的11位手机号', icon: 'none' });
+				return;
+			}
+			if (!packageId) {
+				uni.showToast({ title: '请选择套餐', icon: 'none' });
+				return;
+			}
+			this.offlineSubmitting = true;
+			try {
+				const ret = await this.$request('offlineFirstRecharge', { mobile, packageId }, { functionName: 'merchant' });
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '提交失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '充值成功', icon: 'success' });
+				this.closeOfflineRecharge();
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: '提交失败', icon: 'none' });
+			} finally {
+				this.offlineSubmitting = false;
+			}
 		},
 		onSwitch(item, field, value) {
 			this.$request('updateSwitch', { id: item.id, field, value }, { functionName: 'merchant' }).then(res => {
@@ -266,31 +429,38 @@ export default {
 	overflow: hidden;
 }
 
-.search-form {
-	background-color: #ffffff;
-	padding: 14px 16px;
-	border-radius: 4px;
-	box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-	margin-bottom: 12px;
-	flex-shrink: 0;
-}
-
-.search-grid {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 12px 14px;
-	align-items: end;
-}
-
-.form-item {
-	min-width: 0;
-}
-
-.submit-btn {
+.header-actions {
 	display: flex;
-	align-items: end;
-	gap: 10px;
+	align-items: center;
+	gap: 8px;
+	margin-left: auto;
 }
+
+.export-dropdown { position: relative; }
+.export-trigger { display: flex; align-items: center; gap: 8px; }
+.export-icon { font-size: 12px; }
+.export-caret { font-size: 12px; opacity: 0.8; }
+.export-menu {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 6px);
+	min-width: 130px;
+	background: #fff;
+	border: 1px solid #ebeef5;
+	border-radius: 8px;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+	z-index: 10;
+	padding: 6px;
+}
+.export-menu-item {
+	line-height: 32px;
+	padding: 0 10px;
+	font-size: 13px;
+	color: #303133;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.export-menu-item:hover { background: #f5f7fa; }
 
 .table-container-wrapper {
 	flex: 1;
@@ -336,22 +506,76 @@ export default {
 	font-weight: 600;
 }
 
-@media (max-width: 1200px) {
-	.search-grid {
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-	}
+.offline-popup {
+	width: 520px;
+	max-width: 88vw;
+	background: #fff;
+	border-radius: 8px;
+	padding: 16px;
 }
 
-@media (max-width: 992px) {
-	.search-grid {
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-	}
+.offline-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #303133;
+	margin-bottom: 12px;
 }
 
-@media (max-width: 768px) {
-	.search-grid {
-		grid-template-columns: 1fr;
-	}
+.offline-label {
+	font-size: 13px;
+	color: #606266;
+	margin: 10px 0 6px;
+}
+
+.offline-label.required::before {
+	content: '*';
+	color: #f56c6c;
+	margin-right: 4px;
+}
+
+.offline-input {
+	height: 36px;
+	border: 1px solid #dcdfe6;
+	border-radius: 4px;
+	padding: 0 10px;
+	font-size: 13px;
+}
+
+.offline-packages {
+	max-height: 280px;
+	border: 1px solid #ebeef5;
+	border-radius: 6px;
+	padding: 8px 10px;
+}
+
+.offline-package-item {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 8px 0;
+}
+
+.offline-package-content {
+	flex: 1;
+}
+
+.offline-package-main {
+	font-size: 14px;
+	color: #303133;
+}
+
+.offline-package-desc {
+	font-size: 12px;
+	color: #409eff;
+	margin-top: 4px;
+	word-break: break-all;
+}
+
+.offline-actions {
+	margin-top: 14px;
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
 }
 </style>
 

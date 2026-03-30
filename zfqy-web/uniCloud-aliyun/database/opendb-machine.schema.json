@@ -105,6 +105,10 @@
 			"bsonType": "timestamp",
 			"description": "删除时间"
 		},
+		"delete_user": {
+			"bsonType": "string",
+			"description": "删除人"
+		},
 		"last_reset_reason": {
 			"bsonType": "string",
 			"description": "最近一次清空统计原因"

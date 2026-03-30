@@ -3,16 +3,28 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
-				<input class="uni-search" type="text" v-model="searchForm.deviceId" maxlength="50" @confirm="runSearchFromHeader"
-					placeholder="设备编号" />
-				<button class="uni-button hide-on-phone" type="default" size="mini" @click="runSearchFromHeader">搜索</button>
-				<button class="uni-button" type="primary" size="mini" @click="addMachine">添加机具</button>
+				<view class="header-actions">
+					<button class="uni-button" type="default" size="mini" @click="reset">重置</button>
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button class="uni-button export-trigger" size="mini" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view v-for="opt in exportTypeOptions" :key="opt.value" class="export-menu-item" @click="selectAndExport(opt.value)">
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button class="uni-button" type="primary" size="mini" @click="addMachine">添加机具</button>
+				</view>
 			</view>
 		</view>
 		<view class="uni-container">
 			<view class="table-container-wrapper">
 				<view class="table-container">
-					<uni-table ref="table" border stripe :loading="loading">
+					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 						<uni-tr>
 							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">设备编码</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="brandFilterData" @filter-change="headerFilterChange($event, 'brandId')">机具品牌</uni-th>
@@ -257,7 +269,17 @@ export default {
 				currentPage: 1,
 				pageSize: 10,
 				total: 0
-			}
+			},
+			tableKey: 1,
+			showExportMenu: false,
+			exportTypeOptions: [
+				{ text: 'JSON', value: 'json' },
+				{ text: 'XML', value: 'xml' },
+				{ text: 'CSV', value: 'csv' },
+				{ text: 'TXT', value: 'txt' },
+				{ text: 'MS-Word', value: 'word' },
+				{ text: 'MS-Excel', value: 'excel' }
+			]
 		};
 	},
 	computed: {
@@ -323,6 +345,36 @@ export default {
 			},
 
 			runSearchFromHeader() {
+				this.pageInfo.currentPage = 1;
+				this.search();
+			},
+			reset() {
+				this.searchForm = {
+					deviceId: '',
+					brandId: '',
+					brandIds: [],
+					speakerId: '',
+					isBound: '',
+					isBoundList: [],
+					bindTimeStart: '',
+					bindTimeEnd: '',
+					isActivated: '',
+					isActivatedList: [],
+					activatedTimeStart: '',
+					activatedTimeEnd: '',
+					inStockTimeStart: '',
+					inStockTimeEnd: ''
+				};
+				this.isBoundFilterData = [
+					{ text: '未绑定', value: '0', checked: false },
+					{ text: '已绑定', value: '1', checked: false },
+					{ text: '已解绑', value: '2', checked: false }
+				];
+				this.isActivatedFilterData = [
+					{ text: '已激活', value: '1', checked: false },
+					{ text: '未激活', value: '0', checked: false }
+				];
+				this.tableKey += 1;
 				this.pageInfo.currentPage = 1;
 				this.search();
 			},
@@ -555,6 +607,104 @@ export default {
 		// 删除
 		删除(item) {
 			uni.showToast({ title: '删除功能开发中', icon: 'none' });
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		async fetchExportRows() {
+			const sf = this.searchForm;
+			const res = await this.$request('list', {
+				page: 1,
+				pageSize: 10000,
+				deviceId: sf.deviceId,
+				brandId: sf.brandIds.length ? '' : sf.brandId,
+				brandIds: sf.brandIds,
+				speakerId: sf.speakerId,
+				isBound: sf.isBoundList.length ? '' : sf.isBound,
+				isBoundList: sf.isBoundList,
+				bindTimeStart: sf.bindTimeStart,
+				bindTimeEnd: sf.bindTimeEnd,
+				isActivated: sf.isActivatedList.length ? '' : sf.isActivated,
+				isActivatedList: sf.isActivatedList,
+				activatedTimeStart: sf.activatedTimeStart,
+				activatedTimeEnd: sf.activatedTimeEnd,
+				inStockTimeStart: sf.inStockTimeStart,
+				inStockTimeEnd: sf.inStockTimeEnd
+			}, { functionName: 'machine' });
+			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
+			return (res.data?.list || []).map((x) => ({
+				设备编码: x.deviceId || '',
+				机具品牌: x.brandName || '',
+				累计交易: x.totalTransaction || '',
+				待提已提: x.pendingWithdrawn || '',
+				冻结金额: x.frozenAmount || '',
+				自有音箱号: x.speakerId || '',
+				是否绑定: x.isBoundText || '',
+				绑定人时间手机: [x.bindUserName, x.bindTime, x.bindUserMobile].filter(Boolean).join(' / '),
+				是否激活: x.isActivatedText || '',
+				激活时间: x.activatedTime || '',
+				所属商户: x.merchant || '',
+				业务员: x.salesman || '',
+				入库时间: x.inStockTime || ''
+			}));
+		},
+		downloadFile(filename, content, mimeType) {
+			// #ifdef H5
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			a.click();
+			URL.revokeObjectURL(url);
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({ data: String(content || '') });
+			// #endif
+		},
+		toCsv(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const esc = (s) => {
+				const t = String(s == null ? '' : s);
+				return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+			};
+			const lines = [keys.join(',')];
+			rows.forEach((r) => lines.push(keys.map((k) => esc(r[k])).join(',')));
+			return '\uFEFF' + lines.join('\r\n');
+		},
+		toTxt(rows) { return rows.map((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' | ')).join('\n'); },
+		toXml(rows) {
+			const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const items = rows.map((r) => `<item>${Object.entries(r).map(([k, v]) => `<${k}>${esc(v)}</${k}>`).join('')}</item>`).join('');
+			return `<?xml version="1.0" encoding="UTF-8"?><machines>${items}</machines>`;
+		},
+		toHtmlTable(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const th = keys.map((k) => `<th>${k}</th>`).join('');
+			const tr = rows.map((r) => `<tr>${keys.map((k) => `<td>${r[k] == null ? '' : r[k]}</td>`).join('')}</tr>`).join('');
+			return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></body></html>`;
+		},
+		async exportData(type) {
+			try {
+				uni.showLoading({ title: '导出中...', mask: true });
+				const rows = await this.fetchExportRows();
+				if (!rows.length) return uni.showToast({ title: '暂无可导出数据', icon: 'none' });
+				const ts = Date.now();
+				if (type === 'json') this.downloadFile(`机具管理_${ts}.json`, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
+				else if (type === 'xml') this.downloadFile(`机具管理_${ts}.xml`, this.toXml(rows), 'application/xml;charset=utf-8');
+				else if (type === 'csv') this.downloadFile(`机具管理_${ts}.csv`, this.toCsv(rows), 'text/csv;charset=utf-8');
+				else if (type === 'txt') this.downloadFile(`机具管理_${ts}.txt`, this.toTxt(rows), 'text/plain;charset=utf-8');
+				else if (type === 'word') this.downloadFile(`机具管理_${ts}.doc`, this.toHtmlTable(rows), 'application/msword');
+				else if (type === 'excel') this.downloadFile(`机具管理_${ts}.xls`, this.toHtmlTable(rows), 'application/vnd.ms-excel');
+			} catch (e) {
+				uni.showToast({ title: e.message || '导出失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
 		}
 	}
 };
@@ -568,6 +718,14 @@ export default {
 .uni-button {
 	margin-left: 10px;
 }
+.header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.export-dropdown { position: relative; }
+.export-trigger { display: flex; align-items: center; gap: 8px; }
+.export-icon { font-size: 12px; }
+.export-caret { font-size: 12px; opacity: 0.8; }
+.export-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 130px; background: #fff; border: 1px solid #ebeef5; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.12); z-index: 10; padding: 6px; }
+.export-menu-item { line-height: 32px; padding: 0 10px; font-size: 13px; color: #303133; border-radius: 6px; cursor: pointer; }
+.export-menu-item:hover { background: #f5f7fa; }
 
 .uni-container {
 	padding: 20px;

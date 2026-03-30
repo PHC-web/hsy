@@ -442,5 +442,71 @@
 		"permission": [],
 		"enable": true,
 		"create_date": 1667387078947
+	},
+	{
+		"menu_id": "finance_management",
+		"name": "财务管理",
+		"icon": "el-icon-s-finance",
+		"url": "",
+		"sort": 1700,
+		"parent_id": "",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111001
+	},
+	{
+		"menu_id": "finance_device_order",
+		"name": "设备订单",
+		"icon": "el-icon-document",
+		"url": "/pages/finance/device-order/index",
+		"sort": 1710,
+		"parent_id": "finance_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111002
+	},
+	{
+		"menu_id": "finance_trade_bill",
+		"name": "交易账单",
+		"icon": "el-icon-tickets",
+		"url": "/pages/finance/trade-bill/index",
+		"sort": 1720,
+		"parent_id": "finance_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111003
+	},
+	{
+		"menu_id": "wechat_management",
+		"name": "微信管理",
+		"icon": "bi bi-wechat",
+		"url": "",
+		"sort": 1800,
+		"parent_id": "",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111004
+	},
+	{
+		"menu_id": "wechat_official_account",
+		"name": "微信公众号",
+		"icon": "bi bi-chat-dots",
+		"url": "/pages/wechat/official-account/index",
+		"sort": 1810,
+		"parent_id": "wechat_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111005
+	},
+	{
+		"menu_id": "wechat_bottom_menu",
+		"name": "底部菜单",
+		"icon": "bi bi-list",
+		"url": "/pages/wechat/menu/index",
+		"sort": 1820,
+		"parent_id": "wechat_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111006
 	}
 ]

@@ -91,7 +91,7 @@ async function addBrand(data, event) {
 // 获取品牌列表
 async function getBrandList(data) {
 	try {
-		const { page = 1, pageSize = 10, branch, brandName, status, statusTime, addTime } = data || {};
+		const { page = 1, pageSize = 10, brandId = '', brandName, status } = data || {};
 		
 		let query = brandCollection.where(
 			db.command.or([
@@ -100,6 +100,9 @@ async function getBrandList(data) {
 			])
 		);
 		
+		if (brandId) {
+			query = query.where({ brand_id: new RegExp(String(brandId)) });
+		}
 		// 构建查询条件
 		if (brandName) {
 			query = query.where({ brand_name: new RegExp(brandName) });
@@ -233,11 +236,13 @@ async function deleteBrand(data, event) {
 			};
 		}
 		const brandName = brandInfo.data[0].brand_name;
+		const deleteUser = event?.context?.userInfo?.username || event?.context?.uid || event?.context?.OPENID || 'system';
 		
 		const now = new Date().getTime();
 		const result = await brandCollection.where({ brand_id: id }).update({
 			is_deleted: true,
-			delete_time: now
+			delete_time: now,
+			delete_user: deleteUser
 		});
 		
 		// 记录操作日志

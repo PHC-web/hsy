@@ -810,10 +810,12 @@ async function deleteMachine(data, event) {
 			};
 		}
 		
+		const deleteUser = event?.context?.userInfo?.username || event?.context?.uid || event?.context?.OPENID || 'system';
 		const now = new Date().getTime();
 		const result = await machineCollection.where({ device_id: id }).update({
 			is_deleted: true,
-			delete_time: now
+			delete_time: now,
+			delete_user: deleteUser
 		});
 		
 		// 记录操作日志

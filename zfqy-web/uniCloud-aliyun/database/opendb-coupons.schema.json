@@ -1,0 +1,64 @@
+{
+	"bsonType": "object",
+	"required": ["name", "type", "amount", "valid_days", "create_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": {
+			"description": "ID"
+		},
+		"name": {
+			"bsonType": "string",
+			"description": "优惠券名称"
+		},
+		"description": {
+			"bsonType": "string",
+			"description": "优惠券说明"
+		},
+		"type": {
+			"bsonType": "string",
+			"description": "优惠券类型：cash=现金券，discount=折扣券",
+			"default": "cash"
+		},
+		"amount": {
+			"bsonType": "number",
+			"description": "优惠金额（元）",
+			"default": 0
+		},
+		"monthly_threshold": {
+			"bsonType": "number",
+			"description": "月需消费总额（元）",
+			"default": 0
+		},
+		"valid_days": {
+			"bsonType": "number",
+			"description": "有效天数",
+			"default": 0
+		},
+		"create_time": {
+			"bsonType": "timestamp",
+			"description": "创建时间"
+		},
+		"update_time": {
+			"bsonType": "timestamp",
+			"description": "更新时间"
+		},
+		"delete_time": {
+			"bsonType": "timestamp",
+			"description": "删除时间"
+		},
+		"delete_user": {
+			"bsonType": "string",
+			"description": "删除人"
+		},
+		"is_deleted": {
+			"bsonType": "bool",
+			"description": "软删除",
+			"default": false
+		}
+	}
+}

@@ -4,15 +4,27 @@
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
 				<view class="header-actions">
-					<text class="header-icon-btn" title="刷新" @click="search">🔄</text>
-					<text class="header-icon-btn" title="搜索" @click="runSearchFromHeader">🔍</text>
+					<button size="mini" @click="reset">重置</button>
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button size="mini" class="export-trigger" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view v-for="opt in exportTypeOptions" :key="opt.value" class="export-menu-item" @click="selectAndExport(opt.value)">
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button size="mini" type="primary" @click="search">刷新</button>
 				</view>
 			</view>
 		</view>
 		<view class="uni-container">
 			<view class="table-container-wrapper">
 				<view class="table-container">
-					<uni-table ref="table" border stripe :loading="loading" empty-text="没有找到匹配的记录">
+					<uni-table ref="table" :key="tableKey" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
 							<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">用户(昵称/手机)</uni-th>
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'snTrade')">SN/交易单号</uni-th>
@@ -99,7 +111,17 @@ export default {
 				currentPage: 1,
 				pageSize: 10,
 				total: 0
-			}
+			},
+			tableKey: 1,
+			showExportMenu: false,
+			exportTypeOptions: [
+				{ text: 'JSON', value: 'json' },
+				{ text: 'XML', value: 'xml' },
+				{ text: 'CSV', value: 'csv' },
+				{ text: 'TXT', value: 'txt' },
+				{ text: 'MS-Word', value: 'word' },
+				{ text: 'MS-Excel', value: 'excel' }
+			]
 		};
 	},
 	mounted() {
@@ -146,6 +168,32 @@ export default {
 		},
 
 		runSearchFromHeader() {
+			this.pageInfo.currentPage = 1;
+			this.search();
+		},
+		reset() {
+			this.searchForm = {
+				userKeyword: '',
+				snTradeKeyword: '',
+				amountMin: '',
+				amountMax: '',
+				scenarioKeyword: '',
+				status: '',
+				statusList: [],
+				createTimeStart: '',
+				createTimeEnd: '',
+				updateTimeStart: '',
+				updateTimeEnd: '',
+				sortField: '',
+				sortOrder: ''
+			};
+			this.statusFilterData = [
+				{ text: '待审核', value: 'pending', checked: false },
+				{ text: '审核通过', value: 'approved', checked: false },
+				{ text: '审核驳回', value: 'rejected', checked: false },
+				{ text: '审核中', value: 'reviewing', checked: false }
+			];
+			this.tableKey += 1;
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
@@ -243,6 +291,97 @@ export default {
 			this.pageInfo.pageSize = size;
 			this.pageInfo.currentPage = 1;
 			this.search();
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		async fetchExportRows() {
+			const sf = this.searchForm;
+			const res = await this.$request('riskList', {
+				page: 1,
+				pageSize: 10000,
+				userKeyword: sf.userKeyword,
+				snTradeKeyword: sf.snTradeKeyword,
+				amountMin: sf.amountMin,
+				amountMax: sf.amountMax,
+				status: sf.statusList.length ? '' : sf.status,
+				statusList: sf.statusList,
+				createTimeStart: sf.createTimeStart,
+				createTimeEnd: sf.createTimeEnd,
+				updateTimeStart: sf.updateTimeStart,
+				updateTimeEnd: sf.updateTimeEnd,
+				scenarioKeyword: sf.scenarioKeyword,
+				sortField: sf.sortField,
+				sortOrder: sf.sortOrder
+			}, { functionName: 'machine' });
+			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
+			return (res.data?.list || []).map((x) => ({
+				用户: x.userDisplay || '',
+				SN交易单号: x.snTradeDisplay || '',
+				金额: x.amountText || '',
+				经营场景: x.businessScenario || '',
+				状态: x.statusText || '',
+				创建时间: x.createTime || '',
+				更新时间: x.updateTime || ''
+			}));
+		},
+		downloadFile(filename, content, mimeType) {
+			// #ifdef H5
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			a.click();
+			URL.revokeObjectURL(url);
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({ data: String(content || '') });
+			// #endif
+		},
+		toCsv(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const esc = (s) => {
+				const t = String(s == null ? '' : s);
+				return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+			};
+			const lines = [keys.join(',')];
+			rows.forEach((r) => lines.push(keys.map((k) => esc(r[k])).join(',')));
+			return '\uFEFF' + lines.join('\r\n');
+		},
+		toTxt(rows) { return rows.map((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' | ')).join('\n'); },
+		toXml(rows) {
+			const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const items = rows.map((r) => `<item>${Object.entries(r).map(([k, v]) => `<${k}>${esc(v)}</${k}>`).join('')}</item>`).join('');
+			return `<?xml version="1.0" encoding="UTF-8"?><risks>${items}</risks>`;
+		},
+		toHtmlTable(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const th = keys.map((k) => `<th>${k}</th>`).join('');
+			const tr = rows.map((r) => `<tr>${keys.map((k) => `<td>${r[k] == null ? '' : r[k]}</td>`).join('')}</tr>`).join('');
+			return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></body></html>`;
+		},
+		async exportData(type) {
+			try {
+				uni.showLoading({ title: '导出中...', mask: true });
+				const rows = await this.fetchExportRows();
+				if (!rows.length) return uni.showToast({ title: '暂无可导出数据', icon: 'none' });
+				const ts = Date.now();
+				if (type === 'json') this.downloadFile(`风险管理_${ts}.json`, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
+				else if (type === 'xml') this.downloadFile(`风险管理_${ts}.xml`, this.toXml(rows), 'application/xml;charset=utf-8');
+				else if (type === 'csv') this.downloadFile(`风险管理_${ts}.csv`, this.toCsv(rows), 'text/csv;charset=utf-8');
+				else if (type === 'txt') this.downloadFile(`风险管理_${ts}.txt`, this.toTxt(rows), 'text/plain;charset=utf-8');
+				else if (type === 'word') this.downloadFile(`风险管理_${ts}.doc`, this.toHtmlTable(rows), 'application/msword');
+				else if (type === 'excel') this.downloadFile(`风险管理_${ts}.xls`, this.toHtmlTable(rows), 'application/vnd.ms-excel');
+			} catch (e) {
+				uni.showToast({ title: e.message || '导出失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
 		}
 	}
 };
@@ -256,19 +395,15 @@ export default {
 .header-actions {
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: 8px;
 }
-
-.header-icon-btn {
-	font-size: 18px;
-	cursor: pointer;
-	user-select: none;
-	opacity: 0.75;
-}
-
-.header-icon-btn:active {
-	opacity: 1;
-}
+.export-dropdown { position: relative; }
+.export-trigger { display: flex; align-items: center; gap: 8px; }
+.export-icon { font-size: 12px; }
+.export-caret { font-size: 12px; opacity: 0.8; }
+.export-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 130px; background: #fff; border: 1px solid #ebeef5; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.12); z-index: 10; padding: 6px; }
+.export-menu-item { line-height: 32px; padding: 0 10px; font-size: 13px; color: #303133; border-radius: 6px; cursor: pointer; }
+.export-menu-item:hover { background: #f5f7fa; }
 
 .uni-container {
 	padding: 20px;

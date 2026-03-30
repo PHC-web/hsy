@@ -4,9 +4,25 @@
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
 				<view class="header-actions">
-					<text class="header-icon-btn" title="刷新" @click="search">🔄</text>
-					<text class="header-icon-btn" title="导出 CSV" @click="exportCsv">⬇</text>
-					<text class="header-icon-btn" title="搜索" @click="runSearchFromHeader">🔍</text>
+					<button size="mini" @click="search">刷新</button>
+					<button size="mini" type="primary" @click="runSearchFromHeader">查询</button>
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button size="mini" class="export-trigger" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view
+								v-for="opt in exportTypeOptions"
+								:key="opt.value"
+								class="export-menu-item"
+								@click="selectAndExport(opt.value)"
+							>
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
 				</view>
 			</view>
 		</view>
@@ -58,7 +74,20 @@
 								<text :class="arrivalClass(item.arrivalStatus)">{{ item.arrivalStatusText }}</text>
 							</uni-td>
 							<uni-td align="center">
-								<text class="op-placeholder">—</text>
+								<view class="op-actions">
+									<button
+										v-if="!item.isPaid"
+										size="mini"
+										type="primary"
+										@click="approve(item, 'pay')"
+									>打款</button>
+									<view v-else-if="item.arrivalStatus !== 'received'" class="op-inline">
+										<button size="mini" type="primary" @click="approve(item, 'arrival')">到账</button>
+										<button size="mini" type="warn" @click="approve(item, 'returned')">退回</button>
+										<button size="mini" @click="approve(item, 'expired')">过期</button>
+									</view>
+									<text v-else class="op-done">已完成</text>
+								</view>
 							</uni-td>
 						</uni-tr>
 					</uni-table>
@@ -122,7 +151,16 @@ export default {
 				currentPage: 1,
 				pageSize: 10,
 				total: 0
-			}
+			},
+			showExportMenu: false,
+			exportTypeOptions: [
+				{ text: 'JSON', value: 'json' },
+				{ text: 'XML', value: 'xml' },
+				{ text: 'CSV', value: 'csv' },
+				{ text: 'TXT', value: 'txt' },
+				{ text: 'MS-Word', value: 'word' },
+				{ text: 'MS-Excel', value: 'excel' }
+			]
 		};
 	},
 	computed: {
@@ -180,6 +218,13 @@ export default {
 		runSearchFromHeader() {
 			this.pageInfo.currentPage = 1;
 			this.search();
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
 		},
 
 		search() {
@@ -298,6 +343,132 @@ export default {
 				uni.hideLoading();
 			}
 		},
+		async fetchExportRows() {
+			const res = await this.$request(
+				'withdrawList',
+				{
+					page: 1,
+					pageSize: 10000,
+					...this.buildPayload()
+				},
+				{ functionName: 'merchant' }
+			);
+			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
+			const list = res.data?.list || [];
+			return list.map((item) => ({
+				提现用户: (item.userDisplay || '').replace(/\n/g, ' '),
+				分公司: item.company || '',
+				业务员: item.salesman || '',
+				机具号: item.deviceId || '',
+				提现单号: item.withdrawNo || '',
+				提现金额: item.amountText || '',
+				税费手续费: item.feeTaxText || '',
+				应付金额: item.payableText || '',
+				打款时间: item.payTime || '',
+				是否打款: item.isPaidText || '',
+				到账时间: item.arrivalTime || '',
+				是否到账: item.arrivalStatusText || ''
+			}));
+		},
+		downloadFile(filename, content, mimeType) {
+			// #ifdef H5
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			a.click();
+			URL.revokeObjectURL(url);
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({ data: String(content || '') });
+			// #endif
+		},
+		toCsv(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const esc = (s) => {
+				const t = String(s == null ? '' : s);
+				return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+			};
+			const lines = [keys.join(',')];
+			rows.forEach((r) => lines.push(keys.map((k) => esc(r[k])).join(',')));
+			return '\uFEFF' + lines.join('\r\n');
+		},
+		toTxt(rows) {
+			return rows.map((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' | ')).join('\n');
+		},
+		toXml(rows) {
+			const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const items = rows.map((r) => `<item>${Object.entries(r).map(([k, v]) => `<${k}>${esc(v)}</${k}>`).join('')}</item>`).join('');
+			return `<?xml version="1.0" encoding="UTF-8"?><withdraws>${items}</withdraws>`;
+		},
+		toHtmlTable(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const th = keys.map((k) => `<th>${k}</th>`).join('');
+			const tr = rows.map((r) => `<tr>${keys.map((k) => `<td>${r[k] == null ? '' : r[k]}</td>`).join('')}</tr>`).join('');
+			return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></body></html>`;
+		},
+		async exportData(type) {
+			if (type === 'csv') {
+				await this.exportCsv();
+				return;
+			}
+			try {
+				uni.showLoading({ title: '导出中...', mask: true });
+				const rows = await this.fetchExportRows();
+				if (!rows.length) {
+					uni.showToast({ title: '暂无可导出数据', icon: 'none' });
+					return;
+				}
+				const ts = Date.now();
+				if (type === 'json') this.downloadFile(`提现列表_${ts}.json`, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
+				else if (type === 'xml') this.downloadFile(`提现列表_${ts}.xml`, this.toXml(rows), 'application/xml;charset=utf-8');
+				else if (type === 'txt') this.downloadFile(`提现列表_${ts}.txt`, this.toTxt(rows), 'text/plain;charset=utf-8');
+				else if (type === 'word') this.downloadFile(`提现列表_${ts}.doc`, this.toHtmlTable(rows), 'application/msword');
+				else if (type === 'excel') this.downloadFile(`提现列表_${ts}.xls`, this.toHtmlTable(rows), 'application/vnd.ms-excel');
+			} catch (e) {
+				uni.showToast({ title: e.message || '导出失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		async approve(item, actionType) {
+			if (!item || !item.id) return;
+			const actionTextMap = {
+				pay: '打款',
+				arrival: '到账',
+				returned: '退回',
+				expired: '过期'
+			};
+			const actionText = actionTextMap[actionType] || '审批';
+			const confirmRes = await new Promise((resolve) => {
+				uni.showModal({
+					title: '审批确认',
+					content: `确认将该记录标记为“${actionText}”吗？`,
+					success: (res) => resolve(res.confirm)
+				});
+			});
+			if (!confirmRes) return;
+
+			uni.showLoading({ title: '提交中...', mask: true });
+			try {
+				const res = await this.$request(
+					'withdrawApprove',
+					{ id: item.id, actionType },
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '审批失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: res.message || '审批成功', icon: 'success' });
+				this.search();
+			} catch (err) {
+				uni.showToast({ title: err?.message || '审批失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
+		},
 
 		onPageChanged(page) {
 			this.pageInfo.currentPage = page;
@@ -317,18 +488,47 @@ export default {
 .header-actions {
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: 8px;
 }
 
-.header-icon-btn {
-	font-size: 18px;
+.export-dropdown {
+	position: relative;
+}
+
+.export-trigger {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+}
+
+.export-icon,
+.export-caret {
+	font-size: 12px;
+}
+
+.export-menu {
+	position: absolute;
+	top: calc(100% + 6px);
+	right: 0;
+	min-width: 130px;
+	background: #fff;
+	border: 1px solid #ebeef5;
+	border-radius: 4px;
+	box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12);
+	z-index: 20;
+	padding: 4px 0;
+}
+
+.export-menu-item {
+	padding: 8px 12px;
+	font-size: 12px;
+	color: #303133;
 	cursor: pointer;
-	user-select: none;
-	opacity: 0.75;
 }
 
-.header-icon-btn:active {
-	opacity: 1;
+.export-menu-item:hover {
+	background: #f5f7fa;
+	color: #409eff;
 }
 
 .uni-container {
@@ -443,6 +643,21 @@ export default {
 .op-placeholder {
 	color: #c0c4cc;
 	font-size: 13px;
+}
+
+.op-actions {
+	display: flex;
+	justify-content: center;
+}
+
+.op-inline {
+	display: flex;
+	gap: 6px;
+}
+
+.op-done {
+	color: #67c23a;
+	font-weight: 600;
 }
 
 @media (max-height: 900px) {

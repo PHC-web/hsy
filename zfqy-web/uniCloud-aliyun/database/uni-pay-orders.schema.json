@@ -247,6 +247,22 @@
 					"description": "小程序场景值"
 				}
 			}
+		},
+		"is_deleted": {
+			"title": "软删除",
+			"bsonType": "bool",
+			"description": "软删除标记",
+			"defaultValue": false
+		},
+		"delete_time": {
+			"title": "删除时间",
+			"bsonType": "timestamp",
+			"description": "删除时间"
+		},
+		"delete_user": {
+			"title": "删除人",
+			"bsonType": "string",
+			"description": "删除操作人"
 		}
 	}
 }

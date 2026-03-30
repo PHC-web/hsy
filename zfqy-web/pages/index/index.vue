@@ -1,81 +1,65 @@
 <template>
 	<view class="fix-top-window">
 		<view class="uni-header">
-			<!-- 统计面包屑 -->
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
-			<view class="uni-group">
-				<view class="uni-sub-title hide-on-phone"></view>
-			</view>
+			<view class="uni-group"></view>
 		</view>
-		<view class="uni-container">
-			<!-- 提示条1：初始化db_init.json -->
-			<uni-notice-bar v-if="showdbInit" showGetMore showIcon class="mb-m pointer" text="检测到您未初始化db_init.json，请先右键uniCloud/database/db_init.json文件，执行初始化云数据库，否则左侧无法显示菜单等数据" background-color="#fef0f0" color="#f56c6c" @click="toAddAppId" />
-			<!-- 提示条2：添加应用 -->
-			<uni-notice-bar v-if="showAddAppId" showGetMore showIcon class="mb-m pointer" text="检测到您还未添加应用，点击前往应用管理添加" @click="toAddAppId" />
-			<!-- 提示条3：暂无数据，需开通统计功能 -->
-			<uni-notice-bar v-if="!deviceTableData.length && !userTableData.length && !query.platform_id && complete" showGetMore showIcon class="mb-m pointer"
-				text="暂无数据, 统计相关功能需开通 uni 统计后才能使用, 如未开通, 点击查看具体流程" @click="navTo('https://uniapp.dcloud.io/uni-stat-v2.html')" />
+		<view class="uni-container dashboard-page">
+			<view class="title-wrap">
+				<view class="page-title">控制台</view>
+				<view class="page-desc">用于展示当前系统中的统计数据、统计报表及重要实时数据</view>
+			</view>
 
-			<view class="uni-stat--x mb-m">
-				<!-- 平台选择标签 -->
-				<uni-stat-tabs label="平台选择" type="boldLine" mode="platform" v-model="query.platform_id" />
+			<view class="panel-wrap">
+				<view class="panel-title">数据预览中控台</view>
+				<view class="cards-row">
+					<view class="stat-card">
+						<view class="icon-box green"><text class="bi bi-speedometer2"></text></view>
+						<view class="card-content">
+							<view class="card-value">{{ dashboard.brandCount }} / {{ dashboard.machineCount }} / {{ dashboard.activatedCount }} / {{ dashboard.boundCount }}</view>
+							<view class="card-label">品牌数 / 机具数 / 激活数 / 绑定数</view>
+						</view>
+					</view>
+
+					<view class="stat-card">
+						<view class="icon-box red"><text class="bi bi-currency-dollar"></text></view>
+						<view class="card-content">
+							<view class="card-value">{{ dashboard.withdrawCount }} / {{ toMoney(dashboard.withdrawAmount) }}</view>
+							<view class="card-label">提现单数 / 提现金额</view>
+						</view>
+					</view>
+
+					<view class="stat-card">
+						<view class="icon-box purple"><text class="bi bi-tools"></text></view>
+						<view class="card-content">
+							<view class="card-value">{{ dashboard.activatedCount }} / {{ dashboard.todayActivatedCount }}</view>
+							<view class="card-label">激活总数 / 今日激活</view>
+						</view>
+					</view>
+
+					<view class="stat-card">
+						<view class="icon-box blue"><text class="bi bi-bar-chart-line"></text></view>
+						<view class="card-content">
+							<view class="card-value">{{ dashboard.userCount }} / {{ dashboard.memberCount }} / {{ dashboard.memberRate }}%</view>
+							<view class="card-label">用户数 / 会员数 / 会员率</view>
+						</view>
+					</view>
+				</view>
 			</view>
-			<view class="uni-stat--x p-m">
-				<view class="uni-stat-card-header">设备概览</view>
-				<!-- 设备概览表格 -->
-				<uni-table :loading="loading" border stripe emptyText="暂无数据">
-					<uni-tr>
-						<block v-for="(mapper, index) in deviceTableFields" :key="index">
-							<!-- 表头列 -->
-							<uni-th v-if="mapper.title" :key="index" align="center">
-								{{mapper.title}}
-							</uni-th>
-						</block>
-					</uni-tr>
-					<uni-tr v-for="(item ,i) in deviceTableData" :key="i">
-						<block v-for="(mapper, index) in deviceTableFields" :key="index">
-							<uni-td v-if="mapper.field === 'appid'" align="center">
-								<view v-if="item.appid" @click="navTo('/pages/uni-stat/device/overview/overview', item.appid)" class="link-btn-color">
-									{{item[mapper.field] !== undefined ? item[mapper.field] : '-'}}
-								</view>
-								<view v-else @click="navTo('/pages/system/app/add')" class="link-btn-color">
-									需添加此应用的 appid
-								</view>
-							</uni-td>
-							<uni-td v-else :key="index" align="center">
-								{{item[mapper.field] !== undefined ? item[mapper.field] : '-'}}
-							</uni-td>
-						</block>
-					</uni-tr>
-				</uni-table>
-			</view>
-			<view class="uni-stat--x p-m">
-				<view class="uni-stat-card-header">注册用户概览</view>
-				<!-- 注册用户概览表格 -->
-				<uni-table :loading="loading" border stripe emptyText="暂无数据">
-					<uni-tr>
-						<block v-for="(mapper, index) in userTableFields" :key="index">
-							<uni-th v-if="mapper.title" :key="index" align="center">
-								{{mapper.title}}
-							</uni-th>
-						</block>
-					</uni-tr>
-					<uni-tr v-for="(item ,i) in userTableData" :key="i">
-						<block v-for="(mapper, index) in userTableFields" :key="index">
-							<uni-td v-if="mapper.field === 'appid'" align="center">
-								<view v-if="item.appid" @click="navTo('/pages/uni-stat/user/overview/overview', item.appid)" class="link-btn-color">
-									{{item[mapper.field] !== undefined ? item[mapper.field] : '-'}}
-								</view>
-								<view v-else @click="navTo('/pages/system/app/add')" class="link-btn-color">
-									需添加此应用的 appid
-								</view>
-							</uni-td>
-							<uni-td v-else :key="index" align="center">
-								{{item[mapper.field] !== undefined ? item[mapper.field] : '-'}}
-							</uni-td>
-						</block>
-					</uni-tr>
-				</uni-table>
+
+			<view class="bottom-row">
+				<view class="returns-card">
+					<view class="returns-title">返现总额比例</view>
+					<view class="returns-rate">{{ dashboard.returnRate }}%</view>
+					<view class="returns-desc">总返现{{ toMoney(dashboard.returnPaid) }} / 应交服务{{ toMoney(dashboard.returnDue) }}</view>
+				</view>
+
+				<view class="summary-card">
+					<view class="summary-title">数据说明</view>
+					<view class="summary-item">提现：按提现记录汇总，金额保留两位小数</view>
+					<view class="summary-item">激活：今日激活按当天 00:00 后时间统计</view>
+					<view class="summary-item">会员率：会员数 / 用户数</view>
+				</view>
 			</view>
 		</view>
 
@@ -86,339 +70,273 @@
 </template>
 
 <script>
-	import {
-		stringifyQuery,
-		stringifyField,
-		stringifyGroupField,
-		getTimeOfSomeDayAgo,
-		division,
-		format,
-		parseDateTime,
-		getFieldTotal,
-		debounce
-	} from '@/js_sdk/uni-stat/util.js'
-
-	import {
-		deviceFeildsMap,
-		userFeildsMap
-	} from './fieldsMap.js'
-
 	export default {
 		data() {
 			return {
-				query: {
-					platform_id: '',
-					start_time: [getTimeOfSomeDayAgo(1), new Date().getTime()]
-				},
-				deviceTableData: [],
-				userTableData: [],
-				// panelData: panelOption,
-				// 每页数据量
-				pageSize: 10,
-				// 当前页
-				pageCurrent: 1,
-				// 数据总量
-				total: 0,
 				loading: false,
-				complete: false,
-				statSetting: {
-					mode: "",
-					day: 7
+				dashboard: {
+					brandCount: 0,
+					machineCount: 0,
+					activatedCount: 0,
+					boundCount: 0,
+					withdrawCount: 0,
+					withdrawAmount: 0,
+					todayActivatedCount: 0,
+					userCount: 0,
+					memberCount: 0,
+					memberRate: '0.00',
+					returnPaid: 0,
+					returnDue: 0,
+					returnRate: '0.00'
 				},
-				statModeList: [
-					{ "value": "open", "text": "开启" },
-					{ "value": "close", "text": "关闭" },
-					{ "value": "auto", "text": "节能" },
-				],
-				showAddAppId: false,
-				showdbInit: false
 			}
 		},
-		onReady() {
-			// 创建一个防抖函数，延迟执行getAllData方法
-			this.debounceGet = debounce(() => {
-				this.getAllData(this.queryStr);
-			}, 300);
-
-			// 执行防抖函数
-			this.debounceGet();
-
-			// 检查appId
-			this.checkAppId();
-
-			this.checkdbInit();
+		onShow() {
+			this.loadDashboard();
 		},
-
-		watch: {
-			query: {
-				deep: true,
-				handler(newVal) {
-					// 监听query对象的变化，并在变化时执行防抖函数
-					this.debounceGet(this.queryStr);
-				}
-			}
-		},
-
-		computed: {
-			queryStr() {
-				// 默认查询条件
-				const defQuery = `(dimension == "hour" || dimension == "day")`;
-				// 将query对象转换为查询字符串并与默认查询条件合并
-				return stringifyQuery(this.query) + ' && ' + defQuery;
-			},
-
-			deviceTableFields() {
-				// 返回设备表格的字段映射
-				return this.tableFieldsMap(deviceFeildsMap);
-			},
-
-			userTableFields() {
-				// 返回用户表格的字段映射
-				return this.tableFieldsMap(userFeildsMap);
-			}
-		},
-
 		methods: {
-			getAllData(queryStr) {
-				// 获取设备数据
-				this.getApps(this.queryStr, deviceFeildsMap, 'device');
-				// 获取用户数据
-				this.getApps(this.queryStr, userFeildsMap, 'user');
-			},
-
-			tableFieldsMap(fieldsMap) {
-				let tableFields = [];
-				const today = [];
-				const yesterday = [];
-				const other = [];
-
-				for (const mapper of fieldsMap) {
-					if (mapper.field) {
-						if (mapper.hasOwnProperty('value')) {
-							// 如果字段映射中有'value'属性，则根据映射生成今天和昨天的字段
-							const t = JSON.parse(JSON.stringify(mapper));
-							const y = JSON.parse(JSON.stringify(mapper));
-
-							if (mapper.field !== 'total_users' && mapper.field !== 'total_devices') {
-								t.title = '今日' + mapper.title;
-								t.field = mapper.field + '_value';
-								y.title = '昨日' + mapper.title;
-								y.field = mapper.field + '_contrast';
-
-								today.push(t);
-								yesterday.push(y);
-							} else {
-								t.field = mapper.field + '_value';
-								other.push(t);
-							}
-						} else {
-							// 将其他字段直接添加到tableFields中
-							tableFields.push(mapper);
-						}
-					}
-				}
-
-				// 按顺序合并所有的字段
-				tableFields = [...tableFields, ...today, ...yesterday, ...other];
-
-				return tableFields;
-			},
-
-
-			getApps(query, fieldsMap, type = "device") {
-				this.loading = true
-				const db = uniCloud.database()
-				const appDaily = db.collection('uni-stat-result').where(query).getTemp();
-				const appList = db.collection('opendb-app-list').getTemp()
-				db.collection(appDaily, appList)
-					.field(
-						`${stringifyField(fieldsMap, '', 'value')},stat_date,appid,dimension`
-					)
-					.groupBy(`appid,dimension,stat_date`)
-					.groupField(stringifyGroupField(fieldsMap, '', 'value'))
-					.orderBy(`appid`, 'desc')
-					.get()
-					.then((res) => {
-						let {
-							data
-						} = res.result
-						//console.log('data: ', data)
-						this[`${type}TableData`] = []
-						if (!data.length) return
-						let appids = [],
-							todays = [],
-							yesterdays = [],
-							isToday = parseDateTime(getTimeOfSomeDayAgo(0), '', ''),
-							isYesterday = parseDateTime(getTimeOfSomeDayAgo(1), '', '')
-						for (const item of data) {
-							const {
-								appid,
-								name
-							} = item.appid && item.appid[0] || {}
-							item.appid = appid
-							item.name = name
-
-							if (appids.indexOf(item.appid) < 0) {
-								appids.push(item.appid)
-							}
-							if (item.dimension === 'hour' && item.stat_date === isToday) {
-								todays.push(item)
-							}
-							if (item.dimension === 'day' && item.stat_date === isYesterday) {
-								yesterdays.push(item)
-							}
-						}
-						const keys = fieldsMap.map(f => f.field).filter(Boolean)
-						for (const appid of appids) {
-							const rowData = {}
-							const t = todays.find(item => item.appid === appid)
-							const y = yesterdays.find(item => item.appid === appid)
-							for (const key of keys) {
-								if (key === 'appid' || key === 'name') {
-									rowData[key] = t && t[key]
-								} else {
-									const value = t && t[key]
-									const contrast = y && y[key]
-									rowData[key + '_value'] = format(value)
-									rowData[key + '_contrast'] = format(contrast)
-								}
-							}
-							if (appid) {
-								rowData[`total_${type}s_value`] = "获取中...";
-							}
-							this[`${type}TableData`].push(rowData);
-							if (appid) {
-								// total_users 不准确，置空后由 getFieldTotal 处理, appid 不存在时暂不处理
-								t[`total_${type}s`] = 0
-								const query = JSON.parse(JSON.stringify(this.query))
-								query.start_time = [getTimeOfSomeDayAgo(0), new Date().getTime()]
-								query.appid = appid
-								getFieldTotal.call(this, query, `total_${type}s`).then(total => {
-									this[`${type}TableData`].find(item => item.appid === appid)[
-										`total_${type}s_value`] = total
-								})
-							}
-						}
-					}).catch((err) => {
-						console.error(err)
-						// err.message 错误信息
-						// err.code 错误码
-					}).finally(() => {
-						this.loading = false;
-						this.complete = true;
-					})
-			},
-
-			navTo(url, id) {
-				if (url.indexOf('http') > -1) {
-					// 如果url中包含'http'，则在新窗口中打开该链接
-					window.open(url);
-				} else {
-					if (id) {
-						// 如果有提供id参数，则将其添加到url中作为查询参数
-						url = `${url}?appid=${id}`;
-					}
-					// 使用uni.navigateTo方法进行页面跳转
-					uni.navigateTo({
-						url
-					});
-				}
-			},
-
-			toUrl(url) {
-				// #ifdef H5
-				// 在新窗口中打开url链接（仅适用于H5平台）
-				window.open(url, "_blank");
-				// #endif
-			},
-
-			toAddAppId() {
-				// 隐藏添加App ID的标识
-				this.showAddAppId = false;
-				// 使用uni.navigateTo方法进行页面跳转到指定路径
-				uni.navigateTo({
-					url: "/pages/system/app/list",
-					events: {
-						// 注册事件，用于在目标页面刷新数据后执行回调
-						refreshData: () => {
-							this.checkAppId();
-						}
-					}
+			toMoney(value) {
+				const num = Number(value || 0);
+				return num.toLocaleString('zh-CN', {
+					minimumFractionDigits: 2,
+					maximumFractionDigits: 2
 				});
 			},
-
-			async checkAppId() {
-				// 获取uniCloud数据库的实例
+			async loadDashboard() {
+				this.loading = true;
 				const db = uniCloud.database();
-				// 查询'opendb-app-list'集合的数据数量
-				let res = await db.collection('opendb-app-list').count();
-				// 如果查询结果为空或total为0，则显示添加App ID的标识
-				this.showAddAppId = (!res.result || res.result.total === 0) ? true : false;
-			},
+				const dbCmd = db.command;
+				try {
+					const todayStart = new Date();
+					todayStart.setHours(0, 0, 0, 0);
 
-			async checkdbInit(){
-				// 获取uniCloud数据库的实例
-				const db = uniCloud.database();
-				// 查询'opendb-app-list'集合的数据数量
-				let res = await db.collection('opendb-admin-menus').count();
-				// 如果查询结果为空或total为0，则显示添加App ID的标识
-				this.showdbInit = (!res.result || res.result.total === 0) ? true : false;
-				if (this.showdbInit) {
+					const [
+						brandRes,
+						machineRes,
+						activatedRes,
+						boundRes,
+						todayActivatedRes,
+						withdrawRes,
+						merchantRes,
+						memberRes
+					] = await Promise.all([
+						db.collection('opendb-brand').where({ is_deleted: false }).count(),
+						db.collection('opendb-machine').where({ is_deleted: false }).count(),
+						db.collection('opendb-machine').where({ is_deleted: false, is_activated: true }).count(),
+						db.collection('opendb-machine').where({ is_deleted: false, is_bound: 1 }).count(),
+						db.collection('opendb-machine').where({
+							is_deleted: false,
+							is_activated: true,
+							activated_time: dbCmd.gte(todayStart)
+						}).count(),
+						db.collection('opendb-withdraw-records').where({ is_deleted: false }).field('amount').limit(10000).get(),
+						db.collection('opendb-merchant-users').count(),
+						db.collection('opendb-merchant-users').where({ device_id: dbCmd.neq('') }).count()
+					]);
+
+					const withdrawRows = withdrawRes.result?.data || [];
+					const withdrawAmount = withdrawRows.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+					const brandStatRes = await db.collection('opendb-brand')
+						.where({ is_deleted: false })
+						.field('return_machine,return_payment')
+						.limit(10000)
+						.get();
+					const brandRows = brandStatRes.result?.data || [];
+					const returnDue = brandRows.reduce((sum, item) => sum + Number(item.return_machine || 0), 0);
+					const returnPaid = brandRows.reduce((sum, item) => sum + Number(item.return_payment || 0), 0);
+
+					const userCount = merchantRes.result?.total || 0;
+					const memberCount = memberRes.result?.total || 0;
+					const memberRate = userCount ? ((memberCount / userCount) * 100).toFixed(2) : '0.00';
+					const returnRate = returnDue ? ((returnPaid / returnDue) * 100).toFixed(2) : '0.00';
+
+					this.dashboard = {
+						brandCount: brandRes.result?.total || 0,
+						machineCount: machineRes.result?.total || 0,
+						activatedCount: activatedRes.result?.total || 0,
+						boundCount: boundRes.result?.total || 0,
+						withdrawCount: withdrawRows.length,
+						withdrawAmount,
+						todayActivatedCount: todayActivatedRes.result?.total || 0,
+						userCount,
+						memberCount,
+						memberRate,
+						returnPaid,
+						returnDue,
+						returnRate
+					};
+				} catch (err) {
 					uni.showModal({
-						title: "重要提示",
-						content: `检测到您未初始化数据库，请先右键uni-admin项目根目下的 uniCloud/database 目录，执行初始化云数据库，否则左侧无法显示菜单等数据`,
-						showCancel: false,
-						confirmText: "我知道了"
+						content: err.message || '首页数据加载失败',
+						showCancel: false
 					});
+				} finally {
+					this.loading = false;
 				}
 			}
-
 		}
-
 	}
 </script>
 
 <style>
-	.uni-stat-card-header {
+.dashboard-page {
+		background: linear-gradient(180deg, #ffffff 0%, #f7f9fc 100%);
+		min-height: 420px;
+		padding: 18px 20px 28px;
+		border-radius: 10px;
+	}
+
+	.title-wrap {
+		margin-bottom: 8px;
+	}
+
+	.page-title {
+		font-size: 20px;
+		font-weight: 600;
+		color: #2f2f2f;
+	}
+
+	.page-desc {
+		margin-top: 6px;
+		font-size: 12px;
+		color: #8c8c8c;
+	}
+
+	.panel-title {
+		margin-bottom: 16px;
+		font-size: 22px;
+		font-weight: 500;
+		color: #4b4b4b;
+	}
+
+	.panel-wrap {
+		margin-top: 16px;
+		padding: 16px 18px 18px;
+		border-radius: 10px;
+		background: #fff;
+		border: 1px solid #eef1f6;
+		box-shadow: 0 2px 12px rgba(18, 38, 63, 0.05);
+	}
+
+	.cards-row {
 		display: flex;
-		justify-content: space-between;
-		color: #555;
+		flex-wrap: wrap;
+		gap: 12px;
+	}
+
+	.stat-card {
+		width: calc(25% - 14px);
+		min-width: 220px;
+		display: flex;
+		align-items: center;
+		padding: 12px 12px;
+		border-radius: 8px;
+		background: #fafbfd;
+		border: 1px solid #edf0f5;
+	}
+
+	.icon-box {
+		width: 36px;
+		height: 36px;
+		border-radius: 4px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		color: #fff;
+		font-size: 20px;
+		margin-right: 12px;
+	}
+
+	.icon-box.green { background: #32b66f; }
+	.icon-box.red { background: #e84c3d; }
+	.icon-box.purple { background: #6f63b6; }
+	.icon-box.blue { background: #33a9dc; }
+
+	.card-value {
+		font-size: 34px;
+		line-height: 1.1;
+		color: #333;
+		font-weight: 600;
+	}
+
+	.card-label {
+		margin-top: 4px;
+		font-size: 14px;
+		color: #888;
+	}
+
+	.returns-card {
+		width: 320px;
+		padding: 16px 18px;
+		border-radius: 8px;
+		color: #fff;
+		background: linear-gradient(180deg, #ef3d86 0%, #d81b60 100%);
+		box-shadow: 0 10px 24px rgba(216, 27, 96, 0.25);
+	}
+
+	.returns-title {
+		font-size: 14px;
+		opacity: 0.95;
+	}
+
+	.returns-rate {
+		font-size: 36px;
+		line-height: 1.2;
+		margin-top: 8px;
+	}
+
+	.returns-desc {
+		margin-top: 8px;
+		font-size: 12px;
+		opacity: 0.95;
+	}
+
+	.bottom-row {
+		margin-top: 16px;
+		display: flex;
+		gap: 12px;
+		align-items: stretch;
+	}
+
+	.summary-card {
+		flex: 1;
+		min-width: 260px;
+		border-radius: 8px;
+		background: #fff;
+		border: 1px solid #eef1f6;
+		padding: 14px 16px;
+		box-shadow: 0 2px 12px rgba(18, 38, 63, 0.05);
+	}
+
+	.summary-title {
 		font-size: 14px;
 		font-weight: 600;
-		padding: 10px 0;
-		margin-bottom: 15px;
+		color: #3d4a5d;
+		margin-bottom: 10px;
 	}
 
-	.uni-table-scroll {
-		min-height: auto;
+	.summary-item {
+		font-size: 13px;
+		line-height: 1.8;
+		color: #6d7786;
 	}
 
-	.link-btn-color {
-		color: #007AFF;
-		cursor: pointer;
+	@media screen and (max-width: 1200px) {
+		.stat-card {
+			width: calc(50% - 9px);
+		}
 	}
 
-	.uni-stat-text {
-		color: #606266;
-	}
-
-	.mt10 {
-		margin-top: 10px;
-	}
-
-	.uni-radio-cell {
-		margin: 0 10px;
-	}
-
-	.uni-stat-tooltip-s {
-		width: 400px;
-		white-space: normal;
-	}
-
-	.uni-a {
-		cursor: pointer;
-		text-decoration: underline;
-		color: #555;
-		font-size: 14px;
+	@media screen and (max-width: 768px) {
+		.stat-card {
+			width: 100%;
+		}
+		.bottom-row {
+			flex-direction: column;
+		}
+		.returns-card {
+			width: 100%;
+		}
 	}
 </style>

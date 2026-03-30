@@ -3,16 +3,22 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
-				<view class="uni-sub-title hide-on-phone">刷卡记录</view>
-				<input
-					class="uni-search"
-					type="text"
-					v-model="searchForm.deviceId"
-					maxlength="50"
-					placeholder="机具编号"
-					@confirm="runSearchFromHeader"
-				/>
-				<button class="uni-button hide-on-phone" type="default" size="mini" @click="runSearchFromHeader">搜索</button>
+				<view class="header-actions">
+					<button class="uni-button" type="default" size="mini" @click="reset">重置</button>
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button class="uni-button export-trigger" size="mini" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view v-for="opt in exportTypeOptions" :key="opt.value" class="export-menu-item" @click="selectAndExport(opt.value)">
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button class="uni-button" type="primary" size="mini" @click="search">刷新</button>
+				</view>
 			</view>
 		</view>
 		<view class="uni-container">
@@ -28,12 +34,11 @@
 			<view class="summary-bar">
 				<text class="summary-label">交易额</text>
 				<text class="summary-value">¥{{ totalAmountText }}</text>
-				<text class="refresh-icon" @click="search">🔄</text>
 			</view>
 
 			<view class="table-container-wrapper">
 				<view class="table-container">
-					<uni-table ref="table" border stripe :loading="loading">
+					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 						<uni-tr>
 							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具编号</uni-th>
 							<uni-th align="center" width="90" filter-type="select" :filter-data="brandFilterData" @filter-change="headerFilterChange($event, 'brandId')">品牌</uni-th>
@@ -146,7 +151,17 @@ export default {
 				currentPage: 1,
 				pageSize: 10,
 				total: 0
-			}
+			},
+			tableKey: 1,
+			showExportMenu: false,
+			exportTypeOptions: [
+				{ text: 'JSON', value: 'json' },
+				{ text: 'XML', value: 'xml' },
+				{ text: 'CSV', value: 'csv' },
+				{ text: 'TXT', value: 'txt' },
+				{ text: 'MS-Word', value: 'word' },
+				{ text: 'MS-Excel', value: 'excel' }
+			]
 		};
 	},
 	computed: {
@@ -244,6 +259,47 @@ export default {
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
+		reset() {
+			this.searchForm = {
+				deviceId: '',
+				brandId: '',
+				brandIds: [],
+				tradeNo: '',
+				merchantUserId: '',
+				merchantUserIds: [],
+				isActivated: '',
+				isActivatedList: [],
+				isCashback: '',
+				isCashbackList: [],
+				releaseAmount: '',
+				riskStatus: '',
+				riskStatusList: [],
+				timeStart: '',
+				timeEnd: '',
+				tradeType: '',
+				tradeTypeList: []
+			};
+			this.tradeTypeFilterData = [
+				{ text: '虚拟刷卡', value: 'virtual', checked: false },
+				{ text: '实际消费', value: 'real', checked: false }
+			];
+			this.isActivatedFilterData = [
+				{ text: '是', value: '1', checked: false },
+				{ text: '否', value: '0', checked: false }
+			];
+			this.isCashbackFilterData = [
+				{ text: '是', value: '1', checked: false },
+				{ text: '否', value: '0', checked: false }
+			];
+			this.riskFilterData = [
+				{ text: '风控', value: 'risk', checked: false },
+				{ text: '解除', value: 'release', checked: false },
+				{ text: '否', value: 'no', checked: false }
+			];
+			this.tableKey += 1;
+			this.pageInfo.currentPage = 1;
+			this.search();
+		},
 		parseTimestampRange(filter) {
 			if (!Array.isArray(filter) || filter.length < 2) {
 				return { start: '', end: '' };
@@ -300,6 +356,88 @@ export default {
 			this.pageInfo.pageSize = size;
 			this.pageInfo.currentPage = 1;
 			this.search();
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		async fetchExportRows() {
+			const form = this.buildListPayload();
+			const res = await this.$request('cardRecordList', { page: 1, pageSize: 10000, ...form }, { functionName: 'machine' });
+			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
+			return (res.data?.list || []).map((x) => ({
+				机具编号: x.devicePlain || x.deviceId || '',
+				品牌: x.brandName || '',
+				交易单号: x.tradeNo || '',
+				交易用户: x.userInfo || '',
+				交易类型: x.tradeTypeText || '',
+				交易金额: x.amountText || '',
+				是否激活: x.isActivatedText || '',
+				累计交易: x.totalTransactionText || '',
+				是否返现: x.cashbackText || '-',
+				本次释放: x.releaseAmountText || '-',
+				风控状态: x.riskStatus || '',
+				交易时间: x.createTime || '',
+				业务员: x.salesman || '',
+				分公司: x.company || ''
+			}));
+		},
+		downloadFile(filename, content, mimeType) {
+			// #ifdef H5
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			a.click();
+			URL.revokeObjectURL(url);
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({ data: String(content || '') });
+			// #endif
+		},
+		toCsv(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const esc = (s) => {
+				const t = String(s == null ? '' : s);
+				return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+			};
+			const lines = [keys.join(',')];
+			rows.forEach((r) => lines.push(keys.map((k) => esc(r[k])).join(',')));
+			return '\uFEFF' + lines.join('\r\n');
+		},
+		toTxt(rows) { return rows.map((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' | ')).join('\n'); },
+		toXml(rows) {
+			const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+			const items = rows.map((r) => `<item>${Object.entries(r).map(([k, v]) => `<${k}>${esc(v)}</${k}>`).join('')}</item>`).join('');
+			return `<?xml version="1.0" encoding="UTF-8"?><cardRecords>${items}</cardRecords>`;
+		},
+		toHtmlTable(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const th = keys.map((k) => `<th>${k}</th>`).join('');
+			const tr = rows.map((r) => `<tr>${keys.map((k) => `<td>${r[k] == null ? '' : r[k]}</td>`).join('')}</tr>`).join('');
+			return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></body></html>`;
+		},
+		async exportData(type) {
+			try {
+				uni.showLoading({ title: '导出中...', mask: true });
+				const rows = await this.fetchExportRows();
+				if (!rows.length) return uni.showToast({ title: '暂无可导出数据', icon: 'none' });
+				const ts = Date.now();
+				if (type === 'json') this.downloadFile(`刷卡记录_${ts}.json`, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
+				else if (type === 'xml') this.downloadFile(`刷卡记录_${ts}.xml`, this.toXml(rows), 'application/xml;charset=utf-8');
+				else if (type === 'csv') this.downloadFile(`刷卡记录_${ts}.csv`, this.toCsv(rows), 'text/csv;charset=utf-8');
+				else if (type === 'txt') this.downloadFile(`刷卡记录_${ts}.txt`, this.toTxt(rows), 'text/plain;charset=utf-8');
+				else if (type === 'word') this.downloadFile(`刷卡记录_${ts}.doc`, this.toHtmlTable(rows), 'application/msword');
+				else if (type === 'excel') this.downloadFile(`刷卡记录_${ts}.xls`, this.toHtmlTable(rows), 'application/vnd.ms-excel');
+			} catch (e) {
+				uni.showToast({ title: e.message || '导出失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
 		}
 	}
 };
@@ -309,6 +447,14 @@ export default {
 .uni-header .uni-button {
 	margin-left: 10px;
 }
+.header-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.export-dropdown { position: relative; }
+.export-trigger { display: flex; align-items: center; gap: 8px; }
+.export-icon { font-size: 12px; }
+.export-caret { font-size: 12px; opacity: 0.8; }
+.export-menu { position: absolute; right: 0; top: calc(100% + 6px); min-width: 130px; background: #fff; border: 1px solid #ebeef5; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.12); z-index: 10; padding: 6px; }
+.export-menu-item { line-height: 32px; padding: 0 10px; font-size: 13px; color: #303133; border-radius: 6px; cursor: pointer; }
+.export-menu-item:hover { background: #f5f7fa; }
 .uni-container {
 	padding: 20px;
 	height: calc(100vh - 50px);
@@ -354,11 +500,6 @@ export default {
 	font-size: 18px;
 	font-weight: 700;
 	color: #2b6bff;
-}
-.refresh-icon {
-	cursor: pointer;
-	font-size: 16px;
-	margin-left: 6px;
 }
 .table-container-wrapper {
 	flex: 1;
