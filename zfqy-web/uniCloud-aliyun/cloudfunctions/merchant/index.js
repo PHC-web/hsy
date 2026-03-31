@@ -1,14 +1,14 @@
 'use strict';
 
 const db = uniCloud.database();
-const merchantCollection = db.collection('opendb-merchant-users');
-const withdrawCollection = db.collection('opendb-withdraw-records');
-const couponCollection = db.collection('opendb-coupons');
-const quotaCollection = db.collection('opendb-quota-packages');
-const machineCollection = db.collection('opendb-machine');
-const operationLogCollection = db.collection('opendb-operation-logs');
-const incomePacketCollection = db.collection('opendb-income-packets');
-const machineTradeCollection = db.collection('opendb-machine-trades');
+const merchantCollection = db.collection('hsy-merchant-users');
+const withdrawCollection = db.collection('hsy-withdraw-records');
+const couponCollection = db.collection('hsy-coupons');
+const quotaCollection = db.collection('hsy-quota-packages');
+const machineCollection = db.collection('hsy-machine');
+const operationLogCollection = db.collection('hsy-operation-logs');
+const incomePacketCollection = db.collection('hsy-income-packets');
+const machineTradeCollection = db.collection('hsy-machine-trades');
 const uniPayOrderCollection = db.collection('uni-pay-orders');
 
 function getOperator(event) {
@@ -175,7 +175,7 @@ async function simulateRegister(data) {
 
 		let brandName = brand_name || '';
 		if (!brandName) {
-			const machineRes = await db.collection('opendb-machine').where({ device_id: deviceId }).get();
+			const machineRes = await db.collection('hsy-machine').where({ device_id: deviceId }).get();
 			if (machineRes.data && machineRes.data.length > 0) {
 				brandName = machineRes.data[0].brand_name || '';
 			}
@@ -209,7 +209,7 @@ async function simulateRegister(data) {
 		const addRes = await merchantCollection.add(doc);
 
 		// 将机具管理中对应机具的「是否绑定」更新为已绑定
-		const machineCollection = db.collection('opendb-machine');
+		const machineCollection = db.collection('hsy-machine');
 		await machineCollection
 			.where({ device_id: deviceId, is_deleted: false })
 			.update({

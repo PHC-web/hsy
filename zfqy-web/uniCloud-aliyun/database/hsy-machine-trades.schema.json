@@ -1,0 +1,25 @@
+{
+	"bsonType": "object",
+	"required": ["device_id", "trade_no", "trade_type", "amount", "create_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": true },
+	"properties": {
+		"_id": { "description": "ID" },
+		"device_id": { "bsonType": "string", "description": "机具编号" },
+		"trade_no": { "bsonType": "string", "description": "交易单号" },
+		"user_id": { "bsonType": "string", "description": "绑定用户ID" },
+		"user_name": { "bsonType": "string", "description": "绑定用户名称" },
+		"user_mobile": { "bsonType": "string", "description": "绑定用户手机号" },
+		"trade_type": { "bsonType": "string", "description": "交易类型：virtual=虚拟刷卡，real=真实刷卡" },
+		"amount": { "bsonType": "number", "description": "交易金额" },
+		"is_activated": { "bsonType": "bool", "description": "是否激活" },
+		"total_transaction": { "bsonType": "number", "description": "累计交易（交易后）" },
+		"cashback": { "bsonType": "number", "description": "是否返现（规则未开发，先留空）" },
+		"release_amount": { "bsonType": "number", "description": "本次释放（规则未开发，先留空）" },
+		"company": { "bsonType": "string", "description": "分公司" },
+		"risk_control_status": { "bsonType": "string", "description": "风控状态：risk=风控，release=解除，no=否" },
+		"salesman": { "bsonType": "string", "description": "业务员" },
+		"cashback_time": { "bsonType": "timestamp", "description": "返现时间" },
+		"release_ratio": { "bsonType": "number", "description": "本次释放比例(如20表示20%)" },
+		"create_time": { "bsonType": "timestamp", "description": "创建时间" }
+	}
+}

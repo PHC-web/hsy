@@ -5,5 +5,8 @@
 	"main": "index.js",
 	"cloudfunction-config": {
 		"url": true
+	},
+	"dependencies": {
+		"sm-crypto": "^0.4.0"
 	}
 }

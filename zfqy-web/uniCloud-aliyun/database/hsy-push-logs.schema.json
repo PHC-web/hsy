@@ -2,12 +2,7 @@
 	"bsonType": "object",
 	"description": "第三方推送接收日志",
 	"required": ["push_type", "receive_time"],
-	"permission": {
-		"read": true,
-		"create": true,
-		"update": false,
-		"delete": false
-	},
+	"permission": { "read": true, "create": true, "update": false, "delete": false },
 	"properties": {
 		"_id": { "description": "ID" },
 		"push_type": { "bsonType": "string", "description": "TYY0001/TYY0002/TYY0003/TYY0004" },

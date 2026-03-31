@@ -2,12 +2,7 @@
 	"bsonType": "object",
 	"description": "第三方推送-成功交易流水(TYY0001)",
 	"required": ["logno", "receive_time"],
-	"permission": {
-		"read": true,
-		"create": true,
-		"update": false,
-		"delete": false
-	},
+	"permission": { "read": true, "create": true, "update": false, "delete": false },
 	"properties": {
 		"_id": { "description": "ID" },
 		"firstagentid": { "bsonType": "string", "description": "一级代理商编号" },

@@ -120,24 +120,24 @@
 						merchantRes,
 						memberRes
 					] = await Promise.all([
-						db.collection('opendb-brand').where({ is_deleted: false }).count(),
-						db.collection('opendb-machine').where({ is_deleted: false }).count(),
-						db.collection('opendb-machine').where({ is_deleted: false, is_activated: true }).count(),
-						db.collection('opendb-machine').where({ is_deleted: false, is_bound: 1 }).count(),
-						db.collection('opendb-machine').where({
+						db.collection('hsy-brand').where({ is_deleted: false }).count(),
+						db.collection('hsy-machine').where({ is_deleted: false }).count(),
+						db.collection('hsy-machine').where({ is_deleted: false, is_activated: true }).count(),
+						db.collection('hsy-machine').where({ is_deleted: false, is_bound: 1 }).count(),
+						db.collection('hsy-machine').where({
 							is_deleted: false,
 							is_activated: true,
 							activated_time: dbCmd.gte(todayStart)
 						}).count(),
-						db.collection('opendb-withdraw-records').where({ is_deleted: false }).field('amount').limit(10000).get(),
-						db.collection('opendb-merchant-users').count(),
-						db.collection('opendb-merchant-users').where({ device_id: dbCmd.neq('') }).count()
+						db.collection('hsy-withdraw-records').where({ is_deleted: false }).field('amount').limit(10000).get(),
+						db.collection('hsy-merchant-users').count(),
+						db.collection('hsy-merchant-users').where({ device_id: dbCmd.neq('') }).count()
 					]);
 
 					const withdrawRows = withdrawRes.result?.data || [];
 					const withdrawAmount = withdrawRows.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-					const brandStatRes = await db.collection('opendb-brand')
+					const brandStatRes = await db.collection('hsy-brand')
 						.where({ is_deleted: false })
 						.field('return_machine,return_payment')
 						.limit(10000)

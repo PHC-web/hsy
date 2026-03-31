@@ -1,7 +1,7 @@
 'use strict';
 const db = uniCloud.database();
-const brandCollection = db.collection('opendb-brand');
-const operationLogCollection = db.collection('opendb-operation-logs');
+const brandCollection = db.collection('hsy-brand');
+const operationLogCollection = db.collection('hsy-operation-logs');
 
 exports.main = async (event, context) => {
 	const { action, data, params } = event;

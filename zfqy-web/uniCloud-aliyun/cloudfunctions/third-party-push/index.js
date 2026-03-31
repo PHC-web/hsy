@@ -1,4 +1,5 @@
 'use strict';
+const { sm3 } = require('sm-crypto');
 
 /**
  * 国通星驿第三方数据推送接收
@@ -7,11 +8,11 @@
  */
 
 const db = uniCloud.database();
-const tradesCol = db.collection('opendb-push-trades');
-const merchantsCol = db.collection('opendb-push-merchants');
-const terminalsCol = db.collection('opendb-push-terminals');
-const commfeesCol = db.collection('opendb-push-commfees');
-const logsCol = db.collection('opendb-push-logs');
+const tradesCol = db.collection('hsy-push-trades');
+const merchantsCol = db.collection('hsy-push-merchants');
+const terminalsCol = db.collection('hsy-push-terminals');
+const commfeesCol = db.collection('hsy-push-commfees');
+const logsCol = db.collection('hsy-push-logs');
 
 const SUCCESS_CODE = '00000';
 const NOW_TS = () => String(Math.floor(Date.now() / 1000));
@@ -30,6 +31,31 @@ function failRes(errormsg, errorcode = '10001') {
 		errormsg: errormsg || '推送处理失败',
 		timestamp: NOW_TS()
 	};
+}
+
+function sm3Hex(s) {
+	return sm3(String(s || ''));
+}
+
+function buildApiSignSource(body) {
+	return `firstagentid=${String(body?.firstagentid || '')}&sign=${String(body?.sign || '')}&timestamp=${String(body?.timestamp || '')}`;
+}
+
+function verifyEnvelope(body) {
+	if (!body || typeof body !== 'object') return { ok: false, msg: '请求体为空' };
+	if (!body.firstagentid) return { ok: false, msg: '缺少firstagentid' };
+	if (!body.timestamp && body.timestamp !== 0) return { ok: false, msg: '缺少timestamp' };
+	if (!body.sign) return { ok: false, msg: '缺少sign' };
+	if (!body.apisign) return { ok: false, msg: '缺少apisign' };
+	if (!body.reqdatajson || typeof body.reqdatajson !== 'object') return { ok: false, msg: '缺少reqdatajson' };
+
+	// 按第三方文档算法：SM3("firstagentid=...&sign=...&timestamp=...")
+	const source = buildApiSignSource(body);
+	const calc = sm3Hex(source);
+	if (String(calc).toLowerCase() !== String(body.apisign || '').toLowerCase()) {
+		return { ok: false, msg: 'apisign验签失败' };
+	}
+	return { ok: true };
 }
 
 async function writeLog(pushType, success, dataId, firstagentid, summary, errorMsg) {
@@ -176,7 +202,8 @@ async function handleTYY0003(body) {
  */
 async function handleTYY0004(body) {
 	const { firstagentid, timestamp, reqdatajson } = body || {};
-	if (!reqdatajson || reqdatajson.id === undefined) {
+		const pushId = reqdatajson && reqdatajson.id;
+		if (!reqdatajson || pushId === undefined || pushId === null || String(pushId).trim() === '') {
 		return { body: failRes('缺少reqdatajson或id'), statusCode: 200 };
 	}
 	const d = reqdatajson;
@@ -218,6 +245,11 @@ exports.main = async (event, context) => {
 	}
 	if (!body || typeof body !== 'object') {
 		body = {};
+	}
+	const verify = verifyEnvelope(body);
+	if (!verify.ok) {
+		await writeLog('SIGN', false, '', body.firstagentid || '', '验签失败', verify.msg);
+		return { body: failRes(verify.msg, '10002'), statusCode: 200 };
 	}
 
 	// 路径兼容：可能带云函数名前缀，只认末尾

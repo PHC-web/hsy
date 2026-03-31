@@ -1,0 +1,117 @@
+{
+	"bsonType": "object",
+	"required": ["device_id", "brand_id"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": {
+			"description": "ID"
+		},
+		"device_id": {
+			"bsonType": "string",
+			"description": "设备编号"
+		},
+		"brand_id": {
+			"bsonType": "string",
+			"description": "品牌ID",
+			"foreignKey": "hsy-brand.brand_id"
+		},
+		"brand_name": {
+			"bsonType": "string",
+			"description": "品牌名称"
+		},
+		"speaker_id": {
+			"bsonType": "string",
+			"description": "自有音箱号"
+		},
+		"is_bound": {
+			"bsonType": "number",
+			"description": "是否绑定：0=未绑定，1=已绑定，2=已解绑",
+			"default": 0
+		},
+		"bind_time": {
+			"bsonType": "timestamp",
+			"description": "绑定时间"
+		},
+		"unbind_time": {
+			"bsonType": "timestamp",
+			"description": "解绑时间（清空统计时记录）"
+		},
+		"bind_user_id": {
+			"bsonType": "string",
+			"description": "绑定用户ID"
+		},
+		"bind_user_name": {
+			"bsonType": "string",
+			"description": "绑定用户名称"
+		},
+		"bind_user_mobile": {
+			"bsonType": "string",
+			"description": "绑定用户手机号"
+		},
+		"is_activated": {
+			"bsonType": "bool",
+			"description": "是否激活",
+			"default": false
+		},
+		"activated_time": {
+			"bsonType": "timestamp",
+			"description": "激活时间"
+		},
+		"total_transaction": {
+			"bsonType": "number",
+			"description": "累计交易金额",
+			"default": 0
+		},
+		"pending_amount": {
+			"bsonType": "number",
+			"description": "待提金额",
+			"default": 0
+		},
+		"withdrawn_amount": {
+			"bsonType": "number",
+			"description": "已提金额",
+			"default": 0
+		},
+		"frozen_amount": {
+			"bsonType": "number",
+			"description": "冻结金额",
+			"default": 0
+		},
+		"merchant": {
+			"bsonType": "string",
+			"description": "所属商户",
+			"default": "管理员"
+		},
+		"salesman": {
+			"bsonType": "string",
+			"description": "业务员",
+			"default": "管理员"
+		},
+		"in_stock_time": {
+			"bsonType": "timestamp",
+			"description": "入库时间"
+		},
+		"is_deleted": {
+			"bsonType": "bool",
+			"description": "删除标记，true=已删除，false=未删除",
+			"default": false
+		},
+		"delete_time": {
+			"bsonType": "timestamp",
+			"description": "删除时间"
+		},
+		"delete_user": {
+			"bsonType": "string",
+			"description": "删除人"
+		},
+		"last_reset_reason": {
+			"bsonType": "string",
+			"description": "最近一次清空统计原因"
+		}
+	}
+}

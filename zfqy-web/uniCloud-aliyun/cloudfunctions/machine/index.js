@@ -1,12 +1,12 @@
 'use strict';
 const db = uniCloud.database();
-const machineCollection = db.collection('opendb-machine');
-const brandCollection = db.collection('opendb-brand');
-const operationLogCollection = db.collection('opendb-operation-logs');
-const tradeCollection = db.collection('opendb-machine-trades');
-const merchantCollection = db.collection('opendb-merchant-users');
-const riskCollection = db.collection('opendb-risk-records');
-const riskRecordCollection = db.collection('opendb-risk-records');
+const machineCollection = db.collection('hsy-machine');
+const brandCollection = db.collection('hsy-brand');
+const operationLogCollection = db.collection('hsy-operation-logs');
+const tradeCollection = db.collection('hsy-machine-trades');
+const merchantCollection = db.collection('hsy-merchant-users');
+const riskCollection = db.collection('hsy-risk-records');
+const riskRecordCollection = db.collection('hsy-risk-records');
 
 // 格式化时间
 function formatTime(timestamp) {
