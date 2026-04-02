@@ -15,7 +15,7 @@
     "管理后台",
     "云后台",
     "uni-admin"
-],
+  ],
   "engines": {
     "HBuilderX": "^3.6.0",
     "uni-app": "^4.36",
@@ -114,5 +114,8 @@
         }
       }
     }
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
   }
 }

@@ -10,6 +10,10 @@
 		"user_name": { "bsonType": "string", "description": "绑定用户名称" },
 		"user_mobile": { "bsonType": "string", "description": "绑定用户手机号" },
 		"trade_type": { "bsonType": "string", "description": "交易类型：virtual=虚拟刷卡，real=真实刷卡" },
+		"trade_source": {
+			"bsonType": "string",
+			"description": "来源：xingyi=星驿TYY0001推送；空=后台虚拟刷卡等"
+		},
 		"amount": { "bsonType": "number", "description": "交易金额" },
 		"is_activated": { "bsonType": "bool", "description": "是否激活" },
 		"total_transaction": { "bsonType": "number", "description": "累计交易（交易后）" },

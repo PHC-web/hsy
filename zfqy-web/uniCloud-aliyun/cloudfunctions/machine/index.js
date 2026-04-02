@@ -737,6 +737,225 @@ async function addMachine(data, event) {
 	}
 }
 
+// 批量导入机具（按模板：机具编号、品牌ID）
+async function batchImportMachine(data, event) {
+	try {
+		const rows = Array.isArray(data?.rows) ? data.rows : [];
+		if (!rows.length) {
+			return { code: 400, message: '导入数据为空' };
+		}
+
+		const brandRes = await brandCollection.where({ is_deleted: false }).get();
+		const brandMap = {};
+		(brandRes.data || []).forEach((b) => {
+			brandMap[String(b.brand_id)] = b.brand_name || '';
+		});
+
+		const seenInFile = new Set();
+		const deviceIds = [];
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const rowNo = Number(row.rowNo) || (i + 2);
+			const deviceId = String(row.deviceId || '').trim();
+			const brandId = String(row.brandId || '').trim();
+			if (!deviceId || !brandId) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：机具编号和品牌ID必填` };
+			}
+			if (!brandMap[brandId]) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：品牌ID(${brandId})不存在` };
+			}
+			if (seenInFile.has(deviceId)) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：机具编号(${deviceId})在文件中重复` };
+			}
+			seenInFile.add(deviceId);
+			deviceIds.push(deviceId);
+		}
+
+		const existsRes = await machineCollection.where({
+			device_id: db.command.in(deviceIds),
+			is_deleted: false
+		}).field({ device_id: true }).get();
+		const existsSet = new Set((existsRes.data || []).map((x) => String(x.device_id)));
+
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const rowNo = Number(row.rowNo) || (i + 2);
+			const deviceId = String(row.deviceId || '').trim();
+			if (existsSet.has(deviceId)) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：机具编号(${deviceId})已存在` };
+			}
+		}
+
+		const now = Date.now();
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const deviceId = String(row.deviceId || '').trim();
+			const brandId = String(row.brandId || '').trim();
+			const speakerId = String(row.speakerId || '').trim();
+			await machineCollection.add({
+				device_id: deviceId,
+				brand_id: brandId,
+				brand_name: brandMap[brandId] || '',
+				speaker_id: speakerId,
+				is_bound: 0,
+				is_activated: false,
+				total_transaction: 0,
+				pending_amount: 0,
+				withdrawn_amount: 0,
+				frozen_amount: 0,
+				merchant: '管理员',
+				salesman: '管理员',
+				in_stock_time: now,
+				is_deleted: false
+			});
+		}
+
+		await recordOperationLog(event, 'batchImport', 'machine', 'machine', `批量入库机具: ${rows.length}台`);
+		return { code: 0, message: '导入成功', data: { successCount: rows.length } };
+	} catch (error) {
+		console.error('批量导入机具失败:', error);
+		return { code: 500, message: '导入失败' };
+	}
+}
+
+// 批量解绑机具（按模板：机具编号）
+async function batchUnbindMachine(data, event) {
+	try {
+		const rows = Array.isArray(data?.rows) ? data.rows : [];
+		if (!rows.length) {
+			return { code: 400, message: '导入数据为空' };
+		}
+
+		const seenInFile = new Set();
+		const deviceIds = [];
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const rowNo = Number(row.rowNo) || (i + 2);
+			const deviceId = String(row.deviceId || '').trim();
+			if (!deviceId) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：机具编号必填` };
+			}
+			if (seenInFile.has(deviceId)) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：机具编号(${deviceId})在文件中重复` };
+			}
+			seenInFile.add(deviceId);
+			deviceIds.push(deviceId);
+		}
+
+		const machineRes = await machineCollection.where({
+			device_id: db.command.in(deviceIds),
+			is_deleted: false
+		}).get();
+		const machineMap = {};
+		(machineRes.data || []).forEach((m) => {
+			machineMap[String(m.device_id)] = m;
+		});
+
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const rowNo = Number(row.rowNo) || (i + 2);
+			const deviceId = String(row.deviceId || '').trim();
+			const machine = machineMap[deviceId];
+			if (!machine) {
+				return { code: 400, message: `导入失败，请检查第${rowNo}行：机具编号(${deviceId})不存在` };
+			}
+		}
+
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const deviceId = String(row.deviceId || '').trim();
+			const machine = machineMap[deviceId] || {};
+			const bindUserName = machine.bind_user_name || '';
+			const bindUserMobile = machine.bind_user_mobile || '';
+
+			await tradeCollection.where({ device_id: deviceId }).remove();
+			await machineCollection.where({
+				device_id: deviceId,
+				is_deleted: false
+			}).update({
+				is_bound: 2,
+				bind_time: null,
+				bind_user_id: '',
+				bind_user_name: '',
+				bind_user_mobile: ''
+			});
+			await merchantCollection.where({ device_id: deviceId }).update({ device_id: '' });
+			await recordOperationLog(event, 'batchUnbind', deviceId, deviceId, `批量解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已删除流水`);
+		}
+
+		return { code: 0, message: '解绑成功', data: { successCount: rows.length } };
+	} catch (error) {
+		console.error('批量解绑机具失败:', error);
+		return { code: 500, message: '解绑失败' };
+	}
+}
+
+// 批量删除机具（软删除，按模板：机具编号）
+async function batchDeleteMachine(data, event) {
+	try {
+		const rows = Array.isArray(data?.rows) ? data.rows : [];
+		if (!rows.length) {
+			return { code: 400, message: '导入数据为空' };
+		}
+
+		const seenInFile = new Set();
+		const deviceIds = [];
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const rowNo = Number(row.rowNo) || (i + 2);
+			const deviceId = String(row.deviceId || '').trim();
+			if (!deviceId) {
+				return { code: 400, message: `删除失败，请检查第${rowNo}行：机具编号必填` };
+			}
+			if (seenInFile.has(deviceId)) {
+				return { code: 400, message: `删除失败，请检查第${rowNo}行：机具编号(${deviceId})在文件中重复` };
+			}
+			seenInFile.add(deviceId);
+			deviceIds.push(deviceId);
+		}
+
+		const machineRes = await machineCollection.where({
+			device_id: db.command.in(deviceIds),
+			is_deleted: false
+		}).field({ device_id: true, is_bound: true }).get();
+		const machineMap = {};
+		(machineRes.data || []).forEach((m) => {
+			machineMap[String(m.device_id)] = m;
+		});
+
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const rowNo = Number(row.rowNo) || (i + 2);
+			const deviceId = String(row.deviceId || '').trim();
+			const machine = machineMap[deviceId];
+			if (!machine) {
+				return { code: 400, message: `删除失败，请检查第${rowNo}行：机具编号(${deviceId})不存在` };
+			}
+			if (Number(machine.is_bound) === 1) {
+				return { code: 400, message: `删除失败，请检查第${rowNo}行+机具号(${deviceId})，未解除绑定，请先解除绑定后再进行删除` };
+			}
+		}
+
+		const deleteUser = event?.context?.userInfo?.username || event?.context?.uid || event?.context?.OPENID || 'system';
+		const now = Date.now();
+		for (let i = 0; i < rows.length; i += 1) {
+			const row = rows[i] || {};
+			const deviceId = String(row.deviceId || '').trim();
+			await machineCollection.where({ device_id: deviceId, is_deleted: false }).update({
+				is_deleted: true,
+				delete_time: now,
+				delete_user: deleteUser
+			});
+			await recordOperationLog(event, 'batchDelete', deviceId, deviceId, `批量删除机具: ${deviceId}`);
+		}
+
+		return { code: 0, message: '删除成功', data: { successCount: rows.length } };
+	} catch (error) {
+		console.error('批量删除机具失败:', error);
+		return { code: 500, message: '删除失败' };
+	}
+}
+
 // 更新机具
 async function updateMachine(data, event) {
 	try {
@@ -807,6 +1026,12 @@ async function deleteMachine(data, event) {
 			return {
 				code: 404,
 				message: '机具不存在'
+			};
+		}
+		if (Number(machineInfo.data[0].is_bound) === 1) {
+			return {
+				code: 400,
+				message: '该机具当前为已绑定状态，请先解绑后再删除'
 			};
 		}
 		
@@ -947,6 +1172,12 @@ exports.main = async (event, context) => {
 			return await getMachineList(actualData);
 		case 'add':
 			return await addMachine(actualData, event);
+		case 'batchImport':
+			return await batchImportMachine(actualData, event);
+		case 'batchUnbind':
+			return await batchUnbindMachine(actualData, event);
+		case 'batchDelete':
+			return await batchDeleteMachine(actualData, event);
 		case 'update':
 			return await updateMachine(actualData, event);
 		case 'delete':

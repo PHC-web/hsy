@@ -107,9 +107,10 @@ export default {
 			this.editIndex = -1
 		},
 		removeMenu(index) {
+			const name = this.menuList[index]?.name || '-'
 			uni.showModal({
-				title: '提示',
-				content: '确认删除该菜单吗？',
+				title: '确认删除',
+				content: `你确定要删除菜单 ${name} 么？`,
 				success: (res) => {
 					if (!res.confirm) return
 					this.menuList.splice(index, 1)

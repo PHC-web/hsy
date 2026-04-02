@@ -5,6 +5,12 @@
 			<view class="uni-group">
 				<view class="header-actions">
 					<button class="uni-button" type="default" size="mini" @click="reset">重置</button>
+					<button class="uni-button" type="default" size="mini" @click="downloadInStockTemplate">下载入库模板</button>
+					<button class="uni-button" type="default" size="mini" @click="triggerBatchImport">导入批量入库</button>
+					<button class="uni-button" type="default" size="mini" @click="downloadUnbindTemplate">下载解绑模板</button>
+					<button class="uni-button" type="default" size="mini" @click="triggerBatchUnbindImport">导入批量解绑</button>
+					<button class="uni-button" type="default" size="mini" @click="downloadDeleteTemplate">下载删除模板</button>
+					<button class="uni-button" type="default" size="mini" @click="triggerBatchDeleteImport">导入批量删除</button>
 					<view class="export-dropdown" @mouseleave="showExportMenu = false">
 						<button class="uni-button export-trigger" size="mini" @click="toggleExportMenu">
 							<text class="bi bi-download export-icon"></text>
@@ -26,12 +32,12 @@
 				<view class="table-container">
 					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 						<uni-tr>
-							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">设备编码</uni-th>
+							<uni-th align="center" width="96" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">设备编码</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="brandFilterData" @filter-change="headerFilterChange($event, 'brandId')">机具品牌</uni-th>
 							<uni-th align="center" width="90">累计交易</uni-th>
 							<uni-th align="center" width="100">待提/已提</uni-th>
 							<uni-th align="center" width="90">冻结金额</uni-th>
-							<uni-th align="center" width="110" filter-type="search" @filter-change="headerFilterChange($event, 'speakerId')">自有音箱号</uni-th>
+							<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'speakerId')">自有音箱号</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="isBoundFilterData" @filter-change="headerFilterChange($event, 'isBound')">是否绑定</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'bindTime')">绑定人/时间/手机</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="isActivatedFilterData" @filter-change="headerFilterChange($event, 'isActivated')">是否激活</uni-th>
@@ -174,6 +180,63 @@
 				</view>
 			</view>
 		</uni-popup>
+
+		<uni-popup ref="batchUnbindPreviewPopup" type="center">
+			<view class="popup-card popup-wide">
+				<view class="popup-header">
+					<text class="popup-title">批量解绑预览</text>
+					<text class="popup-subtitle">共 {{ batchUnbindPreviewRows.length }} 条，确认后执行解绑</text>
+				</view>
+				<view class="popup-body trade-body">
+					<uni-table border stripe>
+						<uni-tr>
+							<uni-th align="center" width="90">行号</uni-th>
+							<uni-th align="center" width="200">机具编号</uni-th>
+							<uni-th align="center" width="140">自有音箱号</uni-th>
+						</uni-tr>
+						<uni-tr v-for="(row, idx) in batchUnbindPreviewRows" :key="idx">
+							<uni-td align="center">{{ row.rowNo }}</uni-td>
+							<uni-td align="center">{{ row.deviceId }}</uni-td>
+							<uni-td align="center">{{ row.speakerId || '-' }}</uni-td>
+						</uni-tr>
+					</uni-table>
+					<view class="trade-footer">
+						<text class="trade-count">请确认导入内容无误后再提交</text>
+						<view class="trade-actions">
+							<button class="uni-button" size="mini" type="default" @click="$refs.batchUnbindPreviewPopup.close()">取消</button>
+							<button class="uni-button" size="mini" type="warn" :disabled="batchUnbinding" @click="confirmBatchUnbind">确认解绑</button>
+						</view>
+					</view>
+				</view>
+			</view>
+		</uni-popup>
+		<uni-popup ref="batchDeletePreviewPopup" type="center">
+			<view class="popup-card popup-wide">
+				<view class="popup-header">
+					<text class="popup-title">批量删除预览</text>
+					<text class="popup-subtitle">共 {{ batchDeletePreviewRows.length }} 条，确认后执行删除</text>
+				</view>
+				<view class="popup-body trade-body">
+					<uni-table border stripe>
+						<uni-tr>
+							<uni-th align="center" width="90">行号</uni-th>
+							<uni-th align="center" width="220">机具编号</uni-th>
+						</uni-tr>
+						<uni-tr v-for="(row, idx) in batchDeletePreviewRows" :key="idx">
+							<uni-td align="center">{{ row.rowNo }}</uni-td>
+							<uni-td align="center">{{ row.deviceId }}</uni-td>
+						</uni-tr>
+					</uni-table>
+					<view class="trade-footer">
+						<text class="trade-count">请确认导入内容无误后再提交</text>
+						<view class="trade-actions">
+							<button class="uni-button" size="mini" type="default" @click="$refs.batchDeletePreviewPopup.close()">取消</button>
+							<button class="uni-button" size="mini" type="warn" :disabled="batchDeleting" @click="confirmBatchDelete">确认删除</button>
+						</view>
+					</view>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -181,6 +244,7 @@
 import UniForms from "@/uni_modules/uni-forms/components/uni-forms/uni-forms";
 import UniFormsItem from "@/uni_modules/uni-forms/components/uni-forms-item/uni-forms-item";
 import UniEasyinput from "@/uni_modules/uni-easyinput/components/uni-easyinput/uni-easyinput";
+import * as XLSX from 'xlsx';
 
 export default {
 	components: {
@@ -272,6 +336,13 @@ export default {
 			},
 			tableKey: 1,
 			showExportMenu: false,
+			importing: false,
+			batchUnbindImporting: false,
+			batchUnbinding: false,
+			batchUnbindPreviewRows: [],
+			batchDeleteImporting: false,
+			batchDeleting: false,
+			batchDeletePreviewRows: [],
 			exportTypeOptions: [
 				{ text: 'JSON', value: 'json' },
 				{ text: 'XML', value: 'xml' },
@@ -444,6 +515,262 @@ export default {
 					url: '/pages/brand/machine/add'
 				});
 			},
+			downloadInStockTemplate() {
+				// #ifdef H5
+				const a = document.createElement('a');
+				a.href = '/static/机具入库模板.xlsx';
+				a.download = '机具入库模板.xlsx';
+				a.click();
+				// #endif
+				// #ifndef H5
+				uni.showToast({ title: '当前仅支持H5后台下载模板', icon: 'none' });
+				// #endif
+			},
+			triggerBatchImport() {
+				// #ifdef H5
+				const input = document.createElement('input');
+				input.type = 'file';
+				input.accept = '.xlsx,.xls';
+				input.onchange = (e) => this.onBatchFileSelected(e);
+				input.click();
+				// #endif
+				// #ifndef H5
+				uni.showToast({ title: '当前仅支持H5后台导入', icon: 'none' });
+				// #endif
+			},
+			downloadUnbindTemplate() {
+				// #ifdef H5
+				const a = document.createElement('a');
+				a.href = '/static/机具解绑模板.xlsx';
+				a.download = '机具解绑模板.xlsx';
+				a.click();
+				// #endif
+				// #ifndef H5
+				uni.showToast({ title: '当前仅支持H5后台下载模板', icon: 'none' });
+				// #endif
+			},
+			triggerBatchUnbindImport() {
+				// #ifdef H5
+				const input = document.createElement('input');
+				input.type = 'file';
+				input.accept = '.xlsx,.xls';
+				input.onchange = (e) => this.onBatchUnbindFileSelected(e);
+				input.click();
+				// #endif
+				// #ifndef H5
+				uni.showToast({ title: '当前仅支持H5后台导入', icon: 'none' });
+				// #endif
+			},
+			downloadDeleteTemplate() {
+				// #ifdef H5
+				const a = document.createElement('a');
+				a.href = '/static/机具删除模板.xlsx';
+				a.download = '机具删除模板.xlsx';
+				a.click();
+				// #endif
+				// #ifndef H5
+				uni.showToast({ title: '当前仅支持H5后台下载模板', icon: 'none' });
+				// #endif
+			},
+			triggerBatchDeleteImport() {
+				// #ifdef H5
+				const input = document.createElement('input');
+				input.type = 'file';
+				input.accept = '.xlsx,.xls';
+				input.onchange = (e) => this.onBatchDeleteFileSelected(e);
+				input.click();
+				// #endif
+				// #ifndef H5
+				uni.showToast({ title: '当前仅支持H5后台导入', icon: 'none' });
+				// #endif
+			},
+			normalizeImportHeader(h) {
+				return String(h || '').replace(/\s+/g, '').toLowerCase();
+			},
+			pickValueByHeader(row, headerMap, aliases) {
+				for (let i = 0; i < aliases.length; i += 1) {
+					const key = headerMap[this.normalizeImportHeader(aliases[i])];
+					if (key && row[key] !== undefined && row[key] !== null) {
+						return String(row[key]).trim();
+					}
+				}
+				return '';
+			},
+			async onBatchFileSelected(e) {
+				if (this.importing) return;
+				const file = e?.target?.files?.[0];
+				if (!file) return;
+				try {
+					this.importing = true;
+					uni.showLoading({ title: '导入校验中...', mask: true });
+					const ab = await file.arrayBuffer();
+					const wb = XLSX.read(ab, { type: 'array' });
+					const sheetName = wb.SheetNames && wb.SheetNames[0];
+					if (!sheetName) throw new Error('模板无可读取工作表');
+					const sheet = wb.Sheets[sheetName];
+					const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+					if (!rawRows.length) throw new Error('模板内容为空');
+
+					const firstRow = rawRows[0] || {};
+					const headerMap = {};
+					Object.keys(firstRow).forEach((k) => {
+						headerMap[this.normalizeImportHeader(k)] = k;
+					});
+
+					const payloadRows = [];
+					for (let i = 0; i < rawRows.length; i += 1) {
+						const row = rawRows[i] || {};
+						const rowNo = i + 2;
+						const deviceId = this.pickValueByHeader(row, headerMap, ['机具编号', '设备编码', 'device_id', 'deviceid']);
+						const brandId = this.pickValueByHeader(row, headerMap, ['品牌ID', '品牌id', 'brand_id', 'brandid']);
+						const speakerId = this.pickValueByHeader(row, headerMap, ['自有音箱号', '音箱号', 'speaker_id', 'speakerid']);
+						if (!deviceId || !brandId) {
+							throw new Error(`导入失败，请检查第${rowNo}行：机具编号和品牌ID必填`);
+						}
+						payloadRows.push({ rowNo, deviceId, brandId, speakerId });
+					}
+
+					const res = await this.$request('batchImport', { rows: payloadRows }, { functionName: 'machine' });
+					if (res.code !== 0) throw new Error(res.message || '导入失败');
+					uni.showToast({ title: `导入成功${res.data?.successCount || payloadRows.length}条`, icon: 'success' });
+					this.pageInfo.currentPage = 1;
+					this.search();
+				} catch (err) {
+					uni.showToast({ title: err?.message || '导入失败', icon: 'none' });
+				} finally {
+					this.importing = false;
+					uni.hideLoading();
+				}
+			},
+			async onBatchUnbindFileSelected(e) {
+				if (this.batchUnbindImporting) return;
+				const file = e?.target?.files?.[0];
+				if (!file) return;
+				try {
+					this.batchUnbindImporting = true;
+					uni.showLoading({ title: '解析模板中...', mask: true });
+					const ab = await file.arrayBuffer();
+					const wb = XLSX.read(ab, { type: 'array' });
+					const sheetName = wb.SheetNames && wb.SheetNames[0];
+					if (!sheetName) throw new Error('模板无可读取工作表');
+					const sheet = wb.Sheets[sheetName];
+					const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+					if (!rawRows.length) throw new Error('模板内容为空');
+
+					const firstRow = rawRows[0] || {};
+					const headerMap = {};
+					Object.keys(firstRow).forEach((k) => {
+						headerMap[this.normalizeImportHeader(k)] = k;
+					});
+
+					const rows = [];
+					for (let i = 0; i < rawRows.length; i += 1) {
+						const row = rawRows[i] || {};
+						const rowNo = i + 2;
+						const deviceId = this.pickValueByHeader(row, headerMap, ['机具编号', '设备编码', 'device_id', 'deviceid']);
+						const speakerId = this.pickValueByHeader(row, headerMap, ['自有音箱号', '音箱号', 'speaker_id', 'speakerid']);
+						if (!deviceId) {
+							throw new Error(`导入失败，请检查第${rowNo}行：机具编号必填`);
+						}
+						rows.push({ rowNo, deviceId, speakerId });
+					}
+
+					this.batchUnbindPreviewRows = rows;
+					this.$refs.batchUnbindPreviewPopup.open();
+				} catch (err) {
+					uni.showToast({ title: err?.message || '导入失败', icon: 'none' });
+				} finally {
+					this.batchUnbindImporting = false;
+					uni.hideLoading();
+				}
+			},
+			async confirmBatchUnbind() {
+				if (this.batchUnbinding || !this.batchUnbindPreviewRows.length) return;
+				try {
+					this.batchUnbinding = true;
+					uni.showLoading({ title: '批量解绑中...', mask: true });
+					const res = await this.$request(
+						'batchUnbind',
+						{ rows: this.batchUnbindPreviewRows },
+						{ functionName: 'machine' }
+					);
+					if (res.code !== 0) throw new Error(res.message || '批量解绑失败');
+					uni.showToast({ title: `解绑成功${res.data?.successCount || this.batchUnbindPreviewRows.length}条`, icon: 'success' });
+					this.batchUnbindPreviewRows = [];
+					this.$refs.batchUnbindPreviewPopup.close();
+					this.pageInfo.currentPage = 1;
+					this.search();
+				} catch (err) {
+					uni.showToast({ title: err?.message || '批量解绑失败', icon: 'none' });
+				} finally {
+					this.batchUnbinding = false;
+					uni.hideLoading();
+				}
+			},
+			async onBatchDeleteFileSelected(e) {
+				if (this.batchDeleteImporting) return;
+				const file = e?.target?.files?.[0];
+				if (!file) return;
+				try {
+					this.batchDeleteImporting = true;
+					uni.showLoading({ title: '解析模板中...', mask: true });
+					const ab = await file.arrayBuffer();
+					const wb = XLSX.read(ab, { type: 'array' });
+					const sheetName = wb.SheetNames && wb.SheetNames[0];
+					if (!sheetName) throw new Error('模板无可读取工作表');
+					const sheet = wb.Sheets[sheetName];
+					const rawRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+					if (!rawRows.length) throw new Error('模板内容为空');
+
+					const firstRow = rawRows[0] || {};
+					const headerMap = {};
+					Object.keys(firstRow).forEach((k) => {
+						headerMap[this.normalizeImportHeader(k)] = k;
+					});
+
+					const rows = [];
+					for (let i = 0; i < rawRows.length; i += 1) {
+						const row = rawRows[i] || {};
+						const rowNo = i + 2;
+						const deviceId = this.pickValueByHeader(row, headerMap, ['机具编号', '设备编码', 'device_id', 'deviceid']);
+						if (!deviceId) {
+							throw new Error(`删除失败，请检查第${rowNo}行：机具编号必填`);
+						}
+						rows.push({ rowNo, deviceId });
+					}
+
+					this.batchDeletePreviewRows = rows;
+					this.$refs.batchDeletePreviewPopup.open();
+				} catch (err) {
+					uni.showToast({ title: err?.message || '导入失败', icon: 'none' });
+				} finally {
+					this.batchDeleteImporting = false;
+					uni.hideLoading();
+				}
+			},
+			async confirmBatchDelete() {
+				if (this.batchDeleting || !this.batchDeletePreviewRows.length) return;
+				try {
+					this.batchDeleting = true;
+					uni.showLoading({ title: '批量删除中...', mask: true });
+					const res = await this.$request(
+						'batchDelete',
+						{ rows: this.batchDeletePreviewRows },
+						{ functionName: 'machine' }
+					);
+					if (res.code !== 0) throw new Error(res.message || '批量删除失败');
+					uni.showToast({ title: `删除成功${res.data?.successCount || this.batchDeletePreviewRows.length}条`, icon: 'success' });
+					this.batchDeletePreviewRows = [];
+					this.$refs.batchDeletePreviewPopup.close();
+					this.pageInfo.currentPage = 1;
+					this.search();
+				} catch (err) {
+					uni.showToast({ title: err?.message || '批量删除失败', icon: 'none' });
+				} finally {
+					this.batchDeleting = false;
+					uni.hideLoading();
+				}
+			},
 
 			openSwipe(item) {
 				if (item?.isBound !== 1 || !item?.bindUserId) {
@@ -606,7 +933,29 @@ export default {
 		
 		// 删除
 		删除(item) {
-			uni.showToast({ title: '删除功能开发中', icon: 'none' });
+			const deviceId = item?.deviceId || '-';
+			uni.showModal({
+				title: '确认删除',
+				content: `你确定要删除机具 ${deviceId} 么？`,
+				confirmText: '确定删除',
+				cancelText: '取消',
+				success: (res) => {
+					if (!res.confirm) return;
+					uni.showLoading({ title: '删除中...', mask: true });
+					this.$request('delete', { id: deviceId }, { functionName: 'machine' }).then((ret) => {
+						if (ret.code !== 0) {
+							uni.showToast({ title: ret.message || '删除失败', icon: 'none' });
+							return;
+						}
+						uni.showToast({ title: '删除成功', icon: 'success' });
+						this.search();
+					}).catch(() => {
+						uni.showToast({ title: '请求失败', icon: 'none' });
+					}).finally(() => {
+						uni.hideLoading();
+					});
+				}
+			});
 		},
 		toggleExportMenu() {
 			this.showExportMenu = !this.showExportMenu;
@@ -772,20 +1121,25 @@ export default {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
-	align-items: flex-start;
+	align-items: center;
 }
 
 .op-row {
-	display: flex;
-	flex-wrap: wrap;
+	display: grid;
+	grid-template-columns: repeat(3, 62px);
 	gap: 6px;
+	justify-content: center;
 }
 
 .op-btn {
 	margin: 0 !important;
-	min-width: 56px;
-	padding: 0 10px;
-	border-radius: 8px;
+	width: 62px;
+	height: 26px;
+	line-height: 26px;
+	padding: 0;
+	border-radius: 6px;
+	text-align: center;
+	font-size: 12px;
 }
 
 .op-btn[type="warn"] {

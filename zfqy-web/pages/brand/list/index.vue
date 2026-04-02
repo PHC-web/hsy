@@ -107,7 +107,11 @@ export default {
 		};
 	},
 	mounted() {
+		uni.$on('brand-list-refresh', this.getBrandList);
 		this.getBrandList();
+	},
+	onUnload() {
+		uni.$off('brand-list-refresh', this.getBrandList);
 	},
 	methods: {
 		addBrand() {
@@ -126,7 +130,7 @@ export default {
 		deleteBrand(id) {
 			uni.showModal({
 				title: '确认删除',
-				content: '确定要删除该品牌吗？',
+				content: `你确定要删除品牌 ${id} 么？`,
 				confirmText: '确定',
 				cancelText: '取消',
 				success: (res) => {

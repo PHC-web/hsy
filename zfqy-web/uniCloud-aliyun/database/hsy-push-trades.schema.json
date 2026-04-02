@@ -10,18 +10,30 @@
 		"logno": { "bsonType": "string", "description": "流水号(主键)" },
 		"ologno": { "bsonType": "string", "description": "原交易流水号" },
 		"mercid": { "bsonType": "string", "description": "商户号" },
-		"termphyno": { "bsonType": "string", "description": "终端机身号" },
+		"termphyno": { "bsonType": "string", "description": "终端机身号(与机具管理 device_id 对应)" },
+		"machine_in_system": {
+			"bsonType": "bool",
+			"description": "机具编号是否在后台机具库中存在；否时仅落库供对账，不参与刷卡记录列表"
+		},
 		"policyid": { "bsonType": "string", "description": "终端政策ID" },
 		"ustldat": { "bsonType": "string", "description": "清算日期yyyyMMdd" },
 		"orderdat": { "bsonType": "string", "description": "交易日期yyyyMMdd" },
 		"ordertime": { "bsonType": "string", "description": "交易时间HHmmss" },
 		"agentid": { "bsonType": "string", "description": "代理商编号" },
-		"paychannel": { "bsonType": "string", "description": "支付方式" },
+		"paychannel": {
+			"bsonType": "string",
+			"description": "支付方式(枚举): 01支付宝 02微信 03银联优惠 04银联未优惠 05标准借记卡 06标准贷记卡 11冻结款(押金) 12数币 31京东白条 00未知；未列出的值需联系星驿支付排查"
+		},
+		"paychannel_text": { "bsonType": "string", "description": "支付方式中文(入库时由 paychannel 解析)" },
 		"txnamt": { "bsonType": "string", "description": "交易金额(元)" },
 		"ysfee": { "bsonType": "string", "description": "应收手续费" },
 		"ssfee": { "bsonType": "string", "description": "实收手续费" },
 		"refund": { "bsonType": "string", "description": "是否退货0否1是" },
-		"discount_flag": { "bsonType": "string", "description": "补贴类型" },
+		"discount_flag": {
+			"bsonType": "string",
+			"description": "补贴类型(枚举): 0无补贴 1邮政补贴 2公司补贴 11落地机构补贴"
+		},
+		"discount_flag_text": { "bsonType": "string", "description": "补贴类型中文(入库时由 discount_flag 解析)" },
 		"sp_no": { "bsonType": "string", "description": "音箱号" },
 		"txf": { "bsonType": "string", "description": "提现费" },
 		"ssfl": { "bsonType": "string", "description": "实收费率" },
@@ -34,7 +46,8 @@
 		"adjustfee3": { "bsonType": "string" },
 		"adjustid4": { "bsonType": "string" },
 		"adjustfee4": { "bsonType": "string" },
-		"sffd": { "bsonType": "string", "description": "手续费是否封顶" },
+		"sffd": { "bsonType": "string", "description": "手续费是否封顶(枚举): 1是 0否" },
+		"sffd_text": { "bsonType": "string", "description": "手续费是否封顶中文(入库时由 sffd 解析)" },
 		"raw": { "bsonType": "object", "description": "原始推送body快照" }
 	}
 }

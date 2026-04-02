@@ -311,9 +311,10 @@ export default {
 			this.removeIds(this.selectedIds);
 		},
 		removeIds(ids) {
+			const target = ids.length === 1 ? `优惠券 ${ids[0]}` : `选中的 ${ids.length} 条优惠券`;
 			uni.showModal({
-				title: '提示',
-				content: '确认删除选中的优惠券吗？',
+				title: '确认删除',
+				content: `你确定要删除${target}么？`,
 				success: (res) => {
 					if (!res.confirm) return;
 					this.$request('couponDelete', { ids }, { functionName: 'merchant' }).then((ret) => {

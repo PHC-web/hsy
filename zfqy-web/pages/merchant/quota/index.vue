@@ -300,9 +300,10 @@ export default {
 			this.removeIds(this.selectedIds);
 		},
 		removeIds(ids) {
+			const target = ids.length === 1 ? `额度包 ${ids[0]}` : `选中的 ${ids.length} 条额度包`;
 			uni.showModal({
-				title: '提示',
-				content: '确认删除选中的额度包吗？',
+				title: '确认删除',
+				content: `你确定要删除${target}么？`,
 				success: (res) => {
 					if (!res.confirm) return;
 					this.$request('quotaDelete', { ids }, { functionName: 'merchant' }).then((ret) => {

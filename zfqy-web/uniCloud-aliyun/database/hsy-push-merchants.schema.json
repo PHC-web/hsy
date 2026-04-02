@@ -11,7 +11,11 @@
 		"mercid": { "bsonType": "string", "description": "商户号(主键)" },
 		"mercname": { "bsonType": "string", "description": "商户名称" },
 		"applydat": { "bsonType": "string", "description": "注册日期yyyyMMdd" },
-		"status": { "bsonType": "string", "description": "商户状态0开通其余关停" },
+		"status": {
+			"bsonType": "string",
+			"description": "商户状态(枚举): 0开通；其余取值(如1、2)为关停"
+		},
+		"status_text": { "bsonType": "string", "description": "商户状态中文(入库时由 status 解析)" },
 		"reqdata": { "bsonType": "string", "description": "敏感信息加密串" },
 		"reqseqid": { "bsonType": "string", "description": "请求流水号" },
 		"mertype": { "bsonType": "string", "description": "商户类型" },

@@ -23,7 +23,7 @@
 		</view>
 		<view class="uni-container">
 			<view class="intro">
-				<text class="intro-desc">支持提供给管理员对激活机具的刷卡记录进行查看</text>
+				<text class="intro-desc">支持查看本后台机具的虚拟刷卡与星驿推送的真实交易；机具编号未入库的星驿流水仅落库、不在此列表展示。</text>
 				<view class="intro-rules">
 					<text class="intro-item">· 刷卡激活：新卡本后台必须先机具入库处于未激活状态、单次刷卡金额必须大于设置的激活额度方可有效</text>
 					<text class="intro-item">· 自动返邮：彩卡的必须先通过下单码或者由业务员在后台协助下单成功后方可有效</text>

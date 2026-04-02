@@ -1,12 +1,5 @@
 <template>
 	<view class="fix-top-window">
-		<view class="uni-header">
-			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
-			<view class="uni-group">
-				<button class="uni-button" type="default" size="mini" @click="cancel">取消</button>
-				<button class="uni-button" type="primary" size="mini" @click="submitForm">提交保存</button>
-			</view>
-		</view>
 		<view class="uni-container">
 			<view class="form-container">
 				<!-- 添加模式下显示的字段 -->
@@ -49,6 +42,10 @@
 				<view class="form-item">
 					<label>激活薪资（元）（给到业务员）</label>
 					<input type="number" v-model="formData.activationSalary" placeholder="激活每台机具薪资" min="0" step="0.01" />
+				</view>
+				<view class="form-actions">
+					<button class="uni-button" type="default" @click="cancel">取消</button>
+					<button class="uni-button" type="primary" @click="submitForm">提交保存</button>
 				</view>
 			</view>
 		</view>
@@ -166,6 +163,7 @@ export default {
 				if (res.code === 0) {
 					uni.showToast({ title: this.isEdit ? '更新成功' : '添加成功', icon: 'success' });
 					setTimeout(() => {
+						uni.$emit('brand-list-refresh');
 						uni.navigateBack();
 					}, 1500);
 				} else {
@@ -182,21 +180,7 @@ export default {
 
 <style scoped>
 .fix-top-window {
-	padding-top: 44px;
-}
-
-.uni-header {
-	background-color: #fff;
-	padding: 10px;
-	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-	position: fixed;
-	top: 0;
-	left: 0;
-	right: 0;
-	z-index: 999;
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
+	padding-top: 0;
 }
 
 .uni-container {
@@ -255,5 +239,12 @@ export default {
 
 .uni-button {
 	margin: 0;
+}
+
+.form-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 12px;
+	margin-top: 24px;
 }
 </style>

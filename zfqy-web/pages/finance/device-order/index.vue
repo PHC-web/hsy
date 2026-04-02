@@ -341,8 +341,8 @@ export default {
 			}
 			const confirmRes = await new Promise((resolve) => {
 				uni.showModal({
-					title: '删除确认',
-					content: `确认删除选中的 ${this.selectedIds.length} 条记录吗？`,
+					title: '确认删除',
+					content: `你确定要删除选中的 ${this.selectedIds.length} 条记录么？`,
 					success: (r) => resolve(!!r.confirm)
 				});
 			});
