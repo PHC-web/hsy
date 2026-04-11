@@ -264,9 +264,10 @@
 		height: 60px;
 		width: 100%;
 		box-sizing: border-box;
-		border-bottom: 1px solid darken($top-window-bg-color, 8%);
+		border-bottom: none;
 		background-color: $top-window-bg-color;
 		color: $top-window-text-color;
+		box-shadow: 0 1px 0 rgba(148, 163, 184, 0.18), 0 8px 32px rgba(15, 23, 42, 0.05);
 	}
 
 	.navbar {
@@ -288,6 +289,9 @@
 			// logo宽高开发者可根据情况自行调节
 			width: 30px;
 			height: 30px;
+			border-radius: 6px;
+			object-fit: contain;
+			background-color: #fff;
 		}
 
 		.logo-text {
@@ -346,8 +350,10 @@
 	}
 
 	.title-text {
-		font-size: 14px;
+		font-size: 15px;
 		line-height: 30px;
+		font-weight: 600;
+		color: #1e293b;
 	}
 
 	.navbar-menu {
@@ -583,11 +589,11 @@
 			transition: background-color 0.2s;
 
 			&.active {
-				color: #1890ff;
+				color: #2563eb;
 			}
 
 			&:hover {
-				color: #1890ff;
+				color: #2563eb;
 			}
 		}
 

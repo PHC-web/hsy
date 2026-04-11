@@ -11,6 +11,17 @@
 		"status": { "bsonType": "string", "description": "pending=待领取,claimed=已领取,expired=过期", "default": "pending" },
 		"claimed_time": { "bsonType": "timestamp", "description": "领取时间" },
 		"expire_time": { "bsonType": "timestamp", "description": "过期时间" },
+		"claim_open_time": { "bsonType": "timestamp", "description": "可开始领取时间" },
+		"subsidy_kind": {
+			"bsonType": "string",
+			"description": "recharge_vesting=充值用户分期；non_recharge_lump=非充值5万档；non_recharge_extra=非充值每满1万"
+		},
+		"dedup_key": { "bsonType": "string", "description": "防重复生成键" },
+		"subsidy_flow_month": { "bsonType": "string", "description": "流水归属月 YYYY-MM" },
+		"subsidy_block_index": { "bsonType": "int", "description": "万元档序号(0起)" },
+		"installment_index": { "bsonType": "int", "description": "第几期(1-5)" },
+		"anchor_flow_yuan": { "bsonType": "number", "description": "锚定流水月总额(元)，用于第2期起领取门槛" },
+		"unlock_flow_yuan": { "bsonType": "number", "description": "领取时当月合理流水需达到的最小值(元)" },
 		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
 		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
 		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false }

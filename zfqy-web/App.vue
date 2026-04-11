@@ -40,9 +40,11 @@
 			// /admin/ -> 管理后台；/ -> 公众号H5
 			const pathname = (window.location && window.location.pathname) || '/';
 			const hash = (window.location && window.location.hash) || '';
+			const search = (window.location && window.location.search) || '';
 			const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/');
 			if (!isAdminPath && hash.indexOf('/pages/h5/') === -1) {
-				window.location.replace(`${pathname}#/pages/h5/auth/index`);
+				// 保留 ?code=&state= 等查询参数（微信 OAuth 回调会带在 search 上）
+				window.location.replace(`${pathname}${search}#/pages/h5/auth/index`);
 				return;
 			}
 			// #endif
@@ -101,6 +103,7 @@
 	@import '@/common/element-icons.css';
 	@import '@/common/bootstrap-icons.css';
 	@import '@/common/theme.scss';
+	@import '@/common/admin-shell.scss';
 	
 	/* 提高日期选择器的层级 */
 	.uni-date-picker__container {

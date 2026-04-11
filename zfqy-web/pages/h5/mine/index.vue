@@ -1,39 +1,69 @@
 <template>
 	<view class="page">
-		<view class="profile-card">
-			<image class="avatar" :src="mine.wxAvatar || defaultAvatar" mode="aspectFill" />
-			<view class="profile-main">
-				<text class="name">{{ mine.wxNickname || '微信用户' }}</text>
-				<text class="sub">{{ mine.mobile || '-' }}</text>
-				<text class="sub">{{ mine.brandName || '-' }} / {{ mine.deviceId || '未绑定' }}</text>
-			</view>
+		<view class="h5-glass-bg" aria-hidden="true">
+			<view class="h5-glass-orb h5-glass-orb-a"></view>
+			<view class="h5-glass-orb h5-glass-orb-b"></view>
+			<view class="h5-glass-orb h5-glass-orb-c"></view>
+			<view class="h5-glass-mesh"></view>
 		</view>
 
-		<view class="acct-card" @click="onAccountAreaClick">
-			<view class="acct-item">
-				<text class="k">可用奖励</text>
-				<text class="v">¥{{ account.availableReward }}</text>
-			</view>
-			<view class="acct-item">
-				<text class="k">预估免额度</text>
-				<text class="v">¥{{ account.estimatedFreeQuota }}</text>
-			</view>
-			<view class="acct-item">
-				<text class="k">账号积分</text>
-				<text class="v">¥{{ account.accountPoints }}</text>
-			</view>
-		</view>
+		<scroll-view class="mine-scroll" scroll-y :show-scrollbar="false">
+			<view class="mine-inner">
+				<text class="page-title">我的</text>
 
-		<button class="unbind-btn" type="warn" @click="confirmUnbind">解除绑定</button>
+				<view class="profile-card h5-glass-panel">
+					<image class="avatar" :src="avatarUrl" mode="aspectFill" />
+					<view class="profile-main">
+						<text class="name">{{ mine.wxNickname || '微信用户' }}</text>
+						<text class="sub">{{ mine.mobile || '-' }}</text>
+						<text class="sub">{{ mine.brandName || '-' }} / {{ mine.deviceId || '未绑定' }}</text>
+					</view>
+				</view>
 
-		<view class="tabbar">
+				<view class="acct-card h5-glass-panel" @click="onAccountAreaClick">
+					<view class="acct-item">
+						<text class="k">可用奖励</text>
+						<text class="v">¥{{ account.availableReward }}</text>
+					</view>
+					<view class="acct-item">
+						<text class="k">预估免额度</text>
+						<text class="v">¥{{ account.estimatedFreeQuota }}</text>
+					</view>
+					<view class="acct-item">
+						<text class="k">账号积分</text>
+						<text class="v">¥{{ account.accountPoints }}</text>
+					</view>
+					<text v-if="!mine.agreementImg" class="acct-hint">点击此区域签署「开户优惠活动计划书」</text>
+				</view>
+
+				<view class="menu-card h5-glass-panel">
+					<view class="menu-item" @click="goRecharge">
+						<text class="menu-title">额度充值</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goPayNotify">
+						<text class="menu-title">支付结果异步通知地址</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goRefundNotify">
+						<text class="menu-title">退款结果异步通知地址</text>
+						<text class="menu-arrow">›</text>
+					</view>
+				</view>
+
+				<button class="unbind-btn" type="warn" @click="confirmUnbind">解除绑定</button>
+				<view class="mine-bottom-spacer"></view>
+			</view>
+		</scroll-view>
+
+		<view class="tabbar h5-glass-tabbar">
 			<view class="tab" @click="goHome">首页</view>
 			<view class="tab" @click="goIncome">收益</view>
 			<view class="tab active">我的</view>
 		</view>
 
 		<uni-popup ref="agreementPopup" type="bottom">
-			<view class="agreement-sheet">
+			<view class="agreement-sheet agreement-sheet--dark">
 				<view class="sheet-head">
 					<text class="sheet-title">开户优惠活动计划书签署</text>
 				</view>
@@ -50,6 +80,7 @@
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
 import { h5MineInfo, h5SignAgreement, h5Unbind } from '@/pages/h5/common/api';
 import { clearSession } from '@/pages/h5/common/session';
+import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
 	components: { SignaturePad },
@@ -61,7 +92,7 @@ export default {
 				estimatedFreeQuota: '0.00',
 				accountPoints: '0.00'
 			},
-			defaultAvatar: 'https://qiniu-web-assets.dcloud.net.cn/unidoc/zh/unicloudlogo.png',
+			defaultAvatar: H5_APP_LOGO,
 			agreementLines: [
 				{ cls: 'p p-title', text: '慧收盈“开户优惠”活动计划书（完整内容）' },
 				{ cls: 'p p-sub', text: '重要须知' },
@@ -149,6 +180,12 @@ export default {
 			]
 		};
 	},
+	computed: {
+		avatarUrl() {
+			const u = String(this.mine.wxAvatar || '').trim();
+			return u || this.defaultAvatar;
+		}
+	},
 	onShow() {
 		this.loadMine();
 	},
@@ -217,37 +254,230 @@ export default {
 		},
 		goIncome() {
 			uni.redirectTo({ url: '/pages/h5/income/index' });
+		},
+		goRecharge() {
+			if (!this.mine.agreementImg) {
+				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
+				this.$refs.agreementPopup.open();
+				return;
+			}
+			uni.navigateTo({ url: '/pages/h5/recharge/index' });
+		},
+		goPayNotify() {
+			uni.navigateTo({ url: '/pages/h5/notify/pay/index' });
+		},
+		goRefundNotify() {
+			uni.navigateTo({ url: '/pages/h5/notify/refund/index' });
 		}
 	}
 };
 </script>
 
+<style src="@/common/h5-glass.css"></style>
 <style scoped>
 .page {
 	height: 100vh;
+	position: relative;
 	overflow: hidden;
 	box-sizing: border-box;
-	background: #f8fafc;
-	padding: 16px 16px 72px;
+	background: transparent;
 }
-.profile-card { display: flex; gap: 12px; align-items: center; background: #fff; border-radius: 12px; padding: 14px; box-shadow: 0 8px 20px rgba(15,23,42,0.07); }
-.avatar { width: 56px; height: 56px; border-radius: 50%; background: #e2e8f0; }
-.name { display: block; font-size: 16px; font-weight: 700; color: #0f172a; }
-.sub { display: block; margin-top: 2px; color: #64748b; font-size: 12px; }
-.acct-card { margin-top: 12px; background: #fff; border-radius: 12px; padding: 10px 12px; box-shadow: 0 8px 20px rgba(15,23,42,0.07); }
-.acct-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #f1f5f9; }
-.acct-item:last-child { border-bottom: 0; }
-.k { color: #64748b; font-size: 13px; }
-.v { color: #0f172a; font-weight: 700; }
-.unbind-btn { margin-top: 16px; border-radius: 999px; }
-.tabbar { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid #e5e7eb; display: flex; height: 56px; }
-.tab { flex: 1; text-align: center; line-height: 56px; color: #6b7280; font-size: 14px; }
-.tab.active { color: #2563eb; font-weight: 600; }
-.agreement-sheet { background: #fff; border-radius: 14px 14px 0 0; padding: 14px; }
-.sheet-title { font-size: 16px; font-weight: 700; color: #0f172a; }
-.agreement-text { max-height: 45vh; margin-top: 10px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; box-sizing: border-box; }
-.p { display: block; font-size: 12px; color: #374151; line-height: 1.6; margin-bottom: 6px; }
-.p-title { font-size: 13px; font-weight: 700; color: #111827; }
-.p-sub { font-weight: 700; color: #1f2937; margin-top: 8px; }
+
+.mine-scroll {
+	position: absolute;
+	left: 0;
+	right: 0;
+	top: 0;
+	bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+	z-index: 1;
+	box-sizing: border-box;
+}
+
+.mine-inner {
+	padding: 12px 16px 8px;
+}
+
+.page-title {
+	display: block;
+	font-size: 22px;
+	font-weight: 700;
+	color: rgba(248, 250, 252, 0.96);
+	margin-bottom: 14px;
+	letter-spacing: 0.02em;
+}
+
+.profile-card {
+	display: flex;
+	gap: 12px;
+	align-items: center;
+	padding: 16px;
+	margin-bottom: 14px;
+}
+
+.avatar {
+	width: 58px;
+	height: 58px;
+	border-radius: 18px;
+	border: 2px solid rgba(255, 255, 255, 0.18);
+	background: rgba(15, 23, 42, 0.4);
+}
+
+.name {
+	display: block;
+	font-size: 17px;
+	font-weight: 700;
+	color: #f8fafc;
+}
+
+.sub {
+	display: block;
+	margin-top: 4px;
+	color: rgba(203, 213, 225, 0.85);
+	font-size: 12px;
+}
+
+.acct-card {
+	padding: 6px 14px 12px;
+	margin-bottom: 14px;
+}
+
+.acct-item {
+	display: flex;
+	justify-content: space-between;
+	padding: 12px 0;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.acct-item:last-child {
+	border-bottom: 0;
+}
+
+.acct-hint {
+	display: block;
+	margin-top: 8px;
+	font-size: 11px;
+	color: rgba(251, 191, 36, 0.9);
+	line-height: 1.45;
+}
+
+.k {
+	color: rgba(186, 199, 216, 0.95);
+	font-size: 13px;
+}
+
+.v {
+	color: #a7f3d0;
+	font-weight: 700;
+}
+
+.menu-card {
+	overflow: hidden;
+	margin-bottom: 8px;
+}
+
+.menu-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 16px;
+	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.menu-item:last-child {
+	border-bottom: 0;
+}
+
+.menu-title {
+	color: #e2e8f0;
+	font-size: 14px;
+}
+
+.menu-arrow {
+	color: rgba(148, 163, 184, 0.9);
+	font-size: 18px;
+	line-height: 1;
+}
+
+.unbind-btn {
+	margin-top: 8px;
+	border-radius: 999px;
+	opacity: 0.95;
+}
+
+.mine-bottom-spacer {
+	height: 20px;
+}
+
+.tabbar {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 20;
+	display: flex;
+	height: calc(56px + env(safe-area-inset-bottom, 0px));
+	padding-bottom: env(safe-area-inset-bottom, 0px);
+	box-sizing: border-box;
+	align-items: flex-start;
+}
+
+.tab {
+	flex: 1;
+	text-align: center;
+	line-height: 56px;
+	font-size: 14px;
+}
+
+.agreement-sheet {
+	border-radius: 20px 20px 0 0;
+	padding: 16px 16px 12px;
+	margin: 0;
+	max-height: 88vh;
+	box-sizing: border-box;
+}
+
+.agreement-sheet--dark {
+	background: rgba(15, 23, 42, 0.92);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-bottom: none;
+	backdrop-filter: blur(24px);
+	-webkit-backdrop-filter: blur(24px);
+}
+
+.sheet-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #f8fafc;
+}
+
+.agreement-text {
+	max-height: 42vh;
+	margin-top: 10px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 12px;
+	padding: 10px;
+	box-sizing: border-box;
+	background: rgba(0, 0, 0, 0.2);
+}
+
+.p {
+	display: block;
+	font-size: 12px;
+	color: rgba(226, 232, 240, 0.92);
+	line-height: 1.6;
+	margin-bottom: 6px;
+}
+
+.p-title {
+	font-size: 13px;
+	font-weight: 700;
+	color: #f8fafc;
+}
+
+.p-sub {
+	font-weight: 700;
+	color: #cbd5e1;
+	margin-top: 8px;
+}
 </style>
 

@@ -5,8 +5,7 @@ const brandCollection = db.collection('hsy-brand');
 const operationLogCollection = db.collection('hsy-operation-logs');
 const tradeCollection = db.collection('hsy-machine-trades');
 const merchantCollection = db.collection('hsy-merchant-users');
-const riskCollection = db.collection('hsy-risk-records');
-const riskRecordCollection = db.collection('hsy-risk-records');
+const incomePacketCollection = db.collection('hsy-income-packets');
 
 // 格式化时间
 function formatTime(timestamp) {
@@ -25,6 +24,13 @@ function generateTradeNo() {
 	const ts = Date.now();
 	const rnd = Math.floor(Math.random() * 9000) + 1000;
 	return `MOCK${ts}${rnd}`;
+}
+
+function monthNo(ts) {
+	const d = new Date(Number(ts));
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, '0');
+	return `${y}-${m}`;
 }
 
 // 记录操作日志
@@ -46,6 +52,46 @@ async function recordOperationLog(event, action, targetId, targetName, content) 
 	} catch (error) {
 		console.error('记录操作日志失败:', error);
 	}
+}
+
+async function tryActivateMachineByTotal(machine, newTotal, now) {
+	if (!machine || machine.is_activated) return { activated: !!(machine && machine.is_activated), activatedTime: machine?.activated_time || null };
+	const brandId = String(machine.brand_id || '').trim();
+	const brandName = String(machine.brand_name || '').trim();
+	let brand = null;
+	if (brandId) {
+		const brandRes = await brandCollection
+			.where(
+				db.command.and([
+					{ brand_id: brandId },
+					db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])
+				])
+			)
+			.limit(1)
+			.get();
+		brand = brandRes.data && brandRes.data[0];
+	}
+	if (!brand && brandName) {
+		const brandByName = await brandCollection
+			.where(
+				db.command.and([
+					{ brand_name: brandName },
+					db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])
+				])
+			)
+			.limit(1)
+			.get();
+		brand = brandByName.data && brandByName.data[0];
+	}
+	if (!brand) return { activated: !!machine.is_activated, activatedTime: machine.activated_time || null };
+	const cond = Number(brand.activation_condition || 0);
+	if (!(Number.isFinite(cond) && cond > 0)) return { activated: !!machine.is_activated, activatedTime: machine.activated_time || null };
+	if (Number(newTotal || 0) + 1e-8 < cond) return { activated: false, activatedTime: null };
+	await machineCollection.where({ device_id: machine.device_id, is_deleted: false }).update({
+		is_activated: true,
+		activated_time: now
+	});
+	return { activated: true, activatedTime: now };
 }
 
 // 获取品牌列表（用于下拉框）
@@ -172,7 +218,74 @@ async function getMachineList(data) {
 			.get();
 		
 		// 格式化数据
-		const machineList = result.data.map(item => ({
+		const machineList = await Promise.all((result.data || []).map(async (item) => {
+			let frozen = Number(item.frozen_amount || 0);
+			let pendingAmt = Number(item.pending_amount || 0);
+			let withdrawnAmt = Number(item.withdrawn_amount || 0);
+			const bindStart = Number(item.bind_time || 0);
+			if (item.is_bound === 1 && item.bind_user_id) {
+				try {
+					let merchant = null;
+					// 先按机具号找，兼容 bind_user_id 历史口径不一致的问题
+					const merchantByDevice = await merchantCollection
+						.where({ device_id: String(item.device_id) })
+						.limit(1)
+						.get();
+					merchant = merchantByDevice.data && merchantByDevice.data[0];
+					if (!merchant) {
+						const merchantRes = await merchantCollection
+							.where(
+								db.command.or([
+									{ user_id: String(item.bind_user_id) },
+									{ _id: String(item.bind_user_id) }
+								])
+							)
+							.limit(1)
+							.get();
+						merchant = merchantRes.data && merchantRes.data[0];
+					}
+					if (merchant) {
+						pendingAmt = Number(merchant.pending_withdraw || 0);
+						withdrawnAmt = Number(merchant.withdrawn || 0);
+						// 顺手回写机具，避免历史数据不同步导致页面显示0
+						if (
+							Number(item.pending_amount || 0) !== pendingAmt ||
+							Number(item.withdrawn_amount || 0) !== withdrawnAmt
+						) {
+							await machineCollection.doc(item._id).update({
+								pending_amount: Number(pendingAmt.toFixed(4)),
+								withdrawn_amount: Number(withdrawnAmt.toFixed(4))
+							});
+						}
+					}
+
+					const tradeRes = await tradeCollection.where({
+						device_id: item.device_id,
+						is_deleted: db.command.neq(true),
+						amount: db.command.gt(0),
+						create_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
+					}).field({ cashback: true, amount: true }).limit(5000).get();
+					let freezeTotal = 0;
+					(tradeRes.data || []).forEach((t) => {
+						const c = t.cashback != null ? Number(t.cashback || 0) : Number(t.amount || 0) * 0.0038;
+						if (Number.isFinite(c) && c > 0) freezeTotal += c;
+					});
+					const claimRes = await incomePacketCollection.where({
+						merchant_user_id: String(item.bind_user_id),
+						status: 'claimed',
+						is_deleted: false,
+						claimed_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
+					}).field({ amount: true }).limit(5000).get();
+					let releaseTotal = 0;
+					(claimRes.data || []).forEach((p) => {
+						releaseTotal += Number(p.amount || 0);
+					});
+					frozen = Math.max(0, Number((freezeTotal - releaseTotal).toFixed(4)));
+				} catch (e) {
+					console.error('calc frozen_amount failed:', e);
+				}
+			}
+			return ({
 			id: item.device_id,
 			deviceId: item.device_id,
 			brandId: item.brand_id,
@@ -188,11 +301,12 @@ async function getMachineList(data) {
 			isActivatedText: item.is_activated ? '已激活' : '未激活',
 			activatedTime: formatTime(item.activated_time),
 			totalTransaction: `￥${item.total_transaction.toFixed(2)}`,
-			pendingWithdrawn: `￥${item.pending_amount.toFixed(2)}/${item.withdrawn_amount.toFixed(2)}`,
-			frozenAmount: `￥${item.frozen_amount.toFixed(2)}`,
+			pendingWithdrawn: `￥${Number(pendingAmt || 0).toFixed(2)}/${Number(withdrawnAmt || 0).toFixed(2)}`,
+			frozenAmount: `￥${Number(frozen || 0).toFixed(2)}`,
 			merchant: item.merchant || '管理员',
 			salesman: item.salesman || '管理员',
 			inStockTime: formatTime(item.in_stock_time)
+		});
 		}));
 		
 		return {
@@ -238,13 +352,17 @@ async function virtualSwipe(data, event) {
 			return { code: 403, message: '未绑定用户不允许刷卡' };
 		}
 
+		const cashback = Number((swipeAmount * 0.0038).toFixed(4));
+		const releaseAmount = Number((cashback / 5).toFixed(4));
 		const newTotal = Number((Number(machine.total_transaction || 0) + swipeAmount).toFixed(2));
+		const now = Date.now();
 		await machineCollection.where({ device_id: deviceId, is_deleted: false }).update({
-			total_transaction: newTotal
+			total_transaction: newTotal,
+			frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
 		});
+		const act = await tryActivateMachineByTotal(machine, newTotal, now);
 
 		const tradeNo = generateTradeNo();
-		const now = Date.now();
 		await tradeCollection.add({
 			device_id: deviceId,
 			trade_no: tradeNo,
@@ -252,12 +370,21 @@ async function virtualSwipe(data, event) {
 			user_name: machine.bind_user_name || '',
 			user_mobile: '',
 			trade_type: 'virtual',
+			paychannel: '',
+			paychannel_text: '虚拟',
+			is_risk_trade: false,
+			risk_audit_status: 'none',
+			stats_eligible: true,
 			amount: swipeAmount,
-			is_activated: !!machine.is_activated,
+			is_activated: !!act.activated,
 			total_transaction: newTotal,
-			cashback: null,
-			release_amount: null,
+			cashback: cashback,
+			cashback_time: cashback > 0 ? now : null,
+			release_amount: releaseAmount,
+			release_ratio: 20,
+			is_deleted: false,
 			company: machine.merchant || '管理员',
+			risk_control_status: 'no',
 			create_time: now
 		});
 
@@ -278,11 +405,12 @@ async function getTradeList(data) {
 			return { code: 400, message: '缺少机具编号' };
 		}
 
-		const query = tradeCollection.where({ device_id: deviceId });
+		const query = tradeCollection.where({ device_id: deviceId, is_deleted: db.command.neq(true) });
 		const countRes = await query.count();
 		const total = countRes.total;
 		const res = await query
 			.orderBy('create_time', 'desc')
+			.orderBy('_id', 'desc')
 			.skip((page - 1) * pageSize)
 			.limit(pageSize)
 			.get();
@@ -294,8 +422,8 @@ async function getTradeList(data) {
 			tradeType: item.trade_type === 'real' ? '真实刷卡' : '虚拟刷卡',
 			isActivated: item.is_activated ? '是' : '否',
 			totalTransaction: `￥${Number(item.total_transaction || 0).toFixed(2)}`,
-			cashback: '',
-			releaseAmount: '',
+			cashback: Number(item.cashback || 0) > 0 ? `￥${Number(item.cashback || 0).toFixed(4)}${item.cashback_time ? '\n' + formatTime(item.cashback_time) : ''}` : '-',
+			releaseAmount: Number(item.release_amount || 0) > 0 ? `￥${Number(item.release_amount || 0).toFixed(4)}\n${Number(item.release_ratio || 20)}%` : '-',
 			createTime: formatTime(item.create_time),
 			company: item.company ? `${item.company}\n(${item.company})` : ''
 		}));
@@ -307,6 +435,119 @@ async function getTradeList(data) {
 		};
 	} catch (error) {
 		console.error('获取交易流水失败:', error);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function getFreezeBillList(data) {
+	try {
+		const {
+			deviceId = '',
+			releaseMonth = '',
+			tradeNo = '',
+			accountType = '',
+			page = 1,
+			pageSize = 20
+		} = data || {};
+		if (!deviceId) return { code: 400, message: '缺少机具编号' };
+		const machineRes = await machineCollection.where({ device_id: String(deviceId), is_deleted: false }).limit(1).get();
+		const machine = machineRes.data && machineRes.data[0];
+		const bindStart = Number(machine?.bind_time || 0);
+		const q = tradeCollection.where({
+			device_id: String(deviceId),
+			is_deleted: db.command.neq(true),
+			amount: db.command.gt(0),
+			create_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
+		});
+		const res = await q.orderBy('create_time', 'asc').orderBy('_id', 'asc').limit(5000).get();
+		const trades = res.data || [];
+		const merchantUserId = machine && machine.bind_user_id ? String(machine.bind_user_id) : '';
+		let claimedPackets = [];
+		if (merchantUserId) {
+			const packetRes = await incomePacketCollection
+				.where({
+					merchant_user_id: merchantUserId,
+					status: 'claimed',
+					is_deleted: false,
+					claimed_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
+				})
+				.orderBy('claimed_time', 'asc')
+				.orderBy('_id', 'asc')
+				.limit(5000)
+				.get();
+			claimedPackets = packetRes.data || [];
+		}
+		let bal = 0;
+		const events = [];
+		for (const t of trades) {
+			const ts = Number(t.create_time || Date.now());
+			const ym = monthNo(ts);
+			const no = String(t.trade_no || '');
+			const amount = Number(t.amount || 0);
+			const cashback = Number((t.cashback != null ? t.cashback : amount * 0.0038).toFixed(4));
+			if (cashback > 0) {
+				events.push({
+					eventType: 'freeze',
+					ts,
+					deviceId: String(deviceId),
+					releaseMonth: ym,
+					tradeNo: no,
+					accountType: '冻结',
+					tradeAmount: amount.toFixed(4),
+					billAmount: cashback.toFixed(4)
+				});
+			}
+		}
+		for (const p of claimedPackets) {
+			const ts = Number(p.claimed_time || p.update_time || p.create_time || Date.now());
+			const amt = Number(p.amount || 0);
+			if (amt > 0) {
+				events.push({
+					eventType: 'release',
+					ts,
+					deviceId: String(deviceId),
+					releaseMonth: String(p.month_no || monthNo(ts)),
+					tradeNo: String(p.packet_no || p.dedup_key || p._id || ''),
+					accountType: '释放',
+					tradeAmount: '-',
+					billAmount: amt.toFixed(4)
+				});
+			}
+		}
+		events.sort((a, b) => Number(a.ts) - Number(b.ts));
+		const rows = [];
+		for (const e of events) {
+			const orig = bal;
+			if (e.eventType === 'freeze') {
+				bal = Number((orig + Number(e.billAmount || 0)).toFixed(4));
+			} else {
+				bal = Number(Math.max(0, orig - Number(e.billAmount || 0)).toFixed(4));
+			}
+			rows.push({
+				deviceId: e.deviceId,
+				releaseMonth: e.releaseMonth,
+				tradeNo: e.tradeNo,
+				accountType: e.accountType,
+				tradeAmount: e.tradeAmount,
+				originalAmount: orig.toFixed(4),
+				billAmount: e.billAmount,
+				ratioText: e.eventType === 'freeze' ? '0.38% - 20%' : '领取释放',
+				postAmount: bal.toFixed(4),
+				createTime: formatTime(e.ts),
+				_ts: e.ts
+			});
+		}
+		let out = rows;
+		if (releaseMonth) out = out.filter((x) => String(x.releaseMonth) === String(releaseMonth));
+		if (tradeNo) out = out.filter((x) => String(x.tradeNo).includes(String(tradeNo)));
+		if (accountType) out = out.filter((x) => String(x.accountType) === String(accountType));
+		out = out.sort((a, b) => Number(b._ts) - Number(a._ts));
+		const total = out.length;
+		const start = (Number(page) - 1) * Number(pageSize);
+		const list = out.slice(start, start + Number(pageSize)).map(({ _ts, ...rest }) => rest);
+		return { code: 0, message: '获取成功', data: { list, total, page: Number(page), pageSize: Number(pageSize) } };
+	} catch (error) {
+		console.error('冻结账单列表失败:', error);
 		return { code: 500, message: '获取失败' };
 	}
 }
@@ -336,7 +577,7 @@ async function getCardRecordList(data) {
 			tradeTypeList
 		} = data || {};
 
-		let query = tradeCollection;
+		let query = tradeCollection.where({ is_deleted: db.command.neq(true) });
 
 		const brandKeyArr = Array.isArray(brandIds) && brandIds.length
 			? [...new Set(brandIds.map((id) => String(id).trim()).filter(Boolean))]
@@ -410,32 +651,40 @@ async function getCardRecordList(data) {
 			: [];
 		if (rsArr.length === 1) {
 			if (rsArr[0] === 'risk') {
-				query = query.where({ risk_control_status: 'risk' });
+				query = query.where(
+					db.command.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }])
+				);
 			} else if (rsArr[0] === 'release') {
-				query = query.where({ risk_control_status: 'release' });
+				query = query.where(
+					db.command.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }])
+				);
 			} else if (rsArr[0] === 'no') {
-				query = query.where(db.command.or([{ risk_control_status: 'no' }, { risk_control_status: null }]));
+				query = query.where({ is_risk_trade: db.command.neq(true) });
 			}
 		} else if (rsArr.length > 1) {
 			const ors = [];
 			for (const r of rsArr) {
 				if (r === 'risk') {
-					ors.push({ risk_control_status: 'risk' });
+					ors.push(db.command.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }]));
 				} else if (r === 'release') {
-					ors.push({ risk_control_status: 'release' });
+					ors.push(db.command.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }]));
 				} else if (r === 'no') {
-					ors.push(db.command.or([{ risk_control_status: 'no' }, { risk_control_status: null }]));
+					ors.push({ is_risk_trade: db.command.neq(true) });
 				}
 			}
 			if (ors.length) {
 				query = query.where(db.command.or(ors));
 			}
 		} else if (riskStatus === 'risk') {
-			query = query.where({ risk_control_status: 'risk' });
+			query = query.where(
+				db.command.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }])
+			);
 		} else if (riskStatus === 'release') {
-			query = query.where({ risk_control_status: 'release' });
+			query = query.where(
+				db.command.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }])
+			);
 		} else if (riskStatus === 'no') {
-			query = query.where(db.command.or([{ risk_control_status: 'no' }, { risk_control_status: null }]));
+			query = query.where({ is_risk_trade: db.command.neq(true) });
 		}
 		if (timeStart) {
 			query = query.where({ create_time: db.command.gte(Number(timeStart)) });
@@ -455,6 +704,14 @@ async function getCardRecordList(data) {
 		} else if (tradeType === 'real') {
 			query = query.where({ trade_type: 'real' });
 		}
+
+		query = query.where({ stats_eligible: db.command.neq(false) });
+		query = query.where(
+			db.command.or([
+				{ is_risk_trade: db.command.neq(true) },
+				{ risk_audit_status: 'approved' }
+			])
+		);
 
 		const countRes = await query.count();
 		const total = countRes.total;
@@ -479,7 +736,8 @@ async function getCardRecordList(data) {
 			const cashback = Number(item.cashback || 0);
 			const releaseAmt = Number(item.release_amount || 0);
 			const releaseRatio = item.release_ratio != null ? item.release_ratio : (totalTx > 0 && releaseAmt > 0 ? (releaseAmt / totalTx * 100) : 0);
-			const ssfl = totalTx > 0 ? (amount / totalTx * 100).toFixed(2) + '%' : '-';
+			// 业务口径：每 10000 元对应 38 积分，折算比例固定为 0.38%
+			const ssfl = totalTx > 0 ? '0.38%' : '-';
 			const bn = brandMap[item.device_id] || '';
 			return {
 				id: item._id,
@@ -505,7 +763,19 @@ async function getCardRecordList(data) {
 				releaseAmount: releaseAmt,
 				releaseAmountText: releaseAmt > 0 ? `￥${releaseAmt.toFixed(4)}` : '-',
 				releaseRatioText: releaseRatio > 0 ? `${releaseRatio}%` : '-',
-				riskStatus: item.risk_control_status === 'risk' ? '风控' : (item.risk_control_status === 'release' ? '解除' : '否'),
+				riskStatus:
+					item.risk_audit_status === 'pending'
+						? '风险待审'
+						: item.risk_audit_status === 'approved'
+							? '风险已通过'
+							: item.risk_audit_status === 'rejected'
+								? '风险已驳回'
+								: item.risk_control_status === 'risk'
+									? '风控'
+									: item.risk_control_status === 'release'
+										? '解除'
+										: '否',
+				paychannelText: item.paychannel_text || '',
 				salesman: item.salesman || '未分配',
 				salesmanTime: '',
 				company: item.company || '管理员',
@@ -541,7 +811,7 @@ function escapeReg(s) {
 	return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// 风控管理列表
+// 风险管理：星驿标准贷记卡/京东白条等待审核的机具流水
 async function getRiskList(data) {
 	try {
 		const {
@@ -562,60 +832,63 @@ async function getRiskList(data) {
 			sortOrder = ''
 		} = data || {};
 
-		const parts = [{ is_deleted: false }];
+		let query = tradeCollection.where({
+			is_risk_trade: true,
+			stats_eligible: true,
+			trade_type: 'real'
+		});
 
 		if (userKeyword) {
 			const r = new RegExp(escapeReg(userKeyword), 'i');
-			parts.push(db.command.or([{ user_nickname: r }, { user_mobile: r }]));
+			query = query.where(db.command.or([{ user_name: r }, { user_mobile: r }]));
 		}
 		if (snTradeKeyword) {
 			const r = new RegExp(escapeReg(snTradeKeyword), 'i');
-			parts.push(db.command.or([{ sn: r }, { trade_no: r }]));
+			query = query.where(db.command.or([{ device_id: r }, { trade_no: r }]));
 		}
 
 		const minOk = amountMin !== '' && amountMin !== undefined && Number.isFinite(Number(amountMin));
 		const maxOk = amountMax !== '' && amountMax !== undefined && Number.isFinite(Number(amountMax));
 		if (minOk && maxOk) {
-			parts.push(db.command.and([
-				{ amount: db.command.gte(Number(amountMin)) },
-				{ amount: db.command.lte(Number(amountMax)) }
-			]));
+			query = query.where(
+				db.command.and([
+					{ amount: db.command.gte(Number(amountMin)) },
+					{ amount: db.command.lte(Number(amountMax)) }
+				])
+			);
 		} else if (minOk) {
-			parts.push({ amount: db.command.gte(Number(amountMin)) });
+			query = query.where({ amount: db.command.gte(Number(amountMin)) });
 		} else if (maxOk) {
-			parts.push({ amount: db.command.lte(Number(amountMax)) });
+			query = query.where({ amount: db.command.lte(Number(amountMax)) });
 		}
 
 		const stArr = Array.isArray(statusList)
 			? [...new Set(statusList.map((x) => String(x)))]
 			: [];
 		if (stArr.length === 1) {
-			parts.push({ status: stArr[0] });
+			query = query.where({ risk_audit_status: stArr[0] });
 		} else if (stArr.length > 1) {
-			parts.push({ status: db.command.in(stArr) });
+			query = query.where({ risk_audit_status: db.command.in(stArr) });
 		} else if (status) {
-			parts.push({ status: String(status) });
+			query = query.where({ risk_audit_status: String(status) });
 		}
 
 		if (scenarioKeyword) {
-			parts.push({ business_scenario: new RegExp(escapeReg(scenarioKeyword), 'i') });
+			query = query.where({ paychannel_text: new RegExp(escapeReg(scenarioKeyword), 'i') });
 		}
 
 		if (createTimeStart) {
-			parts.push({ create_time: db.command.gte(Number(createTimeStart)) });
+			query = query.where({ create_time: db.command.gte(Number(createTimeStart)) });
 		}
 		if (createTimeEnd) {
-			parts.push({ create_time: db.command.lte(Number(createTimeEnd)) });
+			query = query.where({ create_time: db.command.lte(Number(createTimeEnd)) });
 		}
 		if (updateTimeStart) {
-			parts.push({ update_time: db.command.gte(Number(updateTimeStart)) });
+			query = query.where({ risk_audit_time: db.command.gte(Number(updateTimeStart)) });
 		}
 		if (updateTimeEnd) {
-			parts.push({ update_time: db.command.lte(Number(updateTimeEnd)) });
+			query = query.where({ risk_audit_time: db.command.lte(Number(updateTimeEnd)) });
 		}
-
-		const whereExpr = parts.length === 1 ? parts[0] : db.command.and(parts);
-		let query = riskCollection.where(whereExpr);
 
 		let orderByField = 'create_time';
 		let orderByDir = 'desc';
@@ -638,21 +911,20 @@ async function getRiskList(data) {
 
 		const list = (res.data || []).map((item) => ({
 			id: item._id,
-			userDisplay: [item.user_nickname || '', item.user_mobile || ''].filter(Boolean).join('\n') || '-',
-			snTradeDisplay: [item.sn || '-', item.trade_no || '-'].filter((x) => x !== '-').length
-				? `${item.sn || '-'} / ${item.trade_no || '-'}`
-				: '-',
-			sn: item.sn || '',
+			userDisplay: [item.user_name || '', item.user_mobile || ''].filter(Boolean).join('\n') || '-',
+			snTradeDisplay: `${item.device_id || '-'} / ${item.trade_no || '-'}`,
+			sn: item.device_id || '',
 			tradeNo: item.trade_no || '',
 			amount: Number(item.amount || 0),
 			amountText: `￥${Number(item.amount || 0).toFixed(2)}`,
-			businessLicense: item.business_license || '',
-			tradeProof: item.trade_proof || '',
-			businessScenario: item.business_scenario || '-',
-			status: item.status || 'pending',
-			statusText: riskRecordStatusText(item.status),
+			businessLicense: '',
+			tradeProof: '',
+			businessScenario: item.paychannel_text || item.paychannel || '-',
+			auditRemark: item.risk_audit_remark || '',
+			status: item.risk_audit_status || 'pending',
+			statusText: riskRecordStatusText(item.risk_audit_status || 'pending'),
 			createTime: formatTime(item.create_time),
-			updateTime: formatTime(item.update_time)
+			updateTime: item.risk_audit_time ? formatTime(item.risk_audit_time) : '-'
 		}));
 
 		return {
@@ -663,6 +935,39 @@ async function getRiskList(data) {
 	} catch (error) {
 		console.error('风控列表失败:', error);
 		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function riskAuditTrade(data, event) {
+	try {
+		const tradeId = data && (data.tradeId || data.id);
+		const status = String((data && data.status) || '').trim();
+		const remark = String((data && data.remark) || '').trim().slice(0, 500);
+		if (!tradeId) return { code: 400, message: '缺少流水ID' };
+		if (status !== 'approved' && status !== 'rejected') return { code: 400, message: 'status 须为 approved 或 rejected' };
+
+		const docRes = await tradeCollection.doc(tradeId).get();
+		const doc = docRes.data && docRes.data[0];
+		if (!doc) return { code: 404, message: '流水不存在' };
+		if (!doc.is_risk_trade) return { code: 400, message: '非风险流水' };
+		if (doc.risk_audit_status && doc.risk_audit_status !== 'pending') {
+			return { code: 400, message: '该流水已审核' };
+		}
+
+		const now = Date.now();
+		await tradeCollection.doc(tradeId).update({
+			risk_audit_status: status,
+			risk_audit_remark: remark,
+			risk_audit_time: now,
+			risk_control_status: status === 'approved' ? 'release' : 'risk'
+		});
+
+		await recordOperationLog(event, 'riskAuditTrade', tradeId, tradeId, `风险审核:${status} ${remark}`);
+
+		return { code: 0, message: '审核已保存', data: { tradeId, status } };
+	} catch (error) {
+		console.error('riskAuditTrade failed:', error);
+		return { code: 500, message: '审核失败' };
 	}
 }
 
@@ -868,7 +1173,10 @@ async function batchUnbindMachine(data, event) {
 			const bindUserName = machine.bind_user_name || '';
 			const bindUserMobile = machine.bind_user_mobile || '';
 
-			await tradeCollection.where({ device_id: deviceId }).remove();
+			await tradeCollection.where({ device_id: deviceId, is_deleted: db.command.neq(true) }).update({
+				is_deleted: true,
+				delete_time: Date.now()
+			});
 			await machineCollection.where({
 				device_id: deviceId,
 				is_deleted: false
@@ -880,7 +1188,7 @@ async function batchUnbindMachine(data, event) {
 				bind_user_mobile: ''
 			});
 			await merchantCollection.where({ device_id: deviceId }).update({ device_id: '' });
-			await recordOperationLog(event, 'batchUnbind', deviceId, deviceId, `批量解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已删除流水`);
+			await recordOperationLog(event, 'batchUnbind', deviceId, deviceId, `批量解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已软删除流水`);
 		}
 
 		return { code: 0, message: '解绑成功', data: { successCount: rows.length } };
@@ -1136,8 +1444,11 @@ async function unbindMachine(data, event) {
 		const bindUserName = machine.bind_user_name || '';
 		const bindUserMobile = machine.bind_user_mobile || '';
 
-		// 删除该机具的交易流水
-		await tradeCollection.where({ device_id: deviceId }).remove();
+		// 软删除该机具当前流水（保留数据）
+		await tradeCollection.where({ device_id: deviceId, is_deleted: db.command.neq(true) }).update({
+			is_deleted: true,
+			delete_time: Date.now()
+		});
 
 		await machineCollection.where({
 			device_id: deviceId,
@@ -1153,7 +1464,7 @@ async function unbindMachine(data, event) {
 		// 清空该机具对应商户的 device_id
 		await merchantCollection.where({ device_id: deviceId }).update({ device_id: '' });
 
-		await recordOperationLog(event, 'unbind', deviceId, deviceId, `解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已删除流水`);
+		await recordOperationLog(event, 'unbind', deviceId, deviceId, `解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已软删除流水`);
 
 		return { code: 0, message: '解绑成功', data: {} };
 	} catch (error) {
@@ -1192,10 +1503,14 @@ exports.main = async (event, context) => {
 			return await virtualSwipe(actualData, event);
 		case 'tradeList':
 			return await getTradeList(actualData);
+		case 'freezeBillList':
+			return await getFreezeBillList(actualData);
 		case 'cardRecordList':
 			return await getCardRecordList(actualData);
 		case 'riskList':
 			return await getRiskList(actualData);
+		case 'riskAuditTrade':
+			return await riskAuditTrade(actualData, event);
 		default:
 			return {
 				code: 400,

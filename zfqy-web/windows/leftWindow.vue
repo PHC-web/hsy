@@ -1,7 +1,7 @@
 <template>
 	<scroll-view class="sidebar" scroll-y="true">
 		<uni-data-menu ref="menu" :value="currentMenu" :staticMenu="staticMenu" collection="opendb-admin-menus"
-			:page-size="500" :field="field" where="enable==true" orderby="sort asc" active-text-color="#409eff" @select="select">
+			:page-size="500" :field="field" where="enable==true" orderby="sort asc" active-text-color="#2563eb" @select="select">
 		</uni-data-menu>
 	</scroll-view>
 </template>
@@ -113,9 +113,10 @@
 		width: 240px;
 		height: calc(100vh - (var(--top-window-height)));
 		box-sizing: border-box;
-		border-right: 1px solid darken($left-window-bg-color, 8%);
+		border-right: 1px solid rgba(148, 163, 184, 0.28);
 		background-color: $left-window-bg-color;
 		padding-bottom: 10px;
+		box-shadow: 4px 0 32px rgba(15, 23, 42, 0.04);
 	}
 	/* #ifdef H5 */
 	.sidebar ::-webkit-scrollbar {

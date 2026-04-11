@@ -21,9 +21,10 @@
 				</view>
 			</view>
 		</view>
-		<view class="uni-container">
-			<view class="table-container">
-				<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
+		<view class="uni-container brand-list-page">
+			<view class="admin-table-slot">
+				<view class="table-container">
+					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 					<uni-tr>
 						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'brandId')">品牌ID</uni-th>
 						<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'brandName')">品牌名称</uni-th>
@@ -37,7 +38,7 @@
 						<uni-th align="center" width="90" filter-type="select" :filter-data="statusFilterData" @filter-change="headerFilterChange($event, 'status')">使用状态</uni-th>
 						<uni-th align="center" width="200px">状态时间</uni-th>
 						<uni-th align="center" width="200px">添加时间</uni-th>
-						<uni-th align="center">操作</uni-th>
+						<uni-th align="center" width="280px">操作</uni-th>
 					</uni-tr>
 					<uni-tr v-for="(item, index) in brandList" :key="index">
 						<uni-td align="center">{{ item.id }}</uni-td>
@@ -54,18 +55,19 @@
 						</uni-td>
 						<uni-td align="center">{{ item.statusTime }}</uni-td>
 						<uni-td align="center">{{ item.addTime }}</uni-td>
-						<uni-td align="center">
-							<view class="uni-group">
+						<uni-td align="center" width="280">
+							<view class="ops-cell">
 								<button type="primary" size="mini" @click="editBrand(item.id)">编辑</button>
 								<button type="primary" size="mini" @click="bindMachine(item.id)">绑定机具</button>
 								<button type="warn" size="mini" @click="deleteBrand(item.id)">删除</button>
 							</view>
 						</uni-td>
 					</uni-tr>
-				</uni-table>
-				<view class="uni-pagination-box">
-					<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
+					</uni-table>
 				</view>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
 			</view>
 		</view>
 		<!-- #ifndef H5 -->
@@ -342,13 +344,26 @@ export default {
 .export-menu-item { line-height: 32px; padding: 0 10px; font-size: 13px; color: #303133; border-radius: 6px; cursor: pointer; }
 .export-menu-item:hover { background: #f5f7fa; }
 
+.brand-list-page {
+	min-width: 0;
+	max-width: 100%;
+	box-sizing: border-box;
+}
+
 .table-container {
 	background-color: #fff;
 	border-radius: 8px;
 	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 	padding: 15px;
-	overflow-x: hidden;
 	width: 100%;
+	max-width: 100%;
+	box-sizing: border-box;
+	overflow: hidden;
+	-webkit-overflow-scrolling: touch;
+}
+
+.table-container :deep(.uni-table-scroll) {
+	max-width: 100%;
 }
 
 uni-table {
@@ -370,6 +385,22 @@ uni-td {
 	text-overflow: ellipsis;
 	font-size: 13px;
 	padding: 8px 12px;
+}
+
+/* 操作列：允许换行，避免三颗按钮把表格撑出白卡片 */
+.table-container :deep(.uni-table-td:last-child) {
+	white-space: normal;
+	overflow: visible;
+	text-overflow: clip;
+}
+
+.ops-cell {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	justify-content: center;
+	align-items: center;
+	max-width: 100%;
 }
 
 .uni-pagination-box {

@@ -28,7 +28,7 @@
 			</view>
 		</view>
 		<view class="uni-container">
-			<view class="table-container-wrapper">
+			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
 					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 						<uni-tr>
@@ -52,7 +52,9 @@
 							<uni-td>{{ item.brandName }}</uni-td>
 							<uni-td>{{ item.totalTransaction }}</uni-td>
 							<uni-td>{{ item.pendingWithdrawn }}</uni-td>
-							<uni-td>{{ item.frozenAmount }}</uni-td>
+							<uni-td>
+								<text class="link-like" @click="openFreezeBills(item)">{{ item.frozenAmount }}</text>
+							</uni-td>
 							<uni-td>{{ item.speakerId }}</uni-td>
 							<uni-td>{{ item.isBoundText }}</uni-td>
 							<uni-td>
@@ -85,10 +87,10 @@
 							</uni-td>
 						</uni-tr>
 					</uni-table>
-					<view class="uni-pagination-box">
-						<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
-					</view>
 				</view>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
 			</view>
 		</view>
 
@@ -133,7 +135,7 @@
 		</uni-popup>
 
 		<uni-popup ref="tradePopup" type="center">
-			<view class="popup-card popup-wide">
+			<view class="popup-card popup-wide trade-popup-card">
 				<view class="popup-header trade-header">
 					<view>
 						<text class="popup-title">查看交易列表</text>
@@ -144,7 +146,8 @@
 						<text class="trade-summary-value">￥{{ tradeTotalAmount.toFixed(2) }}</text>
 					</view>
 				</view>
-				<view class="popup-body trade-body">
+				<view class="popup-body trade-body trade-body-scrollable">
+					<view class="trade-table-wrap">
 					<uni-table border stripe :loading="tradeLoading">
 						<uni-tr>
 							<uni-th align="center" width="120">机具编号</uni-th>
@@ -171,10 +174,76 @@
 							<uni-td align="center">{{ row.company }}</uni-td>
 						</uni-tr>
 					</uni-table>
+					</view>
 					<view class="trade-footer">
 						<text class="trade-count">显示第 {{ tradePageInfo.from }} 到第 {{ tradePageInfo.to }} 条记录，共 {{ tradePageInfo.total }} 条记录</text>
 						<view class="trade-actions">
+							<uni-pagination
+								show-icon
+								show-page-size
+								:page-size="tradePageInfo.pageSize"
+								v-model="tradePageInfo.page"
+								:total="tradePageInfo.total"
+								@change="onTradePageChanged"
+								@pageSizeChange="onTradePageSizeChange"
+							/>
 							<button class="uni-button" size="mini" type="default" @click="$refs.tradePopup.close()">关闭</button>
+						</view>
+					</view>
+				</view>
+			</view>
+		</uni-popup>
+
+		<uni-popup ref="freezePopup" type="center">
+			<view class="popup-card popup-wide freeze-popup-card">
+				<view class="popup-header trade-header">
+					<view>
+						<text class="popup-title">查看冻结账单</text>
+						<text class="popup-subtitle">机具编号：{{ freezeDeviceId }}</text>
+					</view>
+					<text class="popup-close-x" @click="$refs.freezePopup.close()">×</text>
+				</view>
+				<view class="popup-body trade-body freeze-body">
+					<view class="freeze-table-wrap" :class="{ 'freeze-table-wrap--no-scroll': freezeList.length <= 5 }">
+					<uni-table class="freeze-table" border stripe :loading="freezeLoading">
+						<uni-tr>
+							<uni-th align="center" width="180">机器编号</uni-th>
+							<uni-th align="center" width="120" filter-type="search" @filter-change="freezeHeaderFilterChange($event, 'releaseMonth')">释放月份</uni-th>
+							<uni-th align="center" width="260" filter-type="search" @filter-change="freezeHeaderFilterChange($event, 'tradeNo')">交易单号</uni-th>
+							<uni-th align="center" width="120" filter-type="select" :filter-data="freezeTypeFilterData" @filter-change="freezeHeaderFilterChange($event, 'accountType')">账单类型</uni-th>
+							<uni-th align="center" width="120">交易金额</uni-th>
+							<uni-th align="center" width="120">原来金额</uni-th>
+							<uni-th align="center" width="120">账单金额</uni-th>
+							<uni-th align="center" width="120">金额比率</uni-th>
+							<uni-th align="center" width="120">后来金额</uni-th>
+							<uni-th align="center" width="170">账单时间</uni-th>
+						</uni-tr>
+						<uni-tr v-for="(row, idx) in freezeList" :key="idx">
+							<uni-td align="center">{{ row.deviceId }}</uni-td>
+							<uni-td align="center">{{ row.releaseMonth }}</uni-td>
+							<uni-td align="center">{{ row.tradeNo }}</uni-td>
+							<uni-td align="center" :class="row.accountType === '冻结' ? 'freeze-tag' : 'release-tag'">{{ row.accountType }}</uni-td>
+							<uni-td align="center">{{ row.tradeAmount }}</uni-td>
+							<uni-td align="center">{{ row.originalAmount }}</uni-td>
+							<uni-td align="center">{{ row.billAmount }}</uni-td>
+							<uni-td align="center">{{ row.ratioText }}</uni-td>
+							<uni-td align="center">{{ row.postAmount }}</uni-td>
+							<uni-td align="center">{{ row.createTime }}</uni-td>
+						</uni-tr>
+					</uni-table>
+					</view>
+					<view class="trade-footer freeze-footer">
+						<text class="trade-count">显示第 {{ freezePageInfo.from }} 到第 {{ freezePageInfo.to }} 条记录，共 {{ freezePageInfo.total }} 条记录</text>
+						<view class="trade-actions">
+							<uni-pagination
+								show-icon
+								show-page-size
+								:page-size="freezePageInfo.pageSize"
+								v-model="freezePageInfo.page"
+								:total="freezePageInfo.total"
+								@change="onFreezePageChanged"
+								@pageSizeChange="onFreezePageSizeChange"
+							/>
 						</view>
 					</view>
 				</view>
@@ -312,6 +381,25 @@ export default {
 			tradePageInfo: {
 				page: 1,
 				pageSize: 10,
+				total: 0,
+				from: 0,
+				to: 0
+			},
+			freezeDeviceId: '',
+			freezeLoading: false,
+			freezeList: [],
+			freezeFilters: {
+				releaseMonth: '',
+				tradeNo: '',
+				accountType: ''
+			},
+			freezeTypeFilterData: [
+				{ text: '冻结', value: '冻结', checked: false },
+				{ text: '释放', value: '释放', checked: false }
+			],
+			freezePageInfo: {
+				page: 1,
+				pageSize: 20,
 				total: 0,
 				from: 0,
 				to: 0
@@ -844,6 +932,86 @@ export default {
 					this.tradeLoading = false;
 				});
 			},
+			onTradePageChanged(page) {
+				const nextPage = Number((page && (page.current || page.page || page.currentPage)) || page || 1);
+				this.tradePageInfo.page = Number.isFinite(nextPage) && nextPage > 0 ? nextPage : 1;
+				this.fetchTrades();
+			},
+			onTradePageSizeChange(size) {
+				const nextSize = Number((size && (size.pageSize || size.size || size.current)) || size || 10);
+				this.tradePageInfo.pageSize = Number.isFinite(nextSize) && nextSize > 0 ? nextSize : 10;
+				this.tradePageInfo.page = 1;
+				this.fetchTrades();
+			},
+
+			openFreezeBills(item) {
+				this.freezeDeviceId = item.deviceId;
+				this.freezeFilters = {
+					releaseMonth: '',
+					tradeNo: '',
+					accountType: ''
+				};
+				this.freezeTypeFilterData = [
+					{ text: '冻结', value: '冻结', checked: false },
+					{ text: '释放', value: '释放', checked: false }
+				];
+				this.freezePageInfo.page = 1;
+				this.fetchFreezeBills();
+				this.$refs.freezePopup.open();
+			},
+			freezeHeaderFilterChange(e, field) {
+				const { filterType, filter } = e || {};
+				if (field === 'releaseMonth' && filterType === 'search') {
+					this.freezeFilters.releaseMonth = String(filter == null ? '' : filter).trim().slice(0, 7);
+				} else if (field === 'tradeNo' && filterType === 'search') {
+					this.freezeFilters.tradeNo = String(filter == null ? '' : filter).trim().slice(0, 80);
+				} else if (field === 'accountType' && filterType === 'select') {
+					const arr = Array.isArray(filter) ? filter.map(String) : [];
+					this.freezeFilters.accountType = arr[0] || '';
+				}
+				this.freezePageInfo.page = 1;
+				this.fetchFreezeBills();
+			},
+			fetchFreezeBills() {
+				this.freezeLoading = true;
+				const f = this.freezeFilters || {};
+				this.$request('freezeBillList', {
+					deviceId: this.freezeDeviceId,
+					page: this.freezePageInfo.page,
+					pageSize: this.freezePageInfo.pageSize,
+					releaseMonth: String(f.releaseMonth || '').trim(),
+					tradeNo: String(f.tradeNo || '').trim(),
+					accountType: String(f.accountType || '').trim()
+				}, { functionName: 'machine' }).then((res) => {
+					if (res.code === 0) {
+						this.freezeList = (res.data && res.data.list) ? res.data.list : [];
+						this.freezePageInfo.total = (res.data && res.data.total) || 0;
+						const from = this.freezePageInfo.total === 0 ? 0 : (this.freezePageInfo.page - 1) * this.freezePageInfo.pageSize + 1;
+						const to = Math.min(this.freezePageInfo.page * this.freezePageInfo.pageSize, this.freezePageInfo.total);
+						this.freezePageInfo.from = from;
+						this.freezePageInfo.to = to;
+					} else {
+						uni.showToast({ title: res.message || '获取失败', icon: 'none' });
+					}
+				}).finally(() => {
+					this.freezeLoading = false;
+				});
+			},
+			onFreezePageChanged(page) {
+				const nextPage = Number(
+					(page && (page.current || page.page || page.currentPage)) || page || 1
+				);
+				this.freezePageInfo.page = Number.isFinite(nextPage) && nextPage > 0 ? nextPage : 1;
+				this.fetchFreezeBills();
+			},
+			onFreezePageSizeChange(size) {
+				const nextSize = Number(
+					(size && (size.pageSize || size.size || size.current)) || size || 20
+				);
+				this.freezePageInfo.pageSize = Number.isFinite(nextSize) && nextSize > 0 ? nextSize : 20;
+				this.freezePageInfo.page = 1;
+				this.fetchFreezeBills();
+			},
 		
 		// 刷卡
 		刷卡(item) {
@@ -1076,9 +1244,63 @@ export default {
 .export-menu-item { line-height: 32px; padding: 0 10px; font-size: 13px; color: #303133; border-radius: 6px; cursor: pointer; }
 .export-menu-item:hover { background: #f5f7fa; }
 
+.link-like {
+	color: #2b6bff;
+	cursor: pointer;
+	text-decoration: underline;
+}
+
+.freeze-popup-card {
+	width: 1620px !important;
+	max-width: calc(100vw - 24px) !important;
+	height: 88vh;
+	max-height: 88vh;
+	display: flex;
+	flex-direction: column;
+}
+
+.freeze-body {
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+}
+
+.freeze-table-wrap {
+	flex: 1;
+	min-height: 0;
+	overflow-x: auto;
+	overflow-y: auto;
+	padding-bottom: 4px;
+}
+
+.freeze-footer {
+	flex-shrink: 0;
+	position: sticky;
+	bottom: 0;
+	z-index: 2;
+	background: #fff;
+}
+
+.freeze-table :deep(th),
+.freeze-table :deep(.uni-table-th),
+.freeze-table :deep(.uni-table-th-content) {
+	white-space: nowrap;
+}
+
+.freeze-tag {
+	color: #18bc37;
+	font-weight: 600;
+}
+
+.release-tag {
+	color: #909399;
+	font-weight: 600;
+}
+
 .uni-container {
 	padding: 20px;
-	height: calc(100vh - 50px);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -1164,6 +1386,15 @@ export default {
 	max-width: calc(100vw - 80px);
 }
 
+.trade-popup-card {
+	width: 1320px;
+	max-width: calc(100vw - 24px);
+	height: 86vh;
+	max-height: 86vh;
+	display: flex;
+	flex-direction: column;
+}
+
 .popup-header {
 	padding: 14px 18px;
 	border-bottom: 1px solid #ebeef5;
@@ -1172,6 +1403,20 @@ export default {
 	align-items: baseline;
 	justify-content: space-between;
 	gap: 12px;
+}
+
+.popup-close-x {
+	font-size: 22px;
+	line-height: 1;
+	font-weight: 500;
+	cursor: pointer;
+	user-select: none;
+	opacity: 0.85;
+	padding: 0 4px;
+}
+
+.popup-close-x:hover {
+	opacity: 1;
 }
 
 .popup-title {
@@ -1222,6 +1467,20 @@ export default {
 	padding: 0;
 }
 
+.trade-body-scrollable {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.trade-table-wrap {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+}
+
 .trade-user {
 	white-space: pre-line;
 	color: #111827;
@@ -1244,13 +1503,6 @@ export default {
 .trade-count {
 	font-size: 12px;
 	color: #6b7280;
-}
-
-/* 屏幕高度较小时允许表格区域滚动，避免内容被截断 */
-@media (max-height: 900px) {
-	.table-container-wrapper {
-		overflow-y: auto;
-	}
 }
 
 </style>

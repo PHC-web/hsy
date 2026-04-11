@@ -102,6 +102,21 @@ function mapPaychannelText(v) {
 	return `未知(${k})，联系星驿支付排查`;
 }
 
+function normalizePaychannelCode(raw) {
+	const s = normalizeEnumKey(raw);
+	if (!s) return '';
+	return s.length === 1 ? `0${s}` : s;
+}
+
+/** 标准贷记卡 06、京东白条 31 → 风险待审 */
+function riskAuditFromPaychannel(paychannelRaw) {
+	const code = normalizePaychannelCode(paychannelRaw);
+	if (code === '06' || code === '31') {
+		return { is_risk: true, risk_audit_status: 'pending' };
+	}
+	return { is_risk: false, risk_audit_status: 'none' };
+}
+
 function mapDiscountFlagText(v) {
 	const k = normalizeEnumKey(v);
 	if (!k) return '';
@@ -162,6 +177,46 @@ async function getDefaultBrandForPush() {
 	return cachedDefaultBrand;
 }
 
+async function tryActivateMachineByTotal(machine, newTotal, now) {
+	if (!machine || machine.is_activated) return !!(machine && machine.is_activated);
+	const brandId = normalizeEnumKey(machine.brand_id);
+	const brandName = normalizeEnumKey(machine.brand_name);
+	let brand = null;
+	if (brandId) {
+		const br = await brandCol
+			.where(
+				db.command.and([
+					{ brand_id: brandId },
+					db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])
+				])
+			)
+			.limit(1)
+			.get();
+		brand = br.data && br.data[0];
+	}
+	if (!brand && brandName) {
+		const byName = await brandCol
+			.where(
+				db.command.and([
+					{ brand_name: brandName },
+					db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])
+				])
+			)
+			.limit(1)
+			.get();
+		brand = byName.data && byName.data[0];
+	}
+	if (!brand) return !!machine.is_activated;
+	const cond = Number(brand.activation_condition || 0);
+	if (!(Number.isFinite(cond) && cond > 0)) return !!machine.is_activated;
+	if (Number(newTotal || 0) + 1e-8 < cond) return false;
+	await machineCol.where({ device_id: machine.device_id, is_deleted: false }).update({
+		is_activated: true,
+		activated_time: now
+	});
+	return true;
+}
+
 /** 解析交易时间：orderdat yyyyMMdd + ordertime HHmmss */
 function parseXingyiOrderTime(orderdat, ordertime, fallbackTs) {
 	const od = String(orderdat || '').trim();
@@ -216,6 +271,12 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const createTime = parseXingyiOrderTime(d.orderdat, d.ordertime, receiveTs);
 	const bound = machine.is_bound === 1 && machine.bind_user_id;
 	const newTotal = Number((Number(machine.total_transaction || 0) + amount).toFixed(2));
+	const pch = normalizePaychannelCode(d.paychannel);
+	const pchText = mapPaychannelText(d.paychannel);
+	const risk = riskAuditFromPaychannel(d.paychannel);
+	const cashback = amount > 0 ? Number((amount * 0.0038).toFixed(4)) : 0;
+	const releaseAmount = amount > 0 ? Number((cashback / 5).toFixed(4)) : 0;
+	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
 	await machineTradesCol.add({
 		device_id: deviceId,
@@ -225,19 +286,28 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		user_mobile: bound ? (machine.bind_user_mobile || '') : '',
 		trade_type: 'real',
 		trade_source: 'xingyi',
+		paychannel: pch || '',
+		paychannel_text: pchText,
+		is_risk_trade: !!risk.is_risk,
+		risk_audit_status: risk.risk_audit_status,
+		stats_eligible: !!bound,
 		amount,
-		is_activated: !!machine.is_activated,
+		is_activated: !!activated,
 		total_transaction: newTotal,
-		cashback: null,
-		release_amount: null,
+		cashback: cashback,
+		cashback_time: cashback > 0 ? createTime : null,
+		release_amount: releaseAmount,
+		release_ratio: 20,
+		is_deleted: false,
 		company: machine.merchant || '管理员',
-		risk_control_status: 'no',
+		risk_control_status: risk.is_risk ? 'risk' : 'no',
 		salesman: machine.salesman || '管理员',
 		create_time: createTime
 	});
 
 	await machineCol.where({ device_id: deviceId, is_deleted: false }).update({
-		total_transaction: newTotal
+		total_transaction: newTotal,
+		frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
 	});
 }
 

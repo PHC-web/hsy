@@ -23,11 +23,13 @@
 		</view>
 		<view class="uni-container">
 			<view class="intro">
-				<text class="intro-desc">支持查看本后台机具的虚拟刷卡与星驿推送的真实交易；机具编号未入库的星驿流水仅落库、不在此列表展示。</text>
+				<text class="intro-desc">
+					展示已绑定商户后的机具流水（实际消费/虚拟刷卡）；未绑定机具时的第三方流水仅落库、不参与本页统计与补贴。标准贷记卡/京东白条等待审核的流水请在「风险管理」处理，通过后才会出现在此列表。
+				</text>
 				<view class="intro-rules">
 					<text class="intro-item">· 刷卡激活：新卡本后台必须先机具入库处于未激活状态、单次刷卡金额必须大于设置的激活额度方可有效</text>
 					<text class="intro-item">· 自动返邮：彩卡的必须先通过下单码或者由业务员在后台协助下单成功后方可有效</text>
-					<text class="intro-item">· 代理权益：主要根据平台规则来定</text>
+					<text class="intro-item">· 补贴与权益规则见项目根目录 RULES.md</text>
 				</view>
 			</view>
 
@@ -36,7 +38,7 @@
 				<text class="summary-value">¥{{ totalAmountText }}</text>
 			</view>
 
-			<view class="table-container-wrapper">
+			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
 					<uni-table ref="table" :key="tableKey" border stripe :loading="loading">
 						<uni-tr>
@@ -45,6 +47,7 @@
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'tradeNo')">交易单号</uni-th>
 							<uni-th align="center" width="140" filter-type="select" :filter-data="merchantFilterData" @filter-change="headerFilterChange($event, 'merchantUserId')">交易用户</uni-th>
 							<uni-th align="center" width="110" filter-type="select" :filter-data="tradeTypeFilterData" @filter-change="headerFilterChange($event, 'tradeType')">交易类型</uni-th>
+							<uni-th align="center" width="100">支付渠道</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="isActivatedFilterData" @filter-change="headerFilterChange($event, 'isActivated')">是否激活</uni-th>
 							<uni-th align="center" width="100">累计交易</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="isCashbackFilterData" @filter-change="headerFilterChange($event, 'isCashback')">是否返现</uni-th>
@@ -63,6 +66,7 @@
 								<text class="amount-inline">{{ item.amountText }}</text>
 								<text class="type-inline">{{ item.tradeTypeText }}</text>
 							</uni-td>
+							<uni-td align="center">{{ item.paychannelText || '-' }}</uni-td>
 							<uni-td align="center">
 								{{ item.isActivatedText }}
 								<text v-if="item.isActivated" class="time-suffix">({{ item.activatedTime }})</text>
@@ -90,10 +94,10 @@
 							</uni-td>
 						</uni-tr>
 					</uni-table>
-					<view class="uni-pagination-box">
-						<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
-					</view>
 				</view>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
 			</view>
 		</view>
 		<!-- #ifndef H5 -->
@@ -374,6 +378,7 @@ export default {
 				交易单号: x.tradeNo || '',
 				交易用户: x.userInfo || '',
 				交易类型: x.tradeTypeText || '',
+				支付渠道: x.paychannelText || '',
 				交易金额: x.amountText || '',
 				是否激活: x.isActivatedText || '',
 				累计交易: x.totalTransactionText || '',
@@ -457,7 +462,6 @@ export default {
 .export-menu-item:hover { background: #f5f7fa; }
 .uni-container {
 	padding: 20px;
-	height: calc(100vh - 50px);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;

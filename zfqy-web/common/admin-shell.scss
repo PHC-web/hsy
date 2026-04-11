@@ -1,0 +1,188 @@
+/**
+ * Web 管理后台视觉层：白底 + 主色点缀 + 圆角与柔和阴影
+ * 仅在 H5 且带左侧窗布局时生效，与 uni-admin 结构兼容
+ */
+
+/* #ifdef H5 */
+
+:root {
+	--admin-page-bg: #f1f5f9;
+	--admin-page-bg-end: #f8fafc;
+	--admin-surface: #ffffff;
+	--admin-border-soft: rgba(148, 163, 184, 0.22);
+	--admin-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 12px 40px rgba(15, 23, 42, 0.07);
+	--admin-accent-start: #2563eb;
+	--admin-accent-mid: #6366f1;
+	--admin-accent-end: #8b5cf6;
+}
+
+.uni-app--showleftwindow uni-main {
+	background: linear-gradient(165deg, var(--admin-page-bg) 0%, #e8eef5 42%, var(--admin-page-bg-end) 100%);
+}
+
+.uni-app--showleftwindow uni-page-wrapper {
+	
+	box-sizing: border-box;
+	background-color: transparent;
+}
+
+.uni-app--showleftwindow uni-page-body {
+	border-radius: 14px;
+	border: 1px solid rgba(255, 255, 255, 0.85);
+	box-shadow: var(--admin-shadow);
+	background-color: var(--admin-surface);
+	background-image:
+		linear-gradient(90deg, var(--admin-accent-start) 0%, var(--admin-accent-mid) 50%, var(--admin-accent-end) 100%),
+		linear-gradient(var(--admin-surface), var(--admin-surface));
+	background-size: 100% 3px, 100% 100%;
+	background-repeat: no-repeat;
+	background-position: top left, top left;
+	box-sizing: border-box;
+}
+
+.uni-app--showleftwindow uni-page-head .uni-page-head {
+	color: #1e293b !important;
+	font-weight: 600;
+}
+
+.uni-app--showleftwindow .uni-header {
+	border-bottom: 1px solid rgba(241, 245, 249, 0.95);
+	padding-bottom: 2px;
+}
+
+.uni-app--showleftwindow .uni-title {
+	color: #0f172a;
+	font-weight: 600;
+	letter-spacing: 0.01em;
+}
+
+.uni-app--showleftwindow .uni-sub-title {
+	color: #64748b;
+}
+
+/* 统计卡片等通用区块 */
+.uni-app--showleftwindow .uni-stat--x {
+	border-radius: 12px;
+	border: 1px solid var(--admin-border-soft);
+	box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
+	background: var(--admin-surface);
+}
+
+/* 左侧菜单：柔和 hover / 选中底 */
+.uni-app--showleftwindow .sidebar .uni-menu-item:hover {
+	background-color: #f1f5f9 !important;
+}
+
+.uni-app--showleftwindow .sidebar .uni-menu-item.is-active {
+	background-color: rgba(37, 99, 235, 0.09) !important;
+	border-radius: 0 10px 10px 0;
+}
+
+/*
+ * 列表页（fix-top-window + uni-table）：
+ * uni-container 纵向：A/B 等顶部块 + C(admin-table-slot)占满剩余高度 + D(admin-page-pagination)贴底。
+ * 表格仅在 C 内 .uni-table-scroll 滚动；分页不在 table-container 内。
+ */
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table) .fix-top-window {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table) .fix-top-window > .uni-header {
+	flex-shrink: 0;
+}
+
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table) .fix-top-window > .uni-container {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+/* A/B：顶部说明、筛选等，不参与纵向压缩 */
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.fix-top-window > .uni-container > *:not(.admin-table-slot):not(.admin-page-pagination) {
+	flex-shrink: 0;
+}
+
+/* C：中间表格区 */
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.fix-top-window > .uni-container > .admin-table-slot {
+	flex: 1 1 0%;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot > .table-container-wrapper,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot > .table-container,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot > .table-wrap,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot > unicloud-db {
+	flex: 1 1 0%;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot .table-container {
+	flex: 1 1 0%;
+	min-height: 0;
+	min-width: 0;
+	display: flex !important;
+	flex-direction: column !important;
+	overflow: hidden;
+}
+
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot .table-container uni-table,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot .table-wrap uni-table,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot unicloud-db > uni-table {
+	flex: 1 1 0%;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	width: 100%;
+	min-width: 0;
+}
+
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot .table-container .uni-table-scroll,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot .table-wrap .uni-table-scroll,
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.admin-table-slot unicloud-db .uni-table-scroll {
+	flex: 1 1 0%;
+	min-height: 0 !important;
+	overflow-x: auto !important;
+	overflow-y: auto !important;
+	box-sizing: border-box;
+}
+
+/* D：分页贴 uni-container 底部 */
+.uni-app--showleftwindow uni-page-body:has(.fix-top-window uni-table)
+	.fix-top-window > .uni-container > .admin-page-pagination {
+	flex-shrink: 0;
+	margin-top: 0 !important;
+	min-width: 0;
+	border-top: 1px solid rgba(226, 232, 240, 0.98);
+	background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+	box-sizing: border-box;
+}
+
+/* #endif */

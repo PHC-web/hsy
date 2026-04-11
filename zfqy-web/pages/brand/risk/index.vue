@@ -22,58 +22,71 @@
 			</view>
 		</view>
 		<view class="uni-container">
-			<view class="table-container-wrapper">
+			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
 					<uni-table ref="table" :key="tableKey" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
 							<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">用户(昵称/手机)</uni-th>
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'snTrade')">SN/交易单号</uni-th>
 							<uni-th align="center" width="120" filter-type="range" @filter-change="headerFilterChange($event, 'amount')" sortable @sort-change="amountSortChange">金额</uni-th>
-							<uni-th align="center" width="100">营业执照</uni-th>
-							<uni-th align="center" width="100">交易证明</uni-th>
-							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'scenario')">经营场景</uni-th>
+							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'scenario')">支付渠道</uni-th>
+							<uni-th align="center" width="160">审核意见</uni-th>
 							<uni-th align="center" width="110" filter-type="select" :filter-data="statusFilterData" @filter-change="headerFilterChange($event, 'status')">状态</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">创建时间</uni-th>
-							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">更新时间</uni-th>
-							<uni-th align="center" width="100">操作</uni-th>
+							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">审核时间</uni-th>
+							<uni-th align="center" width="120">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="(item, idx) in list" :key="item.id || idx" v-if="item">
 							<uni-td class="cell-user">{{ item.userDisplay }}</uni-td>
 							<uni-td class="cell-sn">{{ item.snTradeDisplay }}</uni-td>
 							<uni-td align="right" class="cell-amount">{{ item.amountText }}</uni-td>
-							<uni-td align="center">
-								<image v-if="item.businessLicense" class="thumb" :src="item.businessLicense" mode="aspectFit" @click="previewImage(item.businessLicense)" />
-								<text v-else>-</text>
-							</uni-td>
-							<uni-td align="center">
-								<image v-if="item.tradeProof" class="thumb" :src="item.tradeProof" mode="aspectFit" @click="previewImage(item.tradeProof)" />
-								<text v-else>-</text>
-							</uni-td>
 							<uni-td>{{ item.businessScenario }}</uni-td>
+							<uni-td class="cell-remark">{{ item.auditRemark || '-' }}</uni-td>
 							<uni-td align="center">
 								<text :class="statusClass(item.status)">{{ item.statusText }}</text>
 							</uni-td>
 							<uni-td align="center" class="cell-time">{{ item.createTime }}</uni-td>
 							<uni-td align="center" class="cell-time">{{ item.updateTime }}</uni-td>
 							<uni-td align="center">
-								<text class="op-placeholder">—</text>
+								<button
+									v-if="item.status === 'pending'"
+									class="uni-button mini-audit"
+									size="mini"
+									type="primary"
+									@click="openAudit(item)"
+								>
+									审核
+								</button>
+								<text v-else class="op-placeholder">—</text>
 							</uni-td>
 						</uni-tr>
 					</uni-table>
-					<view class="uni-pagination-box">
-						<uni-pagination
-							show-icon
-							show-page-size
-							:page-size="pageInfo.pageSize"
-							v-model="pageInfo.currentPage"
-							:total="pageInfo.total"
-							@change="onPageChanged"
-							@pageSizeChange="onPageSizeChange"
-						/>
-					</view>
 				</view>
 			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination
+					show-icon
+					show-page-size
+					:page-size="pageInfo.pageSize"
+					v-model="pageInfo.currentPage"
+					:total="pageInfo.total"
+					@change="onPageChanged"
+					@pageSizeChange="onPageSizeChange"
+				/>
+			</view>
 		</view>
+		<uni-popup ref="auditPopup" type="center">
+			<view class="audit-panel">
+				<text class="audit-title">风险流水审核</text>
+				<text class="audit-hint">机具/单号：{{ auditRow ? auditRow.snTradeDisplay : '-' }}</text>
+				<textarea v-model="auditRemark" class="audit-textarea" placeholder="请填写审核意见" />
+				<view class="audit-actions">
+					<button class="uni-button" size="mini" @click="closeAudit">取消</button>
+					<button class="uni-button" type="warn" size="mini" @click="submitAudit('rejected')">驳回</button>
+					<button class="uni-button" type="primary" size="mini" @click="submitAudit('approved')">通过</button>
+				</view>
+			</view>
+		</uni-popup>
 		<!-- #ifndef H5 -->
 		<fix-window />
 		<!-- #endif -->
@@ -112,6 +125,8 @@ export default {
 				pageSize: 10,
 				total: 0
 			},
+			auditRow: null,
+			auditRemark: '',
 			tableKey: 1,
 			showExportMenu: false,
 			exportTypeOptions: [
@@ -136,9 +151,45 @@ export default {
 			return 'status-pending';
 		},
 
-		previewImage(url) {
-			if (!url) return;
-			uni.previewImage({ urls: [url], current: url });
+		openAudit(item) {
+			this.auditRow = item;
+			this.auditRemark = '';
+			this.$refs.auditPopup.open();
+		},
+		closeAudit() {
+			this.auditRow = null;
+			this.auditRemark = '';
+			this.$refs.auditPopup.close();
+		},
+		submitAudit(status) {
+			const remark = String(this.auditRemark || '').trim();
+			if (!remark) {
+				uni.showToast({ title: '请填写审核意见', icon: 'none' });
+				return;
+			}
+			const row = this.auditRow;
+			if (!row || !row.id) return;
+			uni.showLoading({ title: '提交中...', mask: true });
+			this.$request(
+				'riskAuditTrade',
+				{ tradeId: row.id, status, remark },
+				{ functionName: 'machine' }
+			)
+				.then((res) => {
+					if (res.code === 0) {
+						uni.showToast({ title: '已保存', icon: 'success' });
+						this.closeAudit();
+						this.search();
+					} else {
+						uni.showToast({ title: res.message || '失败', icon: 'none' });
+					}
+				})
+				.catch(() => {
+					uni.showToast({ title: '请求失败', icon: 'none' });
+				})
+				.finally(() => {
+					uni.hideLoading();
+				});
 		},
 
 		parseTimestampRange(filter) {
@@ -323,10 +374,11 @@ export default {
 				用户: x.userDisplay || '',
 				SN交易单号: x.snTradeDisplay || '',
 				金额: x.amountText || '',
-				经营场景: x.businessScenario || '',
+				支付渠道: x.businessScenario || '',
+				审核意见: x.auditRemark || '',
 				状态: x.statusText || '',
 				创建时间: x.createTime || '',
-				更新时间: x.updateTime || ''
+				审核时间: x.updateTime || ''
 			}));
 		},
 		downloadFile(filename, content, mimeType) {
@@ -407,7 +459,6 @@ export default {
 
 .uni-container {
 	padding: 20px;
-	height: calc(100vh - 50px);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -482,9 +533,55 @@ export default {
 	font-size: 13px;
 }
 
-@media (max-height: 900px) {
-	.table-container-wrapper {
-		overflow-y: auto;
-	}
+.mini-audit {
+	padding: 0 10px;
+	font-size: 12px;
+}
+
+.cell-remark {
+	font-size: 12px;
+	color: #606266;
+	max-width: 200px;
+	word-break: break-all;
+}
+
+.audit-panel {
+	width: 320px;
+	max-width: 90vw;
+	padding: 16px;
+	background: #fff;
+	border-radius: 10px;
+	box-sizing: border-box;
+}
+
+.audit-title {
+	display: block;
+	font-weight: 600;
+	margin-bottom: 8px;
+}
+
+.audit-hint {
+	display: block;
+	font-size: 12px;
+	color: #909399;
+	margin-bottom: 10px;
+}
+
+.audit-textarea {
+	width: 100%;
+	min-height: 80px;
+	border: 1px solid #dcdfe6;
+	border-radius: 6px;
+	padding: 8px;
+	font-size: 13px;
+	box-sizing: border-box;
+	margin-bottom: 12px;
+}
+
+.audit-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	flex-wrap: wrap;
 }
 </style>

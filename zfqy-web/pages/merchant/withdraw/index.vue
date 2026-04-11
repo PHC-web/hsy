@@ -38,7 +38,7 @@
 				<text class="sum-item sum-main">总付款：¥ {{ summaryText.totalPayable }}</text>
 			</view>
 
-			<view class="table-container-wrapper">
+			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
 					<uni-table ref="table" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
@@ -71,7 +71,7 @@
 							</uni-td>
 							<uni-td align="center" class="cell-time">{{ item.arrivalTime || '-' }}</uni-td>
 							<uni-td align="center">
-								<text :class="arrivalClass(item.arrivalStatus)">{{ item.arrivalStatusText }}</text>
+								<text :class="item.arrivalClassName">{{ item.arrivalStatusText }}</text>
 							</uni-td>
 							<uni-td align="center">
 								<view class="op-actions">
@@ -91,18 +91,18 @@
 							</uni-td>
 						</uni-tr>
 					</uni-table>
-					<view class="uni-pagination-box">
-						<uni-pagination
-							show-icon
-							show-page-size
-							:page-size="pageInfo.pageSize"
-							v-model="pageInfo.currentPage"
-							:total="pageInfo.total"
-							@change="onPageChanged"
-							@pageSizeChange="onPageSizeChange"
-						/>
-					</view>
 				</view>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination
+					show-icon
+					show-page-size
+					:page-size="pageInfo.pageSize"
+					v-model="pageInfo.currentPage"
+					:total="pageInfo.total"
+					@change="onPageChanged"
+					@pageSizeChange="onPageSizeChange"
+				/>
 			</view>
 		</view>
 		<!-- #ifndef H5 -->
@@ -112,6 +112,13 @@
 </template>
 
 <script>
+function arrivalStatusTagClass(status) {
+	const s = String(status || '');
+	if (s === 'received') return 'tag-ok';
+	if (s === 'returned' || s === 'expired') return 'tag-bad';
+	return 'tag-warn';
+}
+
 export default {
 	data() {
 		return {
@@ -177,13 +184,6 @@ export default {
 		this.search();
 	},
 	methods: {
-		arrivalClass(status) {
-			const s = String(status || '');
-			if (s === 'received') return 'tag-ok';
-			if (s === 'returned' || s === 'expired') return 'tag-bad';
-			return 'tag-warn';
-		},
-
 		parseTimestampRange(filter) {
 			if (!Array.isArray(filter) || filter.length < 2) {
 				return { start: '', end: '' };
@@ -241,7 +241,10 @@ export default {
 				.then((res) => {
 					this.loading = false;
 					if (res.code === 0) {
-						this.list = res.data.list || [];
+						const raw = res.data.list || [];
+						this.list = raw.map((row) =>
+							Object.assign({}, row, { arrivalClassName: arrivalStatusTagClass(row.arrivalStatus) })
+						);
 						this.pageInfo.total = res.data.total || 0;
 						const su = res.data.summary;
 						if (su) {
@@ -533,7 +536,6 @@ export default {
 
 .uni-container {
 	padding: 20px;
-	height: calc(100vh - 50px);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -660,9 +662,4 @@ export default {
 	font-weight: 600;
 }
 
-@media (max-height: 900px) {
-	.table-container-wrapper {
-		overflow-y: auto;
-	}
-}
 </style>

@@ -26,7 +26,7 @@
 				<text class="page-title">交易账单</text>
 				<text class="page-sub">记录 H5 充值与线下首冲账单数据</text>
 			</view>
-			<view class="table-container-wrapper">
+			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
 					<uni-table :key="tableKey" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
@@ -62,18 +62,18 @@
 							<uni-td align="center">{{ item.payTime || '-' }}</uni-td>
 						</uni-tr>
 					</uni-table>
-					<view class="uni-pagination-box">
-						<uni-pagination
-							show-icon
-							show-page-size
-							:page-size="pageInfo.pageSize"
-							v-model="pageInfo.currentPage"
-							:total="pageInfo.total"
-							@change="onPageChanged"
-							@pageSizeChange="onPageSizeChange"
-						/>
-					</view>
 				</view>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination
+					show-icon
+					show-page-size
+					:page-size="pageInfo.pageSize"
+					v-model="pageInfo.currentPage"
+					:total="pageInfo.total"
+					@change="onPageChanged"
+					@pageSizeChange="onPageSizeChange"
+				/>
 			</view>
 		</view>
 		<!-- #ifndef H5 -->
@@ -311,7 +311,6 @@ export default {
 <style scoped>
 .uni-container {
 	padding: 20px;
-	height: calc(100vh - 50px);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;

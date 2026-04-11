@@ -16,6 +16,7 @@
 			</view>
 		</view>
 		<view class="uni-container">
+			<view class="admin-table-slot">
 			<unicloud-db ref="udb" collection="uni-id-tag" field="tagid,name,description,create_date" :where="where"
 				page-data="replace" :orderby="orderby" :getcount="true" :page-size="options.pageSize"
 				:page-current="options.pageCurrent" v-slot:default="{ data, pagination, loading, error, options }"
@@ -55,11 +56,12 @@
 						</uni-td>
 					</uni-tr>
 				</uni-table>
-				<view class="uni-pagination-box">
-					<uni-pagination show-iconn show-page-size :page-size="pagination.size" v-model="pagination.current"
-						:total="pagination.count" @change="onPageChanged" @pageSizeChange="changeSize" />
-				</view>
 			</unicloud-db>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination show-icon show-page-size :page-size="options.pageSize" v-model="options.pageCurrent"
+					:total="udbTotalCount" @change="onPageChanged" @pageSizeChange="changeSize" />
+			</view>
 		</view>
 
 		<!-- #ifndef H5 -->
@@ -119,7 +121,8 @@ export default {
 					"标签描述": "description"
 				}
 			},
-			exportExcelData: []
+			exportExcelData: [],
+			udbTotalCount: 0
 		}
 	},
 	onLoad() {
@@ -139,6 +142,12 @@ export default {
 	methods: {
 		onqueryload(data) {
 			this.exportExcelData = data
+			this.$nextTick(() => {
+				const u = this.$refs.udb
+				if (u && u.pagination && typeof u.pagination.count !== 'undefined') {
+					this.udbTotalCount = u.pagination.count
+				}
+			})
 		},
 		changeSize(pageSize) {
 			this.options.pageSize = pageSize

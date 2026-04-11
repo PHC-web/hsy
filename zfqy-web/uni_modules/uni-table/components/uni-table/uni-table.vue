@@ -308,6 +308,7 @@ $border-color: #ebeef5;
 	/* #ifndef APP-NVUE */
 	overflow-x: auto;
 	/* #endif */
+	height:calc(100vh - 300px);
 }
 
 .uni-table {

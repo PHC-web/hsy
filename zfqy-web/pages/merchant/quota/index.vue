@@ -28,7 +28,7 @@
 			</view>
 		</view>
 		<view class="uni-container">
-			<view class="table-wrap">
+			<view class="table-wrap admin-table-slot">
 				<uni-table :key="tableKey" border stripe :loading="loading" empty-text="暂无额度包数据">
 					<uni-tr>
 						<uni-th align="center" width="46">
@@ -66,17 +66,17 @@
 						</uni-td>
 					</uni-tr>
 				</uni-table>
-				<view class="uni-pagination-box">
-					<uni-pagination
-						show-icon
-						show-page-size
-						:page-size="pageInfo.pageSize"
-						v-model="pageInfo.currentPage"
-						:total="pageInfo.total"
-						@change="onPageChanged"
-						@pageSizeChange="onPageSizeChange"
-					/>
-				</view>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination
+					show-icon
+					show-page-size
+					:page-size="pageInfo.pageSize"
+					v-model="pageInfo.currentPage"
+					:total="pageInfo.total"
+					@change="onPageChanged"
+					@pageSizeChange="onPageSizeChange"
+				/>
 			</view>
 
 			<uni-popup ref="formPopup" type="center">
@@ -412,7 +412,6 @@ export default {
 <style scoped>
 .uni-container {
 	padding: 16px;
-	height: calc(100vh - 50px);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;

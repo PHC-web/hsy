@@ -1,0 +1,137 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/demo/icons/icons",
+    "pages/demo/table/table",
+    "uni_modules/uni-id-pages/pages/login/login-withpwd",
+    "pages/error/404",
+    "uni_modules/uni-id-pages/pages/userinfo/change_pwd/change_pwd",
+    "uni_modules/uni-upgrade-center/pages/version/list",
+    "uni_modules/uni-upgrade-center/pages/version/add",
+    "uni_modules/uni-upgrade-center/pages/version/detail",
+    "uni_modules/uni-id-pages/pages/userinfo/deactivate/deactivate",
+    "uni_modules/uni-id-pages/pages/userinfo/userinfo",
+    "uni_modules/uni-id-pages/pages/userinfo/bind-mobile/bind-mobile",
+    "uni_modules/uni-id-pages/pages/userinfo/cropImage/cropImage",
+    "uni_modules/uni-id-pages/pages/login/login-smscode",
+    "uni_modules/uni-id-pages/pages/login/login-withoutpwd",
+    "uni_modules/uni-id-pages/pages/register/register",
+    "uni_modules/uni-id-pages/pages/register/register-admin",
+    "uni_modules/uni-id-pages/pages/register/register-by-email",
+    "uni_modules/uni-id-pages/pages/retrieve/retrieve",
+    "uni_modules/uni-id-pages/pages/retrieve/retrieve-by-email",
+    "uni_modules/uni-id-pages/pages/common/webview/webview",
+    "uni_modules/uni-id-pages/pages/userinfo/set-pwd/set-pwd",
+    "uni_modules/uni-id-pages/pages/userinfo/realname-verify/realname-verify"
+  ],
+  "subPackages": [
+    {
+      "root": "pages/system",
+      "pages": [
+        "menu/list",
+        "menu/add",
+        "menu/edit",
+        "permission/list",
+        "permission/add",
+        "permission/edit",
+        "role/add",
+        "role/edit",
+        "role/list",
+        "user/add",
+        "user/edit",
+        "user/list",
+        "app/add",
+        "app/list",
+        "app/uni-portal/uni-portal",
+        "tag/add",
+        "tag/edit",
+        "tag/list",
+        "safety/list"
+      ]
+    },
+    {
+      "root": "pages/uni-stat",
+      "pages": [
+        "page-res/page-res",
+        "page-ent/page-ent",
+        "page-content/page-content",
+        "page-rule/page-rule",
+        "scene/scene",
+        "channel/channel",
+        "error/js/detail",
+        "error/app/app",
+        "event/event",
+        "device/overview/overview",
+        "device/activity/activity",
+        "device/trend/trend",
+        "device/retention/retention",
+        "device/comparison/comparison",
+        "device/stickiness/stickiness",
+        "user/overview/overview",
+        "user/activity/activity",
+        "user/trend/trend",
+        "user/retention/retention",
+        "user/comparison/comparison",
+        "user/stickiness/stickiness",
+        "pay-order/overview/overview",
+        "pay-order/list/list",
+        "pay-order/funnel/funnel",
+        "pay-order/ranking/ranking"
+      ]
+    },
+    {
+      "root": "pages/brand",
+      "pages": [
+        "list/index",
+        "list/add",
+        "machine/index",
+        "machine/add",
+        "card-record/index",
+        "risk/index"
+      ]
+    },
+    {
+      "root": "pages/merchant",
+      "pages": [
+        "list/index",
+        "list/add",
+        "withdraw/index",
+        "coupon/index",
+        "quota/index"
+      ]
+    },
+    {
+      "root": "pages/finance",
+      "pages": [
+        "device-order/index",
+        "trade-bill/index"
+      ]
+    },
+    {
+      "root": "pages/wechat",
+      "pages": [
+        "official-account/index",
+        "menu/index"
+      ]
+    },
+    {
+      "root": "pages/h5",
+      "pages": [
+        "auth/index",
+        "home/index",
+        "income/index",
+        "mine/index"
+      ]
+    }
+  ],
+  "window": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "管理系统",
+    "navigationBarBackgroundColor": "#F8F8F8",
+    "backgroundColor": "#F8F8F8"
+  },
+  "networkTimeout": {
+    "uploadFile": 1200000
+  },
+  "usingComponents": {}
+}

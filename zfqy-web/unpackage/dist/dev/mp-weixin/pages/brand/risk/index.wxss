@@ -1,0 +1,93 @@
+
+.uni-button.data-v-02697c93 {
+	margin-left: 10px;
+}
+.header-actions.data-v-02697c93 {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.export-dropdown.data-v-02697c93 { position: relative;
+}
+.export-trigger.data-v-02697c93 { display: flex; align-items: center; gap: 8px;
+}
+.export-icon.data-v-02697c93 { font-size: 12px;
+}
+.export-caret.data-v-02697c93 { font-size: 12px; opacity: 0.8;
+}
+.export-menu.data-v-02697c93 { position: absolute; right: 0; top: calc(100% + 6px); min-width: 130px; background: #fff; border: 1px solid #ebeef5; border-radius: 8px; box-shadow: 0 8px 20px rgba(0,0,0,.12); z-index: 10; padding: 6px;
+}
+.export-menu-item.data-v-02697c93 { line-height: 32px; padding: 0 10px; font-size: 13px; color: #303133; border-radius: 6px; cursor: pointer;
+}
+.export-menu-item.data-v-02697c93:hover { background: #f5f7fa;
+}
+.uni-container.data-v-02697c93 {
+	padding: 20px;
+	height: calc(100vh - 50px);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+.table-container-wrapper.data-v-02697c93 {
+	flex: 1;
+	overflow: hidden;
+	min-height: 0;
+}
+.table-container.data-v-02697c93 {
+	background-color: #ffffff;
+	border-radius: 4px;
+	box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
+	overflow: hidden;
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+}
+.uni-pagination-box.data-v-02697c93 {
+	padding: 12px 16px;
+	text-align: right;
+	flex-shrink: 0;
+}
+.cell-user.data-v-02697c93,
+.cell-sn.data-v-02697c93 {
+	white-space: pre-line;
+	font-size: 13px;
+	line-height: 1.45;
+}
+.cell-amount.data-v-02697c93 {
+	font-weight: 600;
+	color: #2b6bff;
+}
+.cell-time.data-v-02697c93 {
+	font-size: 12px;
+	color: #606266;
+}
+.thumb.data-v-02697c93 {
+	width: 48px;
+	height: 48px;
+	border-radius: 4px;
+	border: 1px solid #ebeef5;
+	cursor: pointer;
+	vertical-align: middle;
+}
+.status-pending.data-v-02697c93 {
+	color: #e6a23c;
+}
+.status-warn.data-v-02697c93 {
+	color: #909399;
+}
+.status-ok.data-v-02697c93 {
+	color: #18bc37;
+}
+.status-bad.data-v-02697c93 {
+	color: #f56c6c;
+}
+.op-placeholder.data-v-02697c93 {
+	color: #c0c4cc;
+	font-size: 13px;
+}
+@media (max-height: 900px) {
+.table-container-wrapper.data-v-02697c93 {
+		overflow-y: auto;
+}
+}
+

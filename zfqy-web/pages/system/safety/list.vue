@@ -1,5 +1,5 @@
 <template>
-	<view>
+	<view class="fix-top-window">
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
@@ -8,8 +8,10 @@
 			</view>
 		</view>
 		<view class="uni-container">
+			<view class="admin-table-slot">
 			<unicloud-db ref="udb" :collection="collectionList" :options="options" :where="where" page-data="replace" :orderby="orderby"
-			 :getcount="true" :page-size="options.pageSize" :page-current="options.pageCurrent" v-slot:default="{data,pagination,loading,error}">
+			 :getcount="true" :page-size="options.pageSize" :page-current="options.pageCurrent" v-slot:default="{data,pagination,loading,error,options}"
+			 @load="onqueryload">
 				<uni-table :loading="loading" :emptyText="error.message || '没有更多数据'" border stripe >
 					<uni-tr>
 						<uni-th align="center">序号</uni-th>
@@ -20,7 +22,7 @@
 						<uni-th align="center">时间</uni-th>
 					</uni-tr>
 					<uni-tr v-for="(item,index) in data" :key="index">
-						<uni-td align="center">{{(pagination.current -1)*pagination.size + (index+1)}}</uni-td>
+						<uni-td align="center">{{(options.pageCurrent - 1) * options.pageSize + (index + 1)}}</uni-td>
 						<uni-td align="center">{{item.user_id[0] && item.user_id[0].username || '-'}}</uni-td>
 						<uni-td align="center">{{item.user_id[0] && item.user_id[0].nickname || '-'}}</uni-td>
 						<uni-td align="center">{{item.type}}</uni-td>
@@ -30,12 +32,16 @@
 						</uni-td>
 					</uni-tr>
 				</uni-table>
-				<view class="uni-pagination-box">
-					<uni-pagination show-icon :page-size="pagination.size" v-model="pagination.current" :total="pagination.count"
-					 @change="onPageChanged" />
-				</view>
 			</unicloud-db>
+			</view>
+			<view class="uni-pagination-box admin-page-pagination">
+				<uni-pagination show-icon :page-size="options.pageSize" v-model="options.pageCurrent" :total="udbTotalCount"
+				 @change="onPageChanged" />
+			</view>
 		</view>
+		<!-- #ifndef H5 -->
+		<fix-window />
+		<!-- #endif -->
 	</view>
 </template>
 
@@ -58,10 +64,19 @@
 				options: {
 					pageSize,
 					pageCurrent
-				}
+				},
+				udbTotalCount: 0
 			}
 		},
 		methods: {
+			onqueryload() {
+				this.$nextTick(() => {
+					const u = this.$refs.udb
+					if (u && u.pagination && typeof u.pagination.count !== 'undefined') {
+						this.udbTotalCount = u.pagination.count
+					}
+				})
+			},
 			getWhere() {
 				const query = this.query.trim()
 				if (!query) {

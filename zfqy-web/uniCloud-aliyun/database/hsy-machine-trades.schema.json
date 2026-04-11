@@ -14,6 +14,21 @@
 			"bsonType": "string",
 			"description": "来源：xingyi=星驿TYY0001推送；空=后台虚拟刷卡等"
 		},
+		"paychannel": { "bsonType": "string", "description": "星驿支付渠道编码，如06标准贷记卡、31京东白条" },
+		"paychannel_text": { "bsonType": "string", "description": "支付渠道文案" },
+		"is_risk_trade": { "bsonType": "bool", "description": "是否风险渠道流水（贷记卡/白条）", "default": false },
+		"risk_audit_status": {
+			"bsonType": "string",
+			"description": "风险审核：none=非风险，pending=待审，approved=通过，rejected=驳回",
+			"default": "none"
+		},
+		"risk_audit_remark": { "bsonType": "string", "description": "审核意见" },
+		"risk_audit_time": { "bsonType": "timestamp", "description": "审核时间" },
+		"stats_eligible": {
+			"bsonType": "bool",
+			"description": "是否参与统计与补贴（绑定后流水为true，未绑定仅落库为false）",
+			"default": true
+		},
 		"amount": { "bsonType": "number", "description": "交易金额" },
 		"is_activated": { "bsonType": "bool", "description": "是否激活" },
 		"total_transaction": { "bsonType": "number", "description": "累计交易（交易后）" },

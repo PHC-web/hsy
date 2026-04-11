@@ -1,0 +1,1 @@
+<view class="error-page data-v-f31f6ff0"><view class="error-container data-v-f31f6ff0"><view class="error-code data-v-f31f6ff0">404</view><view class="error-title data-v-f31f6ff0">页面未找到</view><block wx:if="{{errMsg}}"><view class="error-msg data-v-f31f6ff0">{{errMsg}}</view></block></view><fix-window vue-id="479939fe-1" class="data-v-f31f6ff0" bind:__l="__l"></fix-window></view>

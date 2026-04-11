@@ -621,6 +621,30 @@
 						"topWindow": false,
 						"leftWindow": false
 					}
+				},
+				{
+					"path": "recharge/index",
+					"style": {
+						"navigationBarTitleText": "额度充值",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "notify/pay/index",
+					"style": {
+						"navigationBarTitleText": "支付通知地址",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "notify/refund/index",
+					"style": {
+						"navigationBarTitleText": "退款通知地址",
+						"topWindow": false,
+						"leftWindow": false
+					}
 				}
 			]
 		}

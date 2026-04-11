@@ -69,4 +69,40 @@ router.post('/brand/updateStatus', async (ctx) => {
 	ctx.body = result.result;
 });
 
+// 微信支付回调（支付成功）
+router.post('/pay/wechat/notify', async (ctx) => {
+	const result = await uniCloud.callFunction({
+		name: 'merchant',
+		data: {
+			action: 'h5WxPayNotify',
+			data: {
+				headers: ctx.request.header || {},
+				rawBody: ctx.request.rawBody || '',
+				body: ctx.request.body || {}
+			}
+		}
+	});
+	const body = result?.result?.data?.ack || { code: 'FAIL', message: '处理失败' };
+	ctx.status = body.code === 'SUCCESS' ? 200 : 500;
+	ctx.body = body;
+});
+
+// 微信支付回调（退款成功）
+router.post('/pay/wechat/refund-notify', async (ctx) => {
+	const result = await uniCloud.callFunction({
+		name: 'merchant',
+		data: {
+			action: 'h5WxRefundNotify',
+			data: {
+				headers: ctx.request.header || {},
+				rawBody: ctx.request.rawBody || '',
+				body: ctx.request.body || {}
+			}
+		}
+	});
+	const body = result?.result?.data?.ack || { code: 'FAIL', message: '处理失败' };
+	ctx.status = body.code === 'SUCCESS' ? 200 : 500;
+	ctx.body = body;
+});
+
 module.exports = router;

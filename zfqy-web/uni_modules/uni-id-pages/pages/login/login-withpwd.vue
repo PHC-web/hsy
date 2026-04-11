@@ -1,18 +1,24 @@
 <!-- 账号密码登录页 -->
 <template>
-	<view class="uni-content">
+	<view class="login-page-shell">
+		<view class="uni-content">
 		<view class="login-logo">
 			<image :src="logo"></image>
 		</view>
 		<!-- 顶部文字 -->
-		<text class="title title-box">账号密码登录</text>
+		<view class="title-block">
+			<text class="title title-box">账号密码登录</text>
+			<text v-if="config.isAdmin" class="login-subtitle">欢迎回来，请登录以进入管理后台</text>
+		</view>
 		<uni-forms>
 			<uni-forms-item name="username">
 				<uni-easyinput :focus="focusUsername" @blur="focusUsername = false" class="input-box"
+					primaryColor="#2563eb"
 					:inputBorder="false" v-model="username" placeholder="请输入手机号/用户名/邮箱" />
 			</uni-forms-item>
 			<uni-forms-item name="password">
 				<uni-easyinput :focus="focusPassword" @blur="focusPassword = false" class="input-box" clearable
+					primaryColor="#2563eb"
 					type="password" :inputBorder="false" v-model="password" placeholder="请输入密码" />
 			</uni-forms-item>
 		</uni-forms>
@@ -32,6 +38,7 @@
 		<!-- #ifndef MP-TOUTIAO -->
 		<uni-id-pages-fab-login ref="uniFabLogin"></uni-id-pages-fab-login>
 		<!-- #endif -->
+		</view>
 	</view>
 </template>
 
@@ -163,15 +170,86 @@
 <style lang="scss" scoped>
 	@import "@/uni_modules/uni-id-pages/common/login-page.scss";
 
+	.login-page-shell {
+		width: 100%;
+		min-height: 100%;
+		box-sizing: border-box;
+	}
+
+	/* #ifdef H5 */
+	@media screen and (max-width: 689px) {
+		.login-page-shell {
+			min-height: 100vh;
+			padding: 28px 20px 48px;
+			background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 55%, #eef2f7 100%);
+			box-sizing: border-box;
+		}
+
+		.login-page-shell .uni-content {
+			margin-top: 8px;
+			padding: 32px 22px 36px !important;
+			border-radius: 16px;
+			background-color: #fff;
+			border: 1px solid rgba(148, 163, 184, 0.22);
+			box-shadow: 0 8px 28px rgba(15, 23, 42, 0.07);
+			background-image:
+				linear-gradient(90deg, #2563eb 0%, #6366f1 50%, #8b5cf6 100%),
+				linear-gradient(#ffffff, #ffffff);
+			background-size: 100% 3px, 100% 100%;
+			background-repeat: no-repeat;
+			background-position: top left, top left;
+		}
+
+		.login-logo {
+			display: flex !important;
+			justify-content: center;
+			margin-bottom: 4px;
+		}
+
+		.login-logo image {
+			width: 56px;
+			height: 56px;
+			border-radius: 12px;
+			box-shadow: 0 4px 14px rgba(37, 99, 235, 0.12);
+			object-fit: contain;
+			background-color: #fff;
+		}
+	}
+
 	@media screen and (min-width: 690px) {
+		.login-page-shell {
+			min-height: 100vh;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			padding: 40px 20px 56px;
+			background: linear-gradient(165deg, #f1f5f9 0%, #e8eef5 42%, #f8fafc 100%);
+		}
+
 		.uni-content {
 			height: auto;
 		}
 	}
+	/* #endif */
+
+	.title-block {
+		width: 100%;
+	}
+
+	.login-subtitle {
+		display: block;
+		margin-top: 6px;
+		margin-bottom: 4px;
+		font-size: 13px;
+		line-height: 1.5;
+		color: #64748b;
+		font-weight: 400;
+	}
 
 	.forget {
 		font-size: 12px;
-		color: #8a8f8b;
+		color: #64748b;
 	}
 
 	.link-box {
@@ -185,5 +263,6 @@
 
 	.link {
 		font-size: 12px;
+		color: #2563eb;
 	}
 </style>

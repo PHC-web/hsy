@@ -1,0 +1,89 @@
+/* H5 商户端：深色底 + 光斑 + 毛玻璃面板（多页复用） */
+
+.h5-glass-bg {
+	position: fixed;
+	left: 0;
+	right: 0;
+	top: 0;
+	bottom: 0;
+	z-index: 0;
+	pointer-events: none;
+	background: linear-gradient(160deg, #070b14 0%, #121829 38%, #0b1020 70%, #15102a 100%);
+}
+
+.h5-glass-orb {
+	position: absolute;
+	border-radius: 50%;
+	filter: blur(72px);
+	pointer-events: none;
+}
+
+.h5-glass-orb-a {
+	width: 220px;
+	height: 220px;
+	top: -40px;
+	right: -30px;
+	background: rgba(99, 102, 241, 0.45);
+}
+
+.h5-glass-orb-b {
+	width: 280px;
+	height: 280px;
+	top: 28%;
+	left: -80px;
+	background: rgba(56, 189, 248, 0.28);
+}
+
+.h5-glass-orb-c {
+	width: 200px;
+	height: 200px;
+	bottom: 18%;
+	right: -40px;
+	background: rgba(244, 114, 182, 0.22);
+}
+
+.h5-glass-mesh {
+	position: absolute;
+	inset: 0;
+	opacity: 0.35;
+	background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+	background-size: 14px 14px;
+}
+
+.h5-glass-panel {
+	position: relative;
+	background: rgba(255, 255, 255, 0.07);
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	border-radius: 22px;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	backdrop-filter: blur(22px);
+	-webkit-backdrop-filter: blur(22px);
+}
+
+.h5-glass-tabbar {
+	background: rgba(15, 23, 42, 0.72);
+	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	backdrop-filter: blur(20px);
+	-webkit-backdrop-filter: blur(20px);
+	box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.2);
+}
+
+.h5-glass-tabbar .tab {
+	color: rgba(148, 163, 184, 0.9);
+}
+
+.h5-glass-tabbar .tab.active {
+	color: #a5b4fc;
+	font-weight: 700;
+}
+
+.h5-glass-input {
+	background: rgba(15, 23, 42, 0.45);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 12px;
+	color: #f1f5f9;
+}
+
+.h5-glass-input::placeholder {
+	color: rgba(148, 163, 184, 0.75);
+}

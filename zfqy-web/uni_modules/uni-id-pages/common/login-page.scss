@@ -29,24 +29,38 @@
 	/* #ifdef H5 */
 	margin: 0 auto;
 	position: relative;
-	top: 100px;
-	padding: 30px 40px 80px 40px;
-	max-width: 450px;
-	max-height: 450px;
-	border-radius: 10px;
-	box-shadow: 0 0 20px #efefef;
-	background-color: #FFF;
+	top: 0;
+	padding: 40px 44px 44px;
+	max-width: 420px;
+	width: 100%;
+	border-radius: 16px;
+	border: 1px solid rgba(148, 163, 184, 0.22);
+	box-shadow:
+		0 1px 2px rgba(15, 23, 42, 0.04),
+		0 12px 40px rgba(15, 23, 42, 0.08);
+	background-color: #ffffff;
+	background-image:
+		linear-gradient(90deg, #2563eb 0%, #6366f1 50%, #8b5cf6 100%),
+		linear-gradient(#ffffff, #ffffff);
+	background-size: 100% 3px, 100% 100%;
+	background-repeat: no-repeat;
+	background-position: top left, top left;
 	/* #endif */
   }
   /* #ifdef H5 */
   .login-logo {
   	display: flex;
   	justify-content: center;
+	margin-bottom: 4px;
   }
 
   .login-logo image {
-	width: 60px;
-  	height: 60px;
+	width: 64px;
+  	height: 64px;
+	border-radius: 14px;
+	box-shadow: 0 4px 16px rgba(37, 99, 235, 0.15);
+	object-fit: contain;
+	background-color: #fff;
   }
 
   .register-back{
@@ -71,8 +85,11 @@
   /* #ifndef APP-NVUE */
   display: flex;
   /* #endif */
-  padding: 18px 0;
-  font-weight: 800;
+  padding: 12px 0 16px;
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  color: #0f172a;
   flex-direction: column;
 }
 
@@ -92,9 +109,9 @@
 /* #endif */
 
 .input-box {
-  height: 44px;
-  background-color: #F8F8F8 !important;
-  border-radius: 0;
+  height: 46px;
+  background-color: #f8fafc !important;
+  border-radius: 10px !important;
   font-size: 14px;
   /* #ifndef APP-NVUE */
   display: flex;
@@ -102,8 +119,25 @@
   flex: 1;
 }
 
+/* inputBorder=false 时无 is-input-border，直接作用于 content */
+.uni-content ::v-deep .uni-easyinput__content {
+  border-radius: 10px !important;
+  border: 1px solid rgba(148, 163, 184, 0.35) !important;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  cursor: text;
+}
+
+.uni-content ::v-deep .uni-easyinput__content-input {
+  cursor: text;
+}
+
+.uni-content ::v-deep .uni-easyinput__content.is-focused {
+  border-color: rgba(37, 99, 235, 0.55) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
 .link {
-  color: #04498c;
+  color: #2563eb;
   cursor: pointer;
 }
 
@@ -113,12 +147,14 @@
 
 .uni-btn {
 	text-align: center;
-	height: 40px;
-	line-height: 40px;
-	margin: 15px 0 10px 0;
+	height: 46px;
+	line-height: 46px;
+	margin: 20px 0 10px 0;
 	color: #FFF !important;
-	border-radius: 5px;
+	border-radius: 999px;
 	font-size: 16px;
+	font-weight: 600;
+	box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);
 }
 
 .uni-body.uni_modules-uni-id-pages-pages-login-login-withoutpwd{

@@ -1,0 +1,13 @@
+{
+	"bsonType": "object",
+	"description": "H5绑定手机号短信验证码（短期）",
+	"permission": { "read": false, "create": true, "update": true, "delete": true },
+	"properties": {
+		"_id": { "description": "ID" },
+		"merchant_id": { "bsonType": "string", "description": "商户文档ID" },
+		"mobile": { "bsonType": "string", "description": "手机号" },
+		"code": { "bsonType": "string", "description": "6位验证码" },
+		"expire_at": { "bsonType": "timestamp", "description": "过期时间" },
+		"create_time": { "bsonType": "timestamp", "description": "创建时间" }
+	}
+}
