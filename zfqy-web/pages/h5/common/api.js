@@ -37,8 +37,20 @@ export function h5BindMobileVerify(payload) {
 	return merchantCall('h5BindMobileVerify', merchantIdentity(payload));
 }
 
+export function h5SetMobileDirect(payload) {
+	return merchantCall('h5SetMobileDirect', merchantIdentity(payload));
+}
+
 export function h5BindMachine(payload) {
 	return merchantCall('h5BindMachine', merchantIdentity(payload));
+}
+
+export function h5MachineBindLogList(payload) {
+	return merchantCall('h5MachineBindLogList', merchantIdentity(payload));
+}
+
+export function h5FinanceRecords(payload) {
+	return merchantCall('h5FinanceRecords', merchantIdentity(payload));
 }
 
 export function h5MineInfo() {
@@ -83,5 +95,21 @@ export function h5IncomeClaimAll() {
 
 export function h5Unbind(reason) {
 	return merchantCall('h5Unbind', merchantIdentity({ reason }));
+}
+
+export function h5FeedbackSummary() {
+	return merchantCall('h5FeedbackSummary', merchantIdentity());
+}
+
+export function h5FeedbackGetOpen() {
+	return merchantCall('h5FeedbackGetOpen', merchantIdentity());
+}
+
+export function h5FeedbackSend(payload) {
+	return merchantCall('h5FeedbackSend', merchantIdentity(payload));
+}
+
+export function h5FeedbackClose() {
+	return merchantCall('h5FeedbackClose', merchantIdentity());
 }
 

@@ -37,18 +37,37 @@
 				</view>
 
 				<view class="menu-card h5-glass-panel">
+					<view class="menu-item" @click="goDevice">
+						<text class="menu-title">码牌绑定</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goFinance">
+						<text class="menu-title">财务管理</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goMobile">
+						<text class="menu-title">手机号维护</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goFeedback">
+						<text class="menu-title">客服反馈</text>
+						<view class="menu-right">
+							<view v-if="feedbackUnread" class="menu-badge" aria-hidden="true"></view>
+							<text class="menu-arrow">›</text>
+						</view>
+					</view>
 					<view class="menu-item" @click="goRecharge">
 						<text class="menu-title">额度充值</text>
 						<text class="menu-arrow">›</text>
 					</view>
-					<view class="menu-item" @click="goPayNotify">
+			<!-- 		<view class="menu-item" @click="goPayNotify">
 						<text class="menu-title">支付结果异步通知地址</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goRefundNotify">
 						<text class="menu-title">退款结果异步通知地址</text>
 						<text class="menu-arrow">›</text>
-					</view>
+					</view> -->
 				</view>
 
 				<button class="unbind-btn" type="warn" @click="confirmUnbind">解除绑定</button>
@@ -78,7 +97,7 @@
 
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
-import { h5MineInfo, h5SignAgreement, h5Unbind } from '@/pages/h5/common/api';
+import { h5MineInfo, h5SignAgreement, h5Unbind, h5FeedbackSummary } from '@/pages/h5/common/api';
 import { clearSession } from '@/pages/h5/common/session';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
@@ -93,6 +112,7 @@ export default {
 				accountPoints: '0.00'
 			},
 			defaultAvatar: H5_APP_LOGO,
+			feedbackUnread: false,
 			agreementLines: [
 				{ cls: 'p p-title', text: '慧收盈“开户优惠”活动计划书（完整内容）' },
 				{ cls: 'p p-sub', text: '重要须知' },
@@ -198,6 +218,22 @@ export default {
 			}
 			this.mine = (res.data && res.data.merchant) || {};
 			this.account = (res.data && res.data.account) || this.account;
+			const fb = await h5FeedbackSummary();
+			if (fb.code === 0 && fb.data) {
+				this.feedbackUnread = !!fb.data.unreadReply;
+			}
+		},
+		goDevice() {
+			uni.navigateTo({ url: '/pages/h5/device/index' });
+		},
+		goFinance() {
+			uni.navigateTo({ url: '/pages/h5/finance/index' });
+		},
+		goMobile() {
+			uni.navigateTo({ url: '/pages/h5/mobile/index' });
+		},
+		goFeedback() {
+			uni.navigateTo({ url: '/pages/h5/feedback/index' });
 		},
 		onAccountAreaClick() {
 			if (this.mine.agreementImg) return;
@@ -381,6 +417,20 @@ export default {
 	justify-content: space-between;
 	padding: 14px 16px;
 	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.menu-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.menu-badge {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #f87171;
+	box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.5);
 }
 
 .menu-item:last-child {

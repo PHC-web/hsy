@@ -1,0 +1,25 @@
+{
+	"bsonType": "object",
+	"required": ["feedback_id", "role"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": { "description": "消息ID" },
+		"feedback_id": { "bsonType": "string", "description": "工单ID" },
+		"role": { "bsonType": "string", "description": "user | admin" },
+		"content": { "bsonType": "string", "description": "文字" },
+		"images": {
+			"bsonType": "array",
+			"description": "uniCloud 文件 fileID 列表",
+			"items": { "bsonType": "string" }
+		},
+		"video": { "bsonType": "string", "description": "单个视频 fileID" },
+		"admin_name": { "bsonType": "string", "description": "管理员回复显示名" },
+		"create_time": { "bsonType": "timestamp" },
+		"is_deleted": { "bsonType": "bool", "default": false }
+	}
+}

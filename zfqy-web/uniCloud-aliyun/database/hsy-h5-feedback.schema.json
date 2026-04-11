@@ -1,0 +1,23 @@
+{
+	"bsonType": "object",
+	"required": ["merchant_id", "status"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": { "description": "工单ID" },
+		"merchant_id": { "bsonType": "string", "description": "hsy-merchant-users._id" },
+		"merchant_user_id": { "bsonType": "string", "description": "商户 user_id" },
+		"status": { "bsonType": "string", "description": "open | closed" },
+		"preview_text": { "bsonType": "string", "description": "列表摘要" },
+		"admin_unread": { "bsonType": "bool", "description": "用户有新消息待客服看", "default": false },
+		"user_unread_reply": { "bsonType": "bool", "description": "客服有新回复待用户看", "default": false },
+		"last_message_at": { "bsonType": "timestamp" },
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" },
+		"is_deleted": { "bsonType": "bool", "default": false }
+	}
+}

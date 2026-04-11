@@ -1,44 +1,62 @@
 <template>
 	<view class="page">
-		<view v-if="!rechargeReady" class="gate-wrap">
-			<image class="h5-brand-logo h5-brand-logo--hero gate-logo" :src="h5Logo" mode="aspectFit" />
-			<text class="gate-text">{{ gateText }}</text>
-		</view>
-		<block v-else>
-		<view class="hero">
-			<image class="h5-brand-logo h5-brand-logo--hero" :src="h5Logo" mode="aspectFit" />
-			<text class="title">额度充值</text>
-			<text class="sub">选择充值套餐，获取交易补贴额度</text>
-		</view>
-		<view class="timer-card">
-			<text class="timer-title">退款周期</text>
-			<text class="timer-main" v-if="countdown.phase === 'window'">可退款窗口倒计时：{{ countdown.refundDaysLeft }} 天</text>
-			<text class="timer-main" v-else>距离可退款窗口：{{ countdown.days180Left }} 天</text>
-			<text class="timer-sub" v-if="countdown.phase === 'window'">请在窗口期内处理；超时将自动进入下一轮 180 天周期。</text>
-			<text class="timer-sub" v-else>到期后会开放 3 天可退款窗口；若未处理，将自动顺延并重新计算 180 天。</text>
-		</view>
-		<view class="card">
-			<view v-for="item in packages" :key="item.id" class="pkg" :class="selectedId === item.id ? 'pkg-active' : ''" @click="selectedId = item.id">
-				<view class="pkg-head">
-					<text class="pkg-title">{{ item.title }}</text>
-					<text class="pkg-price">¥{{ item.price }}</text>
-				</view>
-				<text class="pkg-tip">{{ item.benefitTip }}</text>
-				<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价：¥{{ item.price - currentPackage.price }}</text>
-			</view>
+		<view class="h5-glass-bg" aria-hidden="true">
+			<view class="h5-glass-orb h5-glass-orb-a"></view>
+			<view class="h5-glass-orb h5-glass-orb-b"></view>
+			<view class="h5-glass-orb h5-glass-orb-c"></view>
+			<view class="h5-glass-mesh"></view>
 		</view>
 
-		<view class="actions">
-			<button class="btn-pay" type="primary" :disabled="loading || !selectedId || !canUpgrade" @click="payNow">{{ payButtonText }}</button>
-			<button class="btn-refund" :disabled="loading" @click="refundReset">退款并重置数据</button>
-		</view>
-		<view class="rule-card">
-			<text class="rule-title">退款规则说明</text>
-			<text class="rule-item">1）重置后 180 天内无法退款。</text>
-			<text class="rule-item">2）满 180 天后，系统会自动给客户 3 天提取时间；若客户在第 181~183 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-			<text class="rule-item">3）如客户执意在 180 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
-		</view>
-		</block>
+		<scroll-view class="recharge-scroll" scroll-y :show-scrollbar="false">
+			<view class="recharge-inner">
+				<view v-if="!rechargeReady" class="gate-wrap">
+					<image class="h5-brand-logo h5-brand-logo--hero gate-logo" :src="h5Logo" mode="aspectFit" />
+					<text class="gate-text">{{ gateText }}</text>
+				</view>
+				<block v-else>
+					<view class="hero h5-glass-panel">
+						<image class="h5-brand-logo h5-brand-logo--hero" :src="h5Logo" mode="aspectFit" />
+						<text class="title">额度充值</text>
+						<text class="sub">选择充值套餐，获取交易补贴额度</text>
+					</view>
+					<view class="timer-card h5-glass-panel">
+						<text class="timer-title">退款周期</text>
+						<text class="timer-main" v-if="countdown.phase === 'window'">可退款窗口倒计时：{{ countdown.refundDaysLeft }} 天</text>
+						<text class="timer-main" v-else>距离可退款窗口：{{ countdown.days180Left }} 天</text>
+						<text class="timer-sub" v-if="countdown.phase === 'window'">请在窗口期内处理；超时将自动进入下一轮 180 天周期。</text>
+						<text class="timer-sub" v-else>到期后会开放 3 天可退款窗口；若未处理，将自动顺延并重新计算 180 天。</text>
+					</view>
+					<view class="card h5-glass-panel">
+						<view
+							v-for="item in packages"
+							:key="item.id"
+							class="pkg"
+							:class="selectedId === item.id ? 'pkg-active' : ''"
+							@click="selectedId = item.id"
+						>
+							<view class="pkg-head">
+								<text class="pkg-title">{{ item.title }}</text>
+								<text class="pkg-price">¥{{ item.price }}</text>
+							</view>
+							<text class="pkg-tip">{{ item.benefitTip }}</text>
+							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价：¥{{ item.price - currentPackage.price }}</text>
+						</view>
+					</view>
+
+					<view class="actions">
+						<button class="btn-pay" type="primary" :disabled="loading || !selectedId || !canUpgrade" @click="payNow">{{ payButtonText }}</button>
+						<button class="btn-refund" :disabled="loading" @click="refundReset">退款并重置数据</button>
+					</view>
+					<view class="rule-card h5-glass-panel">
+						<text class="rule-title">退款规则说明</text>
+						<text class="rule-item">1）重置后 180 天内无法退款。</text>
+						<text class="rule-item">2）满 180 天后，系统会自动给客户 3 天提取时间；若客户在第 181~183 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
+						<text class="rule-item">3）如客户执意在 180 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+					</view>
+				</block>
+				<view class="bottom-spacer"></view>
+			</view>
+		</scroll-view>
 	</view>
 </template>
 
@@ -186,10 +204,13 @@ export default {
 			});
 		},
 		refundReset() {
+			const isWindow = this.countdown.phase === 'window';
+			const content = isWindow
+				? '退款后将不享有会员权益，确认退款？'
+				: '充值后180天内无法进行全额退款，现在退款需收取50%违约金，是否要进行退款？';
 			uni.showModal({
 				title: '确认退款重置',
-				content:
-					'退款规则：1) 重置后180天内无法退款；2) 满180天后提供3天提取窗口，181~183天未提取将自动预存顺延；3) 180天内执意退款将扣除50%违约金。\\n\\n继续提交退款重置？',
+				content,
 				success: async (r) => {
 					if (!r.confirm) return;
 					this.loading = true;
@@ -201,8 +222,8 @@ export default {
 							return;
 						}
 						uni.showModal({
-							title: '已完成',
-							content: `退款单号：${res.data.refundNo}\n原金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n实际返还：¥${res.data.finalRefundAmount}`,
+							title: '退款已发起',
+							content: `退款单号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计返还：¥${res.data.finalRefundAmount}\n\n款项将原路退回至微信，到账时间以微信支付为准。`,
 							showCancel: false
 						});
 						await this.loadOptions();
@@ -217,46 +238,195 @@ export default {
 };
 </script>
 
+<style src="@/common/h5-glass.css"></style>
 <style src="@/common/h5-brand.css"></style>
 <style scoped>
-.page { min-height: 100vh; background: #f8fafc; padding: 16px; box-sizing: border-box; }
+.page {
+	min-height: 100vh;
+	position: relative;
+	overflow: hidden;
+	box-sizing: border-box;
+	background: transparent;
+}
+
+.recharge-scroll {
+	position: relative;
+	z-index: 1;
+	height: 100vh;
+	box-sizing: border-box;
+}
+
+.recharge-inner {
+	padding: 16px 16px calc(32px + env(safe-area-inset-bottom, 0px));
+	box-sizing: border-box;
+}
+
+.bottom-spacer {
+	height: 24px;
+}
+
 .gate-wrap {
-	min-height: 50vh;
+	min-height: 60vh;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	justify-content: center;
-	padding: 24px;
+	padding: 32px 24px;
 }
+
 .gate-logo {
 	margin-bottom: 16px;
 }
 
 .gate-text {
 	font-size: 14px;
-	color: #64748b;
+	color: rgba(203, 213, 225, 0.92);
+	text-align: center;
+	line-height: 1.5;
+}
+
+.hero {
+	margin-bottom: 14px;
+	padding: 18px 16px 20px;
 	text-align: center;
 }
-.hero { margin-bottom: 12px; text-align: center; }
-.title { display: block; font-size: 24px; font-weight: 700; color: #111827; }
-.sub { display: block; margin-top: 4px; color: #64748b; font-size: 12px; }
-.timer-card { margin-bottom: 12px; background: #fff; border-radius: 12px; padding: 12px; box-shadow: 0 8px 24px rgba(15,23,42,0.06); }
-.timer-title { display: block; font-size: 13px; color: #64748b; }
-.timer-main { display: block; margin-top: 4px; font-size: 16px; font-weight: 700; color: #0f172a; }
-.timer-sub { display: block; margin-top: 6px; font-size: 12px; color: #475569; line-height: 1.5; }
-.card { background: #fff; border-radius: 12px; padding: 12px; box-shadow: 0 8px 24px rgba(15,23,42,0.06); }
-.pkg { border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; margin-bottom: 10px; }
-.pkg:last-child { margin-bottom: 0; }
-.pkg-active { border-color: #2563eb; background: #eff6ff; }
-.pkg-head { display: flex; justify-content: space-between; align-items: center; }
-.pkg-title { font-size: 16px; font-weight: 700; color: #111827; }
-.pkg-price { font-size: 18px; font-weight: 700; color: #dc2626; }
-.pkg-tip { display: block; margin-top: 6px; color: #4b5563; font-size: 12px; line-height: 1.5; }
-.pkg-upgrade { display: block; margin-top: 4px; color: #1d4ed8; font-size: 12px; }
-.actions { margin-top: 16px; display: flex; flex-direction: column; gap: 10px; }
-.btn-pay { border-radius: 999px; }
-.btn-refund { border-radius: 999px; background: #fff; border: 1px solid #e5e7eb; color: #111827; }
-.rule-card { margin-top: 14px; background: #fff7ed; border: 1px solid #fed7aa; border-radius: 12px; padding: 12px; }
-.rule-title { display: block; font-size: 14px; font-weight: 700; color: #9a3412; margin-bottom: 6px; }
-.rule-item { display: block; font-size: 12px; line-height: 1.6; color: #7c2d12; margin-top: 4px; }
+
+.title {
+	display: block;
+	font-size: 24px;
+	font-weight: 700;
+	color: #f8fafc;
+}
+
+.sub {
+	display: block;
+	margin-top: 6px;
+	color: rgba(203, 213, 225, 0.88);
+	font-size: 12px;
+}
+
+.timer-card {
+	margin-bottom: 14px;
+	padding: 16px;
+}
+
+.timer-title {
+	display: block;
+	font-size: 13px;
+	color: rgba(186, 199, 216, 0.95);
+}
+
+.timer-main {
+	display: block;
+	margin-top: 8px;
+	font-size: 17px;
+	font-weight: 700;
+	color: #fde68a;
+}
+
+.timer-sub {
+	display: block;
+	margin-top: 8px;
+	font-size: 12px;
+	color: rgba(203, 213, 225, 0.88);
+	line-height: 1.55;
+}
+
+.card {
+	padding: 14px;
+	margin-bottom: 14px;
+}
+
+.pkg {
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 14px;
+	padding: 12px;
+	margin-bottom: 10px;
+	background: rgba(15, 23, 42, 0.25);
+}
+
+.pkg:last-child {
+	margin-bottom: 0;
+}
+
+.pkg-active {
+	border-color: rgba(129, 140, 248, 0.65);
+	background: rgba(99, 102, 241, 0.18);
+	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2);
+}
+
+.pkg-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+}
+
+.pkg-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #f1f5f9;
+}
+
+.pkg-price {
+	font-size: 18px;
+	font-weight: 700;
+	color: #fca5a5;
+}
+
+.pkg-tip {
+	display: block;
+	margin-top: 8px;
+	color: rgba(203, 213, 225, 0.9);
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.pkg-upgrade {
+	display: block;
+	margin-top: 6px;
+	color: #a5b4fc;
+	font-size: 12px;
+}
+
+.actions {
+	margin-top: 4px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.btn-pay {
+	border-radius: 999px;
+	box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
+}
+
+.btn-refund {
+	border-radius: 999px;
+	background: rgba(255, 255, 255, 0.08);
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	color: #e2e8f0;
+}
+
+.rule-card {
+	margin-top: 6px;
+	padding: 16px;
+	border-color: rgba(251, 191, 36, 0.28);
+	box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.rule-title {
+	display: block;
+	font-size: 14px;
+	font-weight: 700;
+	color: #fde68a;
+	margin-bottom: 8px;
+}
+
+.rule-item {
+	display: block;
+	font-size: 12px;
+	line-height: 1.65;
+	color: rgba(254, 243, 199, 0.88);
+	margin-top: 6px;
+}
 </style>
