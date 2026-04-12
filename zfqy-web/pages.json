@@ -629,6 +629,24 @@
 					}
 				},
 				{
+					"path": "withdraw/index",
+					"style": {
+						"navigationBarTitleText": "奖励提现",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "pending-return/index",
+					"style": {
+						"navigationBarTitleText": "待返积分",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
 					"path": "mobile/index",
 					"style": {
 						"navigationBarTitleText": "手机号",
@@ -650,6 +668,15 @@
 					"path": "recharge/index",
 					"style": {
 						"navigationBarTitleText": "额度充值",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "recharge-refund/index",
+					"style": {
+						"navigationBarTitleText": "退款与周期",
+						"navigationStyle": "custom",
 						"topWindow": false,
 						"leftWindow": false
 					}

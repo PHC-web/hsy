@@ -79,30 +79,6 @@
 					<text class="quota-bar-cap">剩余 {{ quotaBarPercent }}%</text>
 				</view>
 
-				<!-- 退款窗口倒计时（未充值时右侧为「额度充值」入口） -->
-				<view class="glass countdown-card">
-					<view class="cd-head">
-						<text class="cd-title">退款窗口倒计时</text>
-						<view
-							v-if="countdown.phase === 'none'"
-							class="cd-badge cd-badge--action"
-							@click="goRecharge"
-						>
-							<text class="cd-badge-action-txt">额度充值</text>
-							<text class="cd-badge-action-arrow">›</text>
-						</view>
-						<text v-else class="cd-badge">{{ countdownPhaseLabel }}</text>
-					</view>
-					<text class="cd-desc">{{ countdownDesc }}</text>
-					<view v-if="countdownDigits" class="cd-digits">
-						<view v-for="(p, i) in countdownDigits" :key="i" class="cd-seg">
-							<text class="cd-num">{{ p.num }}</text>
-							<text class="cd-unit">{{ p.unit }}</text>
-						</view>
-					</view>
-					<text v-else class="cd-idle">{{ countdownIdleText }}</text>
-				</view>
-
 				<view v-if="loading" class="loading-hint">
 					<text>加载中…</text>
 				</view>
@@ -119,29 +95,18 @@
 </template>
 
 <script>
-import { h5HomeDashboard, h5MineInfo } from '@/pages/h5/common/api';
+import { h5HomeDashboard } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
 	data() {
 		return {
 			loading: false,
-			serverSkew: 0,
 			mine: {},
 			membership: { tier: 'normal', name: '普通会员', accent: '#94a3b8' },
 			withdraw: { today: '0.00', month: '0.00', year: '0.00' },
 			pendingWithdraw: '0.00',
 			quota: { remaining: '0.00', totalGrantedYuan: 0, usedYuan: '0.00' },
-			countdown: {
-				phase: 'none',
-				days180Left: 0,
-				refundDaysLeft: 0,
-				windowStartMs: 0,
-				windowEndMs: 0,
-				cycleAnchorStartMs: 0
-			},
-			tick: 0,
-			tickTimer: null,
 			defaultAvatar: H5_APP_LOGO
 		};
 	},
@@ -160,79 +125,10 @@ export default {
 			if (total <= 0) return 0;
 			const p = Math.round((rem / total) * 1000) / 10;
 			return Math.min(100, Math.max(0, p));
-		},
-		effectiveNow() {
-			void this.tick;
-			return Date.now() + (this.serverSkew || 0);
-		},
-		countdownTargetMs() {
-			const c = this.countdown;
-			if (!c) return 0;
-			if (c.phase === 'lock') return Number(c.windowStartMs || 0);
-			if (c.phase === 'window') return Number(c.windowEndMs || 0);
-			return 0;
-		},
-		countdownRemainingMs() {
-			const end = this.countdownTargetMs;
-			if (!end || this.countdown.phase === 'none') return 0;
-			return Math.max(0, end - this.effectiveNow);
-		},
-		countdownDigits() {
-			const ms = this.countdownRemainingMs;
-			if (!ms || this.countdown.phase === 'none') return null;
-			const sec = Math.floor(ms / 1000);
-			const d = Math.floor(sec / 86400);
-			const h = Math.floor((sec % 86400) / 3600);
-			const m = Math.floor((sec % 3600) / 60);
-			const s = sec % 60;
-			const parts = [];
-			if (d > 0) parts.push({ num: String(d), unit: '天' });
-			parts.push({ num: String(h).padStart(2, '0'), unit: '时' });
-			parts.push({ num: String(m).padStart(2, '0'), unit: '分' });
-			parts.push({ num: String(s).padStart(2, '0'), unit: '秒' });
-			return parts;
-		},
-		countdownPhaseLabel() {
-			const p = this.countdown.phase;
-			if (p === 'window') return '开放窗口';
-			if (p === 'lock') return '锁定周期';
-			return '未开始';
-		},
-		countdownDesc() {
-			const p = this.countdown.phase;
-			if (p === 'window') {
-				return '当前处于权益处理开放窗口（含退款申请等），距窗口结束还剩：';
-			}
-			if (p === 'lock') {
-				return '下一开放窗口开始前为锁定周期，倒计时结束后可进入 3 天处理窗口：';
-			}
-			return '您尚未充值';
-		},
-		countdownIdleText() {
-			if (this.countdown.phase === 'none') return '';
-			if (this.countdownRemainingMs <= 0) return '正在刷新…';
-			return '';
 		}
 	},
 	onShow() {
 		this.load();
-		if (!this.tickTimer) {
-			this.tickTimer = setInterval(() => {
-				this.tick += 1;
-			}, 1000);
-		}
-	},
-	onUnload() {
-		if (this.tickTimer) {
-			clearInterval(this.tickTimer);
-			this.tickTimer = null;
-		}
-	},
-	onHide() {
-		if (this.tickTimer) {
-			clearInterval(this.tickTimer);
-			this.tickTimer = null;
-		}
 	},
 	methods: {
 		async load() {
@@ -244,15 +140,11 @@ export default {
 					return;
 				}
 				const d = res.data || {};
-				if (typeof d.serverTime === 'number') {
-					this.serverSkew = d.serverTime - Date.now();
-				}
 				this.mine = d.merchant || {};
 				this.membership = d.membership || this.membership;
 				this.withdraw = d.withdraw || this.withdraw;
 				this.pendingWithdraw = d.pendingWithdraw || '0.00';
 				this.quota = Object.assign({}, this.quota, d.quota || {});
-				this.countdown = Object.assign({}, this.countdown, d.countdown || {});
 			} finally {
 				this.loading = false;
 			}
@@ -262,20 +154,6 @@ export default {
 		},
 		goMine() {
 			uni.redirectTo({ url: '/pages/h5/mine/index' });
-		},
-		async goRecharge() {
-			const mine = await h5MineInfo();
-			if (mine.code !== 0) {
-				uni.showToast({ title: mine.message || '获取用户信息失败', icon: 'none' });
-				return;
-			}
-			const m = mine.data && mine.data.merchant;
-			if (!m || !String(m.agreementImg || '').trim()) {
-				uni.showToast({ title: '请先在「我的」中签署优惠活动计划书', icon: 'none' });
-				uni.navigateTo({ url: '/pages/h5/mine/index' });
-				return;
-			}
-			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		}
 	}
 };
@@ -571,90 +449,6 @@ export default {
 	font-size: 11px;
 	color: rgba(148, 163, 184, 0.9);
 	text-align: right;
-}
-
-.countdown-card {
-	padding: 16px 18px 18px;
-	margin-bottom: 20px;
-}
-.cd-head {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
-	margin-bottom: 8px;
-}
-.cd-title {
-	font-size: 15px;
-	font-weight: 700;
-	color: #f8fafc;
-}
-.cd-badge {
-	font-size: 11px;
-	padding: 4px 10px;
-	border-radius: 999px;
-	background: rgba(99, 102, 241, 0.25);
-	color: #c7d2fe;
-	border: 1px solid rgba(129, 140, 248, 0.35);
-	flex-shrink: 0;
-}
-.cd-badge--action {
-	display: flex;
-	align-items: center;
-	gap: 2px;
-	padding: 6px 12px;
-	background: rgba(255, 255, 255, 0.12);
-	border: 1px solid rgba(199, 210, 254, 0.45);
-	color: #e0e7ff;
-}
-.cd-badge-action-txt {
-	font-size: 12px;
-	font-weight: 600;
-	color: #e0e7ff;
-}
-.cd-badge-action-arrow {
-	font-size: 14px;
-	color: rgba(199, 210, 254, 0.95);
-	line-height: 1;
-}
-.cd-desc {
-	display: block;
-	font-size: 12px;
-	color: rgba(186, 199, 216, 0.92);
-	line-height: 1.55;
-	margin-bottom: 14px;
-}
-.cd-digits {
-	display: flex;
-	flex-wrap: wrap;
-	justify-content: center;
-	gap: 10px 14px;
-}
-.cd-seg {
-	min-width: 52px;
-	padding: 10px 12px;
-	border-radius: 14px;
-	background: rgba(15, 23, 42, 0.4);
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	text-align: center;
-}
-.cd-num {
-	display: block;
-	font-size: 20px;
-	font-weight: 800;
-	font-variant-numeric: tabular-nums;
-	color: #e0e7ff;
-	letter-spacing: 0.04em;
-}
-.cd-unit {
-	display: block;
-	margin-top: 2px;
-	font-size: 10px;
-	color: rgba(148, 163, 184, 0.95);
-}
-.cd-idle {
-	font-size: 12px;
-	color: rgba(148, 163, 184, 0.85);
 }
 
 .loading-hint {

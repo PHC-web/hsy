@@ -19,13 +19,6 @@
 						<text class="title">额度充值</text>
 						<text class="sub">选择充值套餐，获取交易补贴额度</text>
 					</view>
-					<view class="timer-card h5-glass-panel">
-						<text class="timer-title">退款周期</text>
-						<text class="timer-main" v-if="countdown.phase === 'window'">可退款窗口倒计时：{{ countdown.refundDaysLeft }} 天</text>
-						<text class="timer-main" v-else>距离可退款窗口：{{ countdown.days180Left }} 天</text>
-						<text class="timer-sub" v-if="countdown.phase === 'window'">请在窗口期内处理；超时将自动进入下一轮 180 天周期。</text>
-						<text class="timer-sub" v-else>到期后会开放 3 天可退款窗口；若未处理，将自动顺延并重新计算 180 天。</text>
-					</view>
 					<view class="card h5-glass-panel">
 						<view
 							v-for="item in packages"
@@ -45,13 +38,17 @@
 
 					<view class="actions">
 						<button class="btn-pay" type="primary" :disabled="loading || !selectedId || !canUpgrade" @click="payNow">{{ payButtonText }}</button>
-						<button class="btn-refund" :disabled="loading" @click="refundReset">退款并重置数据</button>
 					</view>
 					<view class="rule-card h5-glass-panel">
-						<text class="rule-title">退款规则说明</text>
-						<text class="rule-item">1）重置后 180 天内无法退款。</text>
-						<text class="rule-item">2）满 180 天后，系统会自动给客户 3 天提取时间；若客户在第 181~183 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-						<text class="rule-item">3）如客户执意在 180 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+						<text class="rule-title">规则说明</text>
+						<text class="rule-item">1）充值后 180 天内无法退款。</text>
+						<text class="rule-item">2）满 180 天后，系统将开发 3 天窗口期供您提取；若您 3 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
+						<text class="rule-item">3）如您执意在 180 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+						<view class="rule-item rule-item-line">
+							<text class="rule-item-text">4）退款请点击</text>
+							<text class="rule-link" @click="openRefundWindow">这里</text>
+							<text class="rule-item-text">。</text>
+						</view>
 					</view>
 				</block>
 				<view class="bottom-spacer"></view>
@@ -61,7 +58,7 @@
 </template>
 
 <script>
-import { h5MineInfo, h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefundReset } from '@/pages/h5/common/api';
+import { h5MineInfo, h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -73,12 +70,7 @@ export default {
 			packages: [],
 			selectedId: '',
 			loading: false,
-			currentPackage: null,
-			countdown: {
-				phase: 'lock',
-				days180Left: 180,
-				refundDaysLeft: 0
-			}
+			currentPackage: null
 		};
 	},
 	computed: {
@@ -140,7 +132,6 @@ export default {
 			}
 			this.packages = (res.data && res.data.packages) || [];
 			this.currentPackage = res.data?.currentPackage || null;
-			this.countdown = res.data?.countdown || this.countdown;
 			if (this.currentPackage) {
 				const up = this.packages.find((x) => Number(x.price) > Number(this.currentPackage.price));
 				this.selectedId = up ? up.id : this.currentPackage.id;
@@ -170,7 +161,7 @@ export default {
 				}
 				uni.showModal({
 					title: '充值成功',
-					content: `订单号：${res.data.orderNo}\n本次支付：¥${res.data.paidAmount}\n已增加额度：${res.data.quotaAdded}\n退款周期已重置为180天`,
+					content: `订单号：${res.data.orderNo}\n本次支付：¥${res.data.paidAmount}\n已增加额度：${res.data.quotaAdded}`,
 					showCancel: false
 				});
 				await this.loadOptions();
@@ -203,36 +194,8 @@ export default {
 				// #endif
 			});
 		},
-		refundReset() {
-			const isWindow = this.countdown.phase === 'window';
-			const content = isWindow
-				? '退款后将不享有会员权益，确认退款？'
-				: '充值后180天内无法进行全额退款，现在退款需收取50%违约金，是否要进行退款？';
-			uni.showModal({
-				title: '确认退款重置',
-				content,
-				success: async (r) => {
-					if (!r.confirm) return;
-					this.loading = true;
-					uni.showLoading({ title: '处理中...', mask: true });
-					try {
-						const res = await h5RefundReset('用户在H5发起退款重置');
-						if (res.code !== 0) {
-							uni.showToast({ title: res.message || '操作失败', icon: 'none' });
-							return;
-						}
-						uni.showModal({
-							title: '退款已发起',
-							content: `退款单号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计返还：¥${res.data.finalRefundAmount}\n\n款项将原路退回至微信，到账时间以微信支付为准。`,
-							showCancel: false
-						});
-						await this.loadOptions();
-					} finally {
-						this.loading = false;
-						uni.hideLoading();
-					}
-				}
-			});
+		openRefundWindow() {
+			uni.navigateTo({ url: '/pages/h5/recharge-refund/index' });
 		}
 	}
 };
@@ -305,33 +268,6 @@ export default {
 	font-size: 12px;
 }
 
-.timer-card {
-	margin-bottom: 14px;
-	padding: 16px;
-}
-
-.timer-title {
-	display: block;
-	font-size: 13px;
-	color: rgba(186, 199, 216, 0.95);
-}
-
-.timer-main {
-	display: block;
-	margin-top: 8px;
-	font-size: 17px;
-	font-weight: 700;
-	color: #fde68a;
-}
-
-.timer-sub {
-	display: block;
-	margin-top: 8px;
-	font-size: 12px;
-	color: rgba(203, 213, 225, 0.88);
-	line-height: 1.55;
-}
-
 .card {
 	padding: 14px;
 	margin-bottom: 14px;
@@ -390,21 +326,11 @@ export default {
 
 .actions {
 	margin-top: 4px;
-	display: flex;
-	flex-direction: column;
-	gap: 12px;
 }
 
 .btn-pay {
 	border-radius: 999px;
 	box-shadow: 0 8px 24px rgba(37, 99, 235, 0.35);
-}
-
-.btn-refund {
-	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.08);
-	border: 1px solid rgba(255, 255, 255, 0.2);
-	color: #e2e8f0;
 }
 
 .rule-card {
@@ -428,5 +354,25 @@ export default {
 	line-height: 1.65;
 	color: rgba(254, 243, 199, 0.88);
 	margin-top: 6px;
+}
+
+.rule-item-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+}
+
+.rule-item-text {
+	font-size: 12px;
+	line-height: 1.65;
+	color: rgba(254, 243, 199, 0.88);
+}
+
+.rule-link {
+	font-size: 12px;
+	line-height: 1.65;
+	color: #60a5fa;
+	text-decoration: underline;
+	margin: 0 2px;
 }
 </style>

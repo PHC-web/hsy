@@ -21,7 +21,7 @@
 
 				<view v-else-if="pendingBindDevice" class="card h5-glass-panel gate-card">
 					<text class="gate-title">绑定机具</text>
-					<text class="gate-tip">请先绑定机具号后即可进入商户中心；手机号可在后续功能中再完善。</text>
+					<text class="gate-tip">请先绑定机具号后即可进入慧收盈系统。</text>
 					<input v-model="deviceId" class="input h5-glass-input gate-input" maxlength="50" placeholder="请输入机具号码" />
 					<button class="btn-primary" type="primary" @click="submitBind">绑定并进入</button>
 				</view>

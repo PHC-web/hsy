@@ -1,7 +1,0 @@
-{
-  "navigationBarTitleText": "图标",
-  "usingComponents": {
-    "uni-easyinput": "/uni_modules/uni-easyinput/components/uni-easyinput/uni-easyinput",
-    "fix-window": "/components/fix-window/fix-window"
-  }
-}

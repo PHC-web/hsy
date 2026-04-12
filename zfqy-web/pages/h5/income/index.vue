@@ -24,16 +24,19 @@
 				<text class="hero-title">商家收款免手续费</text>
 				<text class="hero-sub">平台联合收单补贴，商家笔笔收款补贴手续费</text>
 
-				<view class="mascot-row">
-					<view class="mascot">
-						<view class="cat-face"></view>
-						<view class="cat-ear l"></view>
-						<view class="cat-ear r"></view>
-						<view class="cat-body"></view>
-					</view>
-					<view class="ingot">
-						<text class="ingot-inner-label">待领取奖励</text>
+				<view class="mascot-stage">
+					<view class="ingot-overlay">
 						<text class="ingot-inner-money">¥{{ pendingTotal }}</text>
+					</view>
+					<view
+						v-for="(row, idx) in packets"
+						:key="row.id || idx"
+						class="bubble"
+						:class="{ 'bubble--busy': claimingId === row.id }"
+						:style="bubbleStyle(idx)"
+						@click.stop="claimOne(row)"
+					>
+						<text class="bubble-amt">{{ row.amount }}</text>
 					</view>
 				</view>
 
@@ -48,7 +51,7 @@
 			</view>
 
 			<view class="detail-card h5-glass-panel">
-				<view class="detail-head" @click="togglePendingExpand">
+	<!-- 			<view class="detail-head" @click="togglePendingExpand">
 					<text class="detail-title">待领取明细</text>
 					<text class="detail-meta" v-if="pendingCount > 0">{{ pendingCount }} 笔</text>
 					<text class="detail-arrow">{{ pendingExpanded ? '▼' : '▶' }}</text>
@@ -65,9 +68,9 @@
 						</view>
 					</view>
 				</view>
-				<view v-else-if="pendingExpanded && !packets.length" class="detail-empty">暂无待领取记录</view>
+				<view v-else-if="pendingExpanded && !packets.length" class="detail-empty">暂无待领取记录</view> -->
 
-				<view class="detail-divider"></view>
+				<!-- <view class="detail-divider"></view> -->
 
 				<view class="detail-head detail-head-2">
 					<text class="detail-title">奖励明细</text>
@@ -104,7 +107,7 @@
 </template>
 
 <script>
-import { h5IncomeList, h5IncomeClaimAll } from '@/pages/h5/common/api';
+import { h5IncomeList, h5IncomeClaimAll, h5IncomeClaim } from '@/pages/h5/common/api';
 
 export default {
 	data() {
@@ -115,12 +118,13 @@ export default {
 			pendingCount: 0,
 			summaryPoints: '0.00',
 			loading: false,
-			pendingExpanded: true
+			pendingExpanded: true,
+			claimingId: ''
 		};
 	},
 	computed: {
 		claimDisabled() {
-			return Number(this.pendingTotal) <= 0 || this.loading;
+			return Number(this.pendingTotal) <= 0 || this.loading || !!this.claimingId;
 		},
 		claimBtnClass() {
 			return this.claimDisabled ? 'claim-btn--disabled' : 'claim-btn--active';
@@ -133,6 +137,37 @@ export default {
 		this.loadData();
 	},
 	methods: {
+		bubbleStyle(idx) {
+			const leftSlots = [
+				{ top: 12, left: 2 },
+				{ top: 28, left: 5 },
+				{ top: 44, left: 1 },
+				{ top: 60, left: 6 },
+				{ top: 76, left: 3 },
+				{ top: 20, left: 8 },
+				{ top: 52, left: 2 },
+				{ top: 68, left: 7 }
+			];
+			const rightSlots = [
+				{ top: 14, right: 2 },
+				{ top: 30, right: 5 },
+				{ top: 46, right: 1 },
+				{ top: 62, right: 6 },
+				{ top: 78, right: 3 },
+				{ top: 22, right: 8 },
+				{ top: 54, right: 2 },
+				{ top: 70, right: 7 }
+			];
+			const isLeft = idx % 2 === 0;
+			const pairIndex = Math.floor(idx / 2);
+			const slots = isLeft ? leftSlots : rightSlots;
+			const s = slots[pairIndex % slots.length];
+			const delay = (idx % 5) * 0.12;
+			if (isLeft) {
+				return { top: `${s.top}%`, left: `${s.left}%`, animationDelay: `${delay}s` };
+			}
+			return { top: `${s.top}%`, right: `${s.right}%`, animationDelay: `${delay}s` };
+		},
 		togglePendingExpand() {
 			this.pendingExpanded = !this.pendingExpanded;
 		},
@@ -160,6 +195,24 @@ export default {
 				this.summaryPoints = su.accountPoints != null ? String(su.accountPoints) : '0.00';
 			} finally {
 				this.loading = false;
+			}
+		},
+		async claimOne(row) {
+			const id = row && row.id;
+			if (!id || this.claimingId || this.loading) return;
+			this.claimingId = id;
+			uni.showLoading({ title: '领取中...', mask: true });
+			try {
+				const res = await h5IncomeClaim(id);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '领取失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '领取成功', icon: 'success' });
+				await this.loadData();
+			} finally {
+				this.claimingId = '';
+				uni.hideLoading();
 			}
 		},
 		async claimAll() {
@@ -246,9 +299,14 @@ export default {
 
 .hero {
 	position: relative;
-	padding: 16px 16px 22px;
+	padding: 10px 16px 22px;
 	overflow: hidden;
 	margin-bottom: 14px;
+	background-color: #7f1d1d;
+	background-image: url('/static/h5/income-mascot-cat.png');
+	background-position: center;
+	background-repeat: no-repeat;
+	background-size: cover;
 }
 
 .hero-top {
@@ -257,7 +315,7 @@ export default {
 	display: flex;
 	justify-content: space-between;
 	align-items: flex-start;
-	margin-bottom: 16px;
+	margin-bottom: 6px;
 }
 
 .pill {
@@ -306,83 +364,82 @@ export default {
 	color: rgba(203, 213, 225, 0.92);
 }
 
-.mascot-row {
+/* 仅叠气泡与金额；招财猫由整张 .hero 背景承担，避免重复一张小图 */
+.mascot-stage {
 	position: relative;
 	z-index: 1;
-	display: flex;
-	align-items: flex-end;
-	justify-content: center;
-	gap: 0;
-	margin-top: 20px;
-	min-height: 140px;
+	margin-top: 18px;
+	min-height: 240px;
+	border-radius: 16px;
+	overflow: visible;
+	background: transparent;
 }
 
-.mascot {
-	position: relative;
-	width: 100px;
-	height: 120px;
-	flex-shrink: 0;
-}
-.cat-face {
+/* 背景图已含「待领取奖励」文案，此处只叠金额，用 top + margin 压在字样下方 */
+.ingot-overlay {
 	position: absolute;
 	left: 50%;
-	top: 8px;
+	top: 70%;
+	bottom: auto;
+	width: 56%;
+	max-width: 220px;
 	transform: translateX(-50%);
-	width: 72px;
-	height: 64px;
-	border-radius: 50%;
-	background: linear-gradient(160deg, #fde68a, #f59e0b 55%, #d97706);
-	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
-}
-.cat-ear {
-	position: absolute;
-	top: 0;
-	width: 22px;
-	height: 22px;
-	border-radius: 6px;
-	background: linear-gradient(180deg, #fbbf24, #b45309);
-	transform: rotate(-25deg);
-}
-.cat-ear.l { left: 8px; }
-.cat-ear.r { right: 8px; transform: rotate(25deg); }
-.cat-body {
-	position: absolute;
-	left: 50%;
-	bottom: 0;
-	transform: translateX(-50%);
-	width: 88px;
-	height: 56px;
-	border-radius: 50% 50% 40% 40%;
-	background: linear-gradient(180deg, #fcd34d, #ea580c);
-	box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
-}
-
-.ingot {
-	width: 132px;
-	height: 96px;
-	margin-left: -12px;
-	margin-bottom: 8px;
-	border-radius: 12px 12px 20px 20px;
-	background: linear-gradient(145deg, #fef08a 0%, #facc15 35%, #ca8a04 100%);
-	box-shadow:
-		inset 0 2px 6px rgba(255, 255, 255, 0.65),
-		0 10px 24px rgba(0, 0, 0, 0.35);
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	justify-content: center;
-	border: 2px solid rgba(234, 179, 8, 0.85);
-}
-.ingot-inner-label {
-	font-size: 11px;
-	color: #78350f;
-	font-weight: 600;
+	text-align: center;
+	pointer-events: none;
+	z-index: 2;
 }
 .ingot-inner-money {
-	font-size: 22px;
+	display: block;
+	margin-top: 26px;
+	font-size: 20px;
 	font-weight: 800;
-	color: #451a03;
-	margin-top: 4px;
+	color: #b91c1c;
+	line-height: 1.15;
+	text-shadow: 0 1px 2px rgba(255, 255, 255, 0.45);
+}
+
+.bubble {
+	position: absolute;
+	z-index: 4;
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	box-sizing: border-box;
+	border-radius: 50%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(255, 255, 255, 0.12);
+	border: 1px solid rgba(255, 255, 255, 0.38);
+	box-shadow:
+		0 2px 10px rgba(0, 0, 0, 0.1),
+		inset 0 1px 0 rgba(255, 255, 255, 0.35);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	transform: translateY(-50%);
+	animation: bubble-float-y 2.6s ease-in-out infinite;
+}
+.bubble--busy {
+	opacity: 0.55;
+	pointer-events: none;
+}
+.bubble-amt {
+	font-size: 11px;
+	font-weight: 800;
+	color: #ffffff;
+	line-height: 1;
+	white-space: nowrap;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+
+@keyframes bubble-float-y {
+	0%,
+	100% {
+		margin-top: 0;
+	}
+	50% {
+		margin-top: -5px;
+	}
 }
 
 .claim-btn {

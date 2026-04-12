@@ -49,6 +49,20 @@ const WX_PAY_PRIVATE_KEY = String(process.env.WX_PAY_PRIVATE_KEY || payLocal.WX_
 const WX_PAY_PLATFORM_CERT = String(process.env.WX_PAY_PLATFORM_CERT || payLocal.WX_PAY_PLATFORM_CERT || '').trim();
 const H5_PAY_NOTIFY_URL = pickWxSecret('WX_PAY_NOTIFY_URL', payLocal.WX_PAY_NOTIFY_URL, 500);
 const H5_REFUND_NOTIFY_URL = pickWxSecret('WX_PAY_REFUND_NOTIFY_URL', payLocal.WX_PAY_REFUND_NOTIFY_URL, 500);
+/** 额度充值 JSAPI / 充值退款 / 支付回调：独立微信商户号。各字段未配置时回退到下方 WX_PAY_*（便于渐进迁移）。提现/打款仅使用 WX_PAY_*。 */
+const WX_PAY_RECHARGE_MCH_ID = pickWxSecret('WX_PAY_RECHARGE_MCH_ID', payLocal.WX_PAY_RECHARGE_MCH_ID, 40) || WX_PAY_MCH_ID;
+const WX_PAY_RECHARGE_APPID =
+	pickWxSecret('WX_PAY_RECHARGE_APPID', payLocal.WX_PAY_RECHARGE_APPID, 80) || WX_PAY_APPID;
+const WX_PAY_RECHARGE_MCH_API_V3_KEY =
+	pickWxSecret('WX_PAY_RECHARGE_MCH_API_V3_KEY', payLocal.WX_PAY_RECHARGE_MCH_API_V3_KEY, 120) || WX_PAY_MCH_API_V3_KEY;
+const WX_PAY_RECHARGE_MCH_SERIAL_NO =
+	pickWxSecret('WX_PAY_RECHARGE_MCH_SERIAL_NO', payLocal.WX_PAY_RECHARGE_MCH_SERIAL_NO, 80) || WX_PAY_MCH_SERIAL_NO;
+const WX_PAY_RECHARGE_PRIVATE_KEY = String(
+	process.env.WX_PAY_RECHARGE_PRIVATE_KEY || payLocal.WX_PAY_RECHARGE_PRIVATE_KEY || ''
+).trim() || WX_PAY_PRIVATE_KEY;
+const WX_PAY_RECHARGE_PLATFORM_CERT = String(
+	process.env.WX_PAY_RECHARGE_PLATFORM_CERT || payLocal.WX_PAY_RECHARGE_PLATFORM_CERT || ''
+).trim() || WX_PAY_PLATFORM_CERT;
 const SMS_KEY = process.env.DCLOUD_SMS_KEY || process.env.SMS_KEY || '';
 const SMS_SECRET = process.env.DCLOUD_SMS_SECRET || process.env.SMS_SECRET || '';
 const SMS_TEMPLATE_ID = process.env.H5_BIND_MOBILE_TEMPLATE_ID || '';
@@ -1004,15 +1018,69 @@ function isValidNotifyUrl(url) {
 	return /^https:\/\/[^#\s]+$/i.test(s);
 }
 
-function ensureWxPayConfig() {
-	if (!WX_PAY_MCH_ID || !WX_PAY_APPID || !WX_PAY_MCH_SERIAL_NO || !WX_PAY_PRIVATE_KEY) {
-		return { ok: false, message: '微信支付参数未配置完整（商户号/AppID/证书序列号/私钥）' };
+function wxWithdrawCredentials() {
+	return {
+		mchId: WX_PAY_MCH_ID,
+		appId: WX_PAY_APPID,
+		mchApiV3Key: WX_PAY_MCH_API_V3_KEY,
+		mchSerialNo: WX_PAY_MCH_SERIAL_NO,
+		privateKey: WX_PAY_PRIVATE_KEY,
+		platformCert: WX_PAY_PLATFORM_CERT
+	};
+}
+
+function wxRechargeCredentials() {
+	return {
+		mchId: WX_PAY_RECHARGE_MCH_ID,
+		appId: WX_PAY_RECHARGE_APPID,
+		mchApiV3Key: WX_PAY_RECHARGE_MCH_API_V3_KEY,
+		mchSerialNo: WX_PAY_RECHARGE_MCH_SERIAL_NO,
+		privateKey: WX_PAY_RECHARGE_PRIVATE_KEY,
+		platformCert: WX_PAY_RECHARGE_PLATFORM_CERT
+	};
+}
+
+/** 未写入 wx_pay_profile 的旧 uni-pay 订单按「提现商户」证书与密钥处理（与历史单商户一致） */
+function wxCredentialsForPayOrder(order) {
+	const profile = order && order.custom && order.custom.wx_pay_profile;
+	if (profile === 'recharge') return wxRechargeCredentials();
+	return wxWithdrawCredentials();
+}
+
+function ensureWxWithdrawPayConfig() {
+	const c = wxWithdrawCredentials();
+	if (!c.mchId || !c.appId || !c.mchSerialNo || !c.privateKey) {
+		return { ok: false, message: '提现商户微信支付参数未配置完整（WX_PAY_*：商户号/AppID/证书序列号/私钥）' };
 	}
-	if (!WX_PAY_MCH_API_V3_KEY || String(WX_PAY_MCH_API_V3_KEY).length !== 32) {
-		return { ok: false, message: 'WX_PAY_MCH_API_V3_KEY 必须是32位 APIv3 密钥（不是 PUB_KEY_ID）' };
+	if (!c.mchApiV3Key || String(c.mchApiV3Key).length !== 32) {
+		return { ok: false, message: '提现商户 WX_PAY_MCH_API_V3_KEY 必须是32位 APIv3 密钥（不是 PUB_KEY_ID）' };
 	}
-	if (!WX_PAY_PLATFORM_CERT) {
-		return { ok: false, message: '未配置微信支付平台证书 WX_PAY_PLATFORM_CERT，无法校验回调签名' };
+	if (!c.platformCert) {
+		return { ok: false, message: '提现商户未配置 WX_PAY_PLATFORM_CERT，无法校验回调签名' };
+	}
+	return { ok: true, creds: c };
+}
+
+function ensureWxRechargePayConfig() {
+	const c = wxRechargeCredentials();
+	if (!c.mchId || !c.appId || !c.mchSerialNo || !c.privateKey) {
+		return {
+			ok: false,
+			message:
+				'充值商户微信支付参数未配置完整（WX_PAY_RECHARGE_* 未填时回退 WX_PAY_*：商户号/AppID/证书序列号/私钥）'
+		};
+	}
+	if (!c.mchApiV3Key || String(c.mchApiV3Key).length !== 32) {
+		return {
+			ok: false,
+			message: '充值商户 APIv3 密钥必须是32位（WX_PAY_RECHARGE_MCH_API_V3_KEY 或回退的 WX_PAY_MCH_API_V3_KEY）'
+		};
+	}
+	if (!c.platformCert) {
+		return {
+			ok: false,
+			message: '充值商户未配置微信平台证书（WX_PAY_RECHARGE_PLATFORM_CERT 或回退的 WX_PAY_PLATFORM_CERT）'
+		};
 	}
 	if (!isValidNotifyUrl(H5_PAY_NOTIFY_URL)) {
 		return { ok: false, message: 'WX_PAY_NOTIFY_URL 必须是可公网访问的 https 接口地址，且不能包含 # 哈希路由' };
@@ -1020,23 +1088,23 @@ function ensureWxPayConfig() {
 	if (H5_REFUND_NOTIFY_URL && !isValidNotifyUrl(H5_REFUND_NOTIFY_URL)) {
 		return { ok: false, message: 'WX_PAY_REFUND_NOTIFY_URL 必须是可公网访问的 https 接口地址，且不能包含 # 哈希路由' };
 	}
-	return { ok: true };
+	return { ok: true, creds: c };
 }
 
-function signWxV3Message(message) {
+function signWxV3MessageWithKey(privateKeyPem, message) {
 	const crypto = require('crypto');
 	const sign = crypto.createSign('RSA-SHA256');
 	sign.update(message);
 	sign.end();
-	return sign.sign(WX_PAY_PRIVATE_KEY, 'base64');
+	return sign.sign(privateKeyPem, 'base64');
 }
 
-function wxPayAuthHeader(method, urlPathWithQuery, bodyString = '') {
+function wxPayAuthHeaderFor(creds, method, urlPathWithQuery, bodyString = '') {
 	const timestamp = String(Math.floor(nowTs() / 1000));
 	const nonceStr = randomStr(24);
 	const msg = `${method}\n${urlPathWithQuery}\n${timestamp}\n${nonceStr}\n${bodyString}\n`;
-	const signature = signWxV3Message(msg);
-	return `WECHATPAY2-SHA256-RSA2048 mchid="${WX_PAY_MCH_ID}",nonce_str="${nonceStr}",timestamp="${timestamp}",serial_no="${WX_PAY_MCH_SERIAL_NO}",signature="${signature}"`;
+	const signature = signWxV3MessageWithKey(creds.privateKey, msg);
+	return `WECHATPAY2-SHA256-RSA2048 mchid="${creds.mchId}",nonce_str="${nonceStr}",timestamp="${timestamp}",serial_no="${creds.mchSerialNo}",signature="${signature}"`;
 }
 
 class WxPayRequestError extends Error {
@@ -1066,11 +1134,11 @@ function normalizeWxPayResponseData(raw) {
 	return {};
 }
 
-async function wxPayRequest(method, urlPathWithQuery, bodyObj) {
+async function wxPayRequestFor(creds, method, urlPathWithQuery, bodyObj) {
 	const url = `https://api.mch.weixin.qq.com${urlPathWithQuery}`;
 	const bodyString = bodyObj ? JSON.stringify(bodyObj) : '';
 	const headers = {
-		Authorization: wxPayAuthHeader(method, urlPathWithQuery, bodyString),
+		Authorization: wxPayAuthHeaderFor(creds, method, urlPathWithQuery, bodyString),
 		Accept: 'application/json',
 		'Content-Type': 'application/json',
 		'User-Agent': 'hsy-merchant-cloudfn'
@@ -1086,7 +1154,7 @@ async function wxPayRequest(method, urlPathWithQuery, bodyObj) {
 	const data = normalizeWxPayResponseData(resp.data);
 	if (resp.status >= 400) {
 		console.error(
-			`[wxPayRequest] ${method} ${urlPathWithQuery} http=${resp.status} wechat_json=${JSON.stringify(data)}`
+			`[wxPayRequestFor] ${method} ${urlPathWithQuery} http=${resp.status} wechat_json=${JSON.stringify(data)}`
 		);
 		throw new WxPayRequestError(resp.status, data, urlPathWithQuery);
 	}
@@ -1128,7 +1196,7 @@ function distributeRefundFenAcrossOrders(orders, targetRefundFen) {
  * 微信支付 V3 申请退款（商户号 API）
  * https://pay.weixin.qq.com/doc/v3/merchant/4012791859
  */
-async function wxPayCreateRefund({ outTradeNo, outRefundNo, refundFen, totalFen, reason }) {
+async function wxPayCreateRefundFor(creds, { outTradeNo, outRefundNo, refundFen, totalFen, reason }) {
 	const body = {
 		out_trade_no: safeText(outTradeNo, 40),
 		out_refund_no: safeText(outRefundNo, 64),
@@ -1142,7 +1210,7 @@ async function wxPayCreateRefund({ outTradeNo, outRefundNo, refundFen, totalFen,
 	if (H5_REFUND_NOTIFY_URL && isValidNotifyUrl(H5_REFUND_NOTIFY_URL)) {
 		body.notify_url = H5_REFUND_NOTIFY_URL;
 	}
-	return wxPayRequest('POST', '/v3/refund/domestic/refunds', body);
+	return wxPayRequestFor(creds, 'POST', '/v3/refund/domestic/refunds', body);
 }
 
 function normalizePem(pemLike) {
@@ -1154,7 +1222,7 @@ function getHeaderValue(headers, key) {
 	return h[key] || h[key.toLowerCase()] || h[key.toUpperCase()] || '';
 }
 
-function verifyWxCallbackSignature(headers, rawBody) {
+function verifyWxCallbackSignatureFor(creds, headers, rawBody) {
 	const crypto = require('crypto');
 	const serial = getHeaderValue(headers, 'wechatpay-serial');
 	const signature = getHeaderValue(headers, 'wechatpay-signature');
@@ -1163,7 +1231,7 @@ function verifyWxCallbackSignature(headers, rawBody) {
 	if (!serial || !signature || !timestamp || !nonce) {
 		return { ok: false, message: '回调头缺少签名字段' };
 	}
-	const platformPem = normalizePem(WX_PAY_PLATFORM_CERT);
+	const platformPem = normalizePem(creds.platformCert);
 	if (!platformPem) return { ok: false, message: '未配置平台证书' };
 	const message = `${timestamp}\n${nonce}\n${rawBody}\n`;
 	const verify = crypto.createVerify('RSA-SHA256');
@@ -1173,14 +1241,22 @@ function verifyWxCallbackSignature(headers, rawBody) {
 	return ok ? { ok: true } : { ok: false, message: '回调签名校验失败' };
 }
 
-function decryptWxResource(resource) {
+function verifyWxCallbackSignatureDual(headers, rawBody) {
+	const r = ensureWxRechargePayConfig().ok ? verifyWxCallbackSignatureFor(wxRechargeCredentials(), headers, rawBody) : { ok: false };
+	if (r.ok) return { ok: true, creds: wxRechargeCredentials() };
+	const w = ensureWxWithdrawPayConfig().ok ? verifyWxCallbackSignatureFor(wxWithdrawCredentials(), headers, rawBody) : { ok: false };
+	if (w.ok) return { ok: true, creds: wxWithdrawCredentials() };
+	return { ok: false, message: r.message || w.message || '回调签名校验失败' };
+}
+
+function decryptWxResourceFor(creds, resource) {
 	const crypto = require('crypto');
 	const nonce = resource?.nonce;
 	const associatedData = resource?.associated_data || '';
 	const cipherText = resource?.ciphertext || '';
 	if (!nonce || !cipherText) throw new Error('回调密文参数不完整');
-	const key = Buffer.from(String(WX_PAY_MCH_API_V3_KEY || ''), 'utf8');
-	if (key.length !== 32) throw new Error('WX_PAY_MCH_API_V3_KEY 必须是32位');
+	const key = Buffer.from(String(creds.mchApiV3Key || ''), 'utf8');
+	if (key.length !== 32) throw new Error('APIv3 密钥必须是32位');
 	const encrypted = Buffer.from(cipherText, 'base64');
 	const data = encrypted.slice(0, encrypted.length - 16);
 	const authTag = encrypted.slice(encrypted.length - 16);
@@ -1976,6 +2052,195 @@ function h5MembershipInfo(merchant) {
 	return { tier: 'normal', name: '普通会员', accent: '#94a3b8' };
 }
 
+const H5_WITHDRAW_FEE_YUAN = 3;
+const H5_WITHDRAW_MAX_POINTS = 200;
+
+function isH5RechargeMemberForWithdraw(merchant) {
+	return h5MembershipInfo(merchant).tier !== 'normal';
+}
+
+function shanghaiWeekdayAndMinuteOfDay(ts) {
+	const parts = new Intl.DateTimeFormat('en-US', {
+		timeZone: 'Asia/Shanghai',
+		weekday: 'short',
+		hour: 'numeric',
+		minute: 'numeric',
+		hour12: false
+	}).formatToParts(new Date(ts));
+	const wdMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+	let weekday = 0;
+	let hour = 0;
+	let minute = 0;
+	for (const p of parts) {
+		if (p.type === 'weekday') weekday = wdMap[p.value] != null ? wdMap[p.value] : 0;
+		if (p.type === 'hour') hour = Number(p.value);
+		if (p.type === 'minute') minute = Number(p.value);
+	}
+	return { weekday, minuteOfDay: hour * 60 + minute };
+}
+
+function isH5WithdrawBusinessHours(ts = Date.now()) {
+	const { weekday, minuteOfDay } = shanghaiWeekdayAndMinuteOfDay(ts);
+	if (weekday === 0 || weekday === 6) return false;
+	return minuteOfDay >= 9 * 60 && minuteOfDay < 18 * 60;
+}
+
+function h5WithdrawOutsideHoursMessage() {
+	return '提现在工作日 9:00–18:00（北京时间）开放办理，请于该时段再试。';
+}
+
+async function h5WithdrawInfo(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const now = nowTs();
+		const member = isH5RechargeMemberForWithdraw(merchant);
+		const ar = Number(merchant.available_reward || 0);
+		const ap = Number(merchant.account_points || 0);
+		const redeemable = Math.floor(Math.min(ar, ap));
+		const minPoints = member ? 10 : 30;
+		const mship = h5MembershipInfo(merchant);
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				serverTime: now,
+				redeemablePoints: redeemable,
+				isRechargeMember: member,
+				membershipName: mship.name,
+				minPoints,
+				maxPoints: H5_WITHDRAW_MAX_POINTS,
+				feePerOrderYuan: H5_WITHDRAW_FEE_YUAN,
+				inBusinessHours: isH5WithdrawBusinessHours(now),
+				pointEqualsYuan: true
+			}
+		};
+	} catch (e) {
+		console.error('h5WithdrawInfo failed', e);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function h5WithdrawApply(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const now = nowTs();
+		if (!isH5WithdrawBusinessHours(now)) {
+			return { code: 400, message: h5WithdrawOutsideHoursMessage() };
+		}
+		const raw = data?.points;
+		const n = typeof raw === 'string' ? Number(String(raw).trim()) : Number(raw);
+		if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) {
+			return { code: 400, message: '兑换积分须为大于 0 的整数' };
+		}
+		const points = n;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const member = isH5RechargeMemberForWithdraw(merchant);
+		const minP = member ? 10 : 30;
+		if (points < minP) {
+			return { code: 400, message: `单次兑换最低为 ${minP} 积分（${member ? '充值会员' : '非充值会员'}）` };
+		}
+		if (points > H5_WITHDRAW_MAX_POINTS) {
+			return { code: 400, message: `单次兑换最高为 ${H5_WITHDRAW_MAX_POINTS} 积分` };
+		}
+		const ar = Number(merchant.available_reward || 0);
+		const ap = Number(merchant.account_points || 0);
+		if (points > ar + 1e-6 || points > ap + 1e-6) {
+			return { code: 400, message: '可兑换积分不足' };
+		}
+		const fee = H5_WITHDRAW_FEE_YUAN;
+		const payable = Number((points - fee).toFixed(2));
+		if (payable <= 0) {
+			return { code: 400, message: '兑换积分扣除手续费后金额需大于 0' };
+		}
+
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		let company = '-';
+		let salesman = '-';
+		let machine = null;
+		if (merchant.device_id) {
+			const mRes = await machineCollection.where({ device_id: merchant.device_id, is_deleted: false }).limit(1).get();
+			machine = mRes.data && mRes.data[0];
+			if (machine) {
+				company = String(machine.company || '').trim() || '-';
+				salesman = String(machine.salesman || '').trim() || '-';
+			}
+		}
+
+		const withdrawNo = `H5${now}${randomStr(8)}`;
+		const addRes = await withdrawCollection.add({
+			withdraw_no: withdrawNo,
+			merchant_user_id: merchantUserId,
+			user_nickname: safeText(merchant.wx_nickname, 80),
+			user_mobile: safeText(merchant.mobile, 20),
+			device_id: safeText(merchant.device_id, 80),
+			company,
+			salesman,
+			amount: points,
+			fee_tax: fee,
+			payable,
+			is_paid: false,
+			arrival_status: 'pending',
+			create_time: now,
+			update_time: now,
+			is_deleted: false
+		});
+		const newWithdrawId = addRes.id;
+		const pendingWithdrawBefore = Number(merchant.pending_withdraw || 0);
+		const machinePendingBefore = machine ? Number(machine.pending_amount || 0) : 0;
+		try {
+			if (machine) {
+				await machineCollection.doc(machine._id).update({
+					pending_amount: Number((machinePendingBefore + payable).toFixed(4))
+				});
+			}
+			await merchantCollection.doc(merchant._id).update({
+				available_reward: Number((ar - points).toFixed(4)),
+				account_points: Number((ap - points).toFixed(4)),
+				pending_withdraw: Number((pendingWithdrawBefore + payable).toFixed(4)),
+				update_time: now
+			});
+		} catch (err) {
+			try {
+				if (newWithdrawId) await withdrawCollection.doc(newWithdrawId).remove();
+			} catch (e2) {
+				console.error('h5WithdrawApply rollback withdraw failed', e2);
+			}
+			if (machine) {
+				try {
+					await machineCollection.doc(machine._id).update({
+						pending_amount: Number(machinePendingBefore.toFixed(4))
+					});
+				} catch (e3) {
+					console.error('h5WithdrawApply rollback machine pending failed', e3);
+				}
+			}
+			try {
+				await merchantCollection.doc(merchant._id).update({
+					available_reward: Number(ar.toFixed(4)),
+					account_points: Number(ap.toFixed(4)),
+					pending_withdraw: Number(pendingWithdrawBefore.toFixed(4)),
+					update_time: nowTs()
+				});
+			} catch (e4) {
+				console.error('h5WithdrawApply rollback merchant failed', e4);
+			}
+			throw err;
+		}
+
+		return {
+			code: 0,
+			message: '提交成功',
+			data: { withdrawNo, points, feeTax: fee, payable }
+		};
+	} catch (e) {
+		console.error('h5WithdrawApply failed', e);
+		return { code: 500, message: '提交失败' };
+	}
+}
+
 async function h5HomeDashboard(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
@@ -2197,8 +2462,9 @@ async function h5RechargeOptions(data) {
 
 async function h5RechargeCreate(data, event) {
 	try {
-		const cfg = ensureWxPayConfig();
+		const cfg = ensureWxRechargePayConfig();
 		if (!cfg.ok) return { code: 500, message: cfg.message };
+		const rc = wxRechargeCredentials();
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const pkg = pickRechargePackage(data?.packageId);
 		if (!pkg) return { code: 400, message: '请选择有效充值套餐' };
@@ -2222,15 +2488,15 @@ async function h5RechargeCreate(data, event) {
 
 		const orderNo = `H5R${now}${randomStr(6).toUpperCase()}`.slice(0, 28);
 		const createBody = {
-			appid: WX_PAY_APPID,
-			mchid: WX_PAY_MCH_ID,
+			appid: rc.appId,
+			mchid: rc.mchId,
 			description: `额度充值-${pkg.title}`,
 			out_trade_no: orderNo,
 			notify_url: H5_PAY_NOTIFY_URL,
 			amount: { total: payFeeFen, currency: 'CNY' },
 			payer: { openid }
 		};
-		const wxRes = await wxPayRequest('POST', '/v3/pay/transactions/jsapi', createBody);
+		const wxRes = await wxPayRequestFor(rc, 'POST', '/v3/pay/transactions/jsapi', createBody);
 		const prepayId = safeText(wxRes.prepay_id, 120);
 		if (!prepayId) return { code: 500, message: '微信下单失败：未返回 prepay_id' };
 
@@ -2248,7 +2514,7 @@ async function h5RechargeCreate(data, event) {
 			openid,
 			description: `额度充值-${pkg.title}`,
 			total_fee: payFeeFen,
-			provider_appid: WX_PAY_APPID,
+			provider_appid: rc.appId,
 			appid: '__UNI__2C9940A',
 			custom: {
 				merchant_id: merchant._id,
@@ -2258,7 +2524,9 @@ async function h5RechargeCreate(data, event) {
 				before_price: Number(currentPrice || 0),
 				target_quota: Number(pkg.quota || 0),
 				add_quota: Number(addQuota || 0),
-				paid_amount: Number(payAmount || 0)
+				paid_amount: Number(payAmount || 0),
+				wx_pay_profile: 'recharge',
+				wx_pay_mchid: rc.mchId
 			},
 			create_date: now,
 			is_deleted: false
@@ -2267,8 +2535,8 @@ async function h5RechargeCreate(data, event) {
 		const timeStamp = String(Math.floor(now / 1000));
 		const nonceStr = randomStr(24);
 		const pkgSign = `prepay_id=${prepayId}`;
-		const paySignMessage = `${WX_PAY_APPID}\n${timeStamp}\n${nonceStr}\n${pkgSign}\n`;
-		const paySign = signWxV3Message(paySignMessage);
+		const paySignMessage = `${rc.appId}\n${timeStamp}\n${nonceStr}\n${pkgSign}\n`;
+		const paySign = signWxV3MessageWithKey(rc.privateKey, paySignMessage);
 		return {
 			code: 0,
 			message: '下单成功',
@@ -2278,7 +2546,7 @@ async function h5RechargeCreate(data, event) {
 				paidAmount: Number(payAmount || 0),
 				quotaAdded: Number(addQuota || 0),
 				wxPayParams: {
-					appId: WX_PAY_APPID,
+					appId: rc.appId,
 					timeStamp,
 					nonceStr,
 					package: pkgSign,
@@ -2303,6 +2571,8 @@ async function h5RechargeCreate(data, event) {
 
 async function h5RechargeConfirm(data) {
 	try {
+		const cfg = ensureWxRechargePayConfig();
+		if (!cfg.ok) return { code: 500, message: cfg.message };
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const outTradeNo = safeText(data?.orderNo, 40);
 		if (!outTradeNo) return { code: 400, message: '缺少订单号' };
@@ -2318,8 +2588,9 @@ async function h5RechargeConfirm(data) {
 			return { code: 0, message: '支付成功', data: { paid: true } };
 		}
 
-		const queryPath = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(outTradeNo)}?mchid=${encodeURIComponent(WX_PAY_MCH_ID)}`;
-		const q = await wxPayRequest('GET', queryPath, null);
+		const payCreds = wxCredentialsForPayOrder(order);
+		const queryPath = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(outTradeNo)}?mchid=${encodeURIComponent(payCreds.mchId)}`;
+		const q = await wxPayRequestFor(payCreds, 'GET', queryPath, null);
 		if (q.trade_state !== 'SUCCESS') {
 			return { code: 0, message: '未支付', data: { paid: false, tradeState: q.trade_state || '' } };
 		}
@@ -2351,11 +2622,9 @@ async function h5RechargeConfirm(data) {
 
 async function h5WxPayNotify(data) {
 	try {
-		const cfg = ensureWxPayConfig();
-		if (!cfg.ok) return { code: 500, message: cfg.message, data: { ack: wxAckFail(cfg.message) } };
 		const headers = data?.headers || {};
 		const rawBody = String(data?.rawBody || JSON.stringify(data?.body || {}));
-		const verifyRes = verifyWxCallbackSignature(headers, rawBody);
+		const verifyRes = verifyWxCallbackSignatureDual(headers, rawBody);
 		if (!verifyRes.ok) {
 			return { code: 400, message: verifyRes.message, data: { ack: wxAckFail(verifyRes.message) } };
 		}
@@ -2363,7 +2632,7 @@ async function h5WxPayNotify(data) {
 		if (bodyObj.event_type !== 'TRANSACTION.SUCCESS') {
 			return { code: 0, message: '忽略非支付成功通知', data: { ack: wxAckSuccess() } };
 		}
-		const plain = decryptWxResource(bodyObj.resource || {});
+		const plain = decryptWxResourceFor(verifyRes.creds, bodyObj.resource || {});
 		const outTradeNo = safeText(plain.out_trade_no, 40);
 		if (!outTradeNo) return { code: 400, message: '回调缺少订单号', data: { ack: wxAckFail('订单号缺失') } };
 		const res = await uniPayOrderCollection.where({ out_trade_no: outTradeNo }).limit(1).get();
@@ -2391,11 +2660,9 @@ async function h5WxPayNotify(data) {
 
 async function h5WxRefundNotify(data) {
 	try {
-		const cfg = ensureWxPayConfig();
-		if (!cfg.ok) return { code: 500, message: cfg.message, data: { ack: wxAckFail(cfg.message) } };
 		const headers = data?.headers || {};
 		const rawBody = String(data?.rawBody || JSON.stringify(data?.body || {}));
-		const verifyRes = verifyWxCallbackSignature(headers, rawBody);
+		const verifyRes = verifyWxCallbackSignatureDual(headers, rawBody);
 		if (!verifyRes.ok) {
 			return { code: 400, message: verifyRes.message, data: { ack: wxAckFail(verifyRes.message) } };
 		}
@@ -2403,7 +2670,7 @@ async function h5WxRefundNotify(data) {
 		if (bodyObj.event_type !== 'REFUND.SUCCESS') {
 			return { code: 0, message: '忽略非退款成功通知', data: { ack: wxAckSuccess() } };
 		}
-		const plain = decryptWxResource(bodyObj.resource || {});
+		const plain = decryptWxResourceFor(verifyRes.creds, bodyObj.resource || {});
 		const outTradeNo = safeText(plain.out_trade_no, 40);
 		if (!outTradeNo) return { code: 400, message: '回调缺少订单号', data: { ack: wxAckFail('订单号缺失') } };
 		const res = await uniPayOrderCollection.where({ out_trade_no: outTradeNo }).limit(1).get();
@@ -2444,8 +2711,10 @@ async function h5WxRefundNotify(data) {
 
 async function h5RefundReset(data, event) {
 	try {
-		const cfg = ensureWxPayConfig();
-		if (!cfg.ok) return { code: 500, message: cfg.message };
+		const cfgW = ensureWxWithdrawPayConfig();
+		const cfgR = ensureWxRechargePayConfig();
+		if (!cfgW.ok) return { code: 500, message: cfgW.message };
+		if (!cfgR.ok) return { code: 500, message: cfgR.message };
 
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
@@ -2520,7 +2789,8 @@ async function h5RefundReset(data, event) {
 			const outRefundNo = `${refundNo}R${i}`.slice(0, 64);
 			let wxRes;
 			try {
-				wxRes = await wxPayCreateRefund({
+				const refundCreds = wxCredentialsForPayOrder(ord);
+				wxRes = await wxPayCreateRefundFor(refundCreds, {
 					outTradeNo: ord.out_trade_no,
 					outRefundNo,
 					refundFen: rf,
@@ -2601,6 +2871,136 @@ function monthNo(ts) {
 	const y = d.getFullYear();
 	const m = String(d.getMonth() + 1).padStart(2, '0');
 	return `${y}-${m}`;
+}
+
+/** 自然月 YYYY-MM（北京时间） */
+function shanghaiYearMonthFromTs(ts) {
+	const parts = new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'Asia/Shanghai',
+		year: 'numeric',
+		month: '2-digit'
+	}).formatToParts(new Date(Number(ts)));
+	let y = '';
+	let mo = '';
+	for (const p of parts) {
+		if (p.type === 'year') y = p.value;
+		if (p.type === 'month') mo = p.value;
+	}
+	if (!y || mo === '') return monthNo(ts);
+	return `${y}-${String(mo).padStart(2, '0')}`;
+}
+
+function addCalendarMonthsYm(ym, delta) {
+	const [ys, ms] = String(ym || '').split('-');
+	let y = Number(ys);
+	let m = Number(ms);
+	if (!Number.isFinite(y) || !Number.isFinite(m)) return ym;
+	let d = Number(delta) || 0;
+	m += d;
+	while (m > 12) {
+		m -= 12;
+		y += 1;
+	}
+	while (m < 1) {
+		m += 12;
+		y -= 1;
+	}
+	return `${y}-${String(m).padStart(2, '0')}`;
+}
+
+function ymToDisplayLabel(ym) {
+	const [ys, ms] = String(ym || '').split('-');
+	const m = Number(ms);
+	if (!ys || !Number.isFinite(m)) return ym;
+	return `${ys}年${m}月`;
+}
+
+/**
+ * H5：按合理流水返现规则，将每笔返现的 1/5（约等于月返 20%）分摊到交易所在月起连续 5 个自然月，
+ * 汇总「当前月及之后」各月待返积分（理论值，不含已过期月份）。
+ */
+async function h5PendingReturnPoints(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		const now = nowTs();
+		const curYm = shanghaiYearMonthFromTs(now);
+		let bindTs = Number(merchant.bind_time || 0);
+		const deviceId = String(merchant.device_id || '').trim();
+		if (deviceId) {
+			const mRes = await machineCollection.where({ device_id: deviceId, is_deleted: false }).limit(1).get();
+			const mach = mRes.data && mRes.data[0];
+			if (mach && mach.bind_time) {
+				bindTs = Math.max(bindTs, Number(mach.bind_time || 0));
+			}
+		}
+		const _ = db.command;
+		const tradeParts = [
+			{ user_id: merchantUserId },
+			{ trade_type: 'real' },
+			{ stats_eligible: _.neq(false) },
+			{ amount: _.gt(0) },
+			{ is_deleted: _.neq(true) },
+			_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
+		];
+		if (bindTs) tradeParts.push({ create_time: _.gte(bindTs) });
+		const tradeWhere = _.and(tradeParts);
+		const tRes = await machineTradeCollection
+			.where(tradeWhere)
+			.field({ amount: true, cashback: true, release_amount: true, create_time: true })
+			.limit(8000)
+			.get();
+		const buckets = {};
+		for (const row of tRes.data || []) {
+			const amount = Number(row.amount || 0);
+			const cbRaw = row.cashback;
+			const cb =
+				cbRaw != null && cbRaw !== '' && Number.isFinite(Number(cbRaw))
+					? Number(cbRaw)
+					: Number((amount * 0.0038).toFixed(4));
+			if (!Number.isFinite(cb) || cb <= 0) continue;
+			const raRaw = row.release_amount;
+			const r =
+				raRaw != null && raRaw !== '' && Number.isFinite(Number(raRaw))
+					? Number(raRaw)
+					: Number((cb / 5).toFixed(4));
+			if (!Number.isFinite(r) || r <= 0) continue;
+			const ts = Number(row.create_time || 0);
+			const tradeYm = shanghaiYearMonthFromTs(ts);
+			for (let k = 0; k < 5; k += 1) {
+				const targetYm = addCalendarMonthsYm(tradeYm, k);
+				if (String(targetYm).localeCompare(curYm) < 0) continue;
+				buckets[targetYm] = Number(((buckets[targetYm] || 0) + r).toFixed(4));
+			}
+		}
+		const months = Object.keys(buckets).sort();
+		const list = months.map((ym) => {
+			const pts = buckets[ym];
+			return {
+				month: ym,
+				monthLabel: ymToDisplayLabel(ym),
+				points: Number(pts.toFixed(2))
+			};
+		});
+		let totalUpcoming = 0;
+		for (const x of list) totalUpcoming += x.points;
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				currentMonth: curYm,
+				list,
+				totalUpcoming: Number(totalUpcoming.toFixed(2)),
+				ruleNote:
+					'统计说明：按每笔合理流水的返现金额拆为 5 期（每期约为总返现的 20%，与交易上「释放」口径一致），分别计入交易所在月及之后第 2～5 个自然月。仅展示当前月及未来月份合计；已过去的月份不再计入。实际可领额度以「收益」页系统生成的待领取记录为准。'
+			}
+		};
+	} catch (e) {
+		console.error('h5PendingReturnPoints failed', e);
+		return { code: 500, message: '获取失败' };
+	}
 }
 
 async function h5IncomeList(data) {
@@ -3476,6 +3876,10 @@ exports.main = async (event, context) => {
 			return await h5FinanceRecords(actualData);
 		case 'h5MineInfo':
 			return await h5MineInfo(actualData);
+		case 'h5WithdrawInfo':
+			return await h5WithdrawInfo(actualData);
+		case 'h5WithdrawApply':
+			return await h5WithdrawApply(actualData);
 		case 'h5HomeDashboard':
 			return await h5HomeDashboard(actualData);
 		case 'h5SignAgreement':
@@ -3492,6 +3896,8 @@ exports.main = async (event, context) => {
 			return await h5WxRefundNotify(actualData);
 		case 'h5RefundReset':
 			return await h5RefundReset(actualData, event);
+		case 'h5PendingReturnPoints':
+			return await h5PendingReturnPoints(actualData);
 		case 'h5IncomeList':
 			return await h5IncomeList(actualData);
 		case 'h5IncomeClaim':

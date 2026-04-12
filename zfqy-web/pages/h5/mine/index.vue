@@ -20,10 +20,17 @@
 					</view>
 				</view>
 
-				<view class="acct-card h5-glass-panel" @click="onAccountAreaClick">
-					<view class="acct-item">
+				<view class="acct-card h5-glass-panel" @click="onAcctCardClick">
+					<view
+						class="acct-item"
+						:class="{ 'acct-item--link': showWithdrawEntry }"
+						@click.stop="onAvailableRewardClick"
+					>
 						<text class="k">可用奖励</text>
-						<text class="v">¥{{ account.availableReward }}</text>
+						<view class="acct-reward-right">
+							<text class="v">¥{{ account.availableReward }}</text>
+							<text v-if="showWithdrawEntry" class="withdraw-entry">提现 ›</text>
+						</view>
 					</view>
 					<view class="acct-item">
 						<text class="k">预估免额度</text>
@@ -43,6 +50,10 @@
 					</view>
 					<view class="menu-item" @click="goFinance">
 						<text class="menu-title">财务管理</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goPendingReturn">
+						<text class="menu-title">待返积分</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goMobile">
@@ -204,6 +215,9 @@ export default {
 		avatarUrl() {
 			const u = String(this.mine.wxAvatar || '').trim();
 			return u || this.defaultAvatar;
+		},
+		showWithdrawEntry() {
+			return Number(this.account.availableReward || 0) > 0;
 		}
 	},
 	onShow() {
@@ -229,15 +243,28 @@ export default {
 		goFinance() {
 			uni.navigateTo({ url: '/pages/h5/finance/index' });
 		},
+		goPendingReturn() {
+			uni.navigateTo({ url: '/pages/h5/pending-return/index' });
+		},
 		goMobile() {
 			uni.navigateTo({ url: '/pages/h5/mobile/index' });
 		},
 		goFeedback() {
 			uni.navigateTo({ url: '/pages/h5/feedback/index' });
 		},
-		onAccountAreaClick() {
+		onAcctCardClick() {
 			if (this.mine.agreementImg) return;
 			this.$refs.agreementPopup.open();
+		},
+		onAvailableRewardClick() {
+			const ar = Number(this.account.availableReward || 0);
+			if (ar <= 0) return;
+			if (!String(this.mine.agreementImg || '').trim()) {
+				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
+				this.$refs.agreementPopup.open();
+				return;
+			}
+			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
 		},
 		async onSigned(payload) {
 			const signatureImage = payload && (payload.dataUrl || payload.tempFilePath);
@@ -386,6 +413,23 @@ export default {
 
 .acct-item:last-child {
 	border-bottom: 0;
+}
+
+.acct-item--link {
+	cursor: pointer;
+}
+
+.acct-reward-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.withdraw-entry {
+	font-size: 12px;
+	font-weight: 600;
+	color: rgba(167, 243, 208, 0.95);
+	white-space: nowrap;
 }
 
 .acct-hint {

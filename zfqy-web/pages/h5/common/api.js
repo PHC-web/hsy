@@ -57,6 +57,14 @@ export function h5MineInfo() {
 	return merchantCall('h5MineInfo', merchantIdentity());
 }
 
+export function h5WithdrawInfo() {
+	return merchantCall('h5WithdrawInfo', merchantIdentity());
+}
+
+export function h5WithdrawApply(payload) {
+	return merchantCall('h5WithdrawApply', merchantIdentity(payload));
+}
+
 export function h5HomeDashboard() {
 	return merchantCall('h5HomeDashboard', merchantIdentity());
 }
@@ -67,6 +75,10 @@ export function h5SignAgreement(payload) {
 
 export function h5IncomeList() {
 	return merchantCall('h5IncomeList', merchantIdentity());
+}
+
+export function h5PendingReturnPoints() {
+	return merchantCall('h5PendingReturnPoints', merchantIdentity());
 }
 
 export function h5RechargeOptions() {
