@@ -41,9 +41,9 @@
 					</view>
 					<view class="rule-card h5-glass-panel">
 						<text class="rule-title">规则说明</text>
-						<text class="rule-item">1）充值后 180 天内无法退款。</text>
-						<text class="rule-item">2）满 180 天后，系统将开发 3 天窗口期供您提取；若您 3 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-						<text class="rule-item">3）如您执意在 180 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+						<text class="rule-item">1）充值后 {{ refundCycleDays }} 天内无法退款。</text>
+						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统将开放 {{ refundWindowDays }} 天窗口期供您提取；若您 {{ refundWindowDays }} 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
+						<text class="rule-item">3）如您执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
 						<view class="rule-item rule-item-line">
 							<text class="rule-item-text">4）退款请点击</text>
 							<text class="rule-link" @click="openRefundWindow">这里</text>
@@ -70,7 +70,9 @@ export default {
 			packages: [],
 			selectedId: '',
 			loading: false,
-			currentPackage: null
+			currentPackage: null,
+			refundCycleDays: 180,
+			refundWindowDays: 3
 		};
 	},
 	computed: {
@@ -132,6 +134,8 @@ export default {
 			}
 			this.packages = (res.data && res.data.packages) || [];
 			this.currentPackage = res.data?.currentPackage || null;
+			this.refundCycleDays = Number(res.data?.refundCycle?.cycleDays || 180);
+			this.refundWindowDays = Number(res.data?.refundCycle?.windowDays || 3);
 			if (this.currentPackage) {
 				const up = this.packages.find((x) => Number(x.price) > Number(this.currentPackage.price));
 				this.selectedId = up ? up.id : this.currentPackage.id;

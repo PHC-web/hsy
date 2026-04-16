@@ -11,6 +11,13 @@
 			<view class="mine-inner">
 				<text class="page-title">我的</text>
 
+				<view class="notice-marquee h5-glass-panel">
+					<view class="notice-track">
+						<text class="notice-text">温馨提示：本平台只针对正常商户交易进行补贴，套现行为会出发风控，将不允补贴。</text>
+						<text class="notice-text notice-text--copy">温馨提示：本平台只针对正常商户交易进行补贴，套现行为会出发风控，将不允补贴。</text>
+					</view>
+				</view>
+
 				<view class="profile-card h5-glass-panel">
 					<image class="avatar" :src="avatarUrl" mode="aspectFill" />
 					<view class="profile-main">
@@ -19,7 +26,10 @@
 						<text class="sub">{{ mine.brandName || '-' }} / {{ mine.deviceId || '未绑定' }}</text>
 					</view>
 				</view>
-
+				<view class="fixed-notice h5-glass-panel">
+					
+					<text class="fixed-notice-content">各大银行卡皆可参与活动奖励</text>
+				</view>
 				<view class="acct-card h5-glass-panel" @click="onAcctCardClick">
 					<view
 						class="acct-item"
@@ -36,12 +46,16 @@
 						<text class="k">预估免额度</text>
 						<text class="v">¥{{ account.estimatedFreeQuota }}</text>
 					</view>
-					<view class="acct-item">
+					<view class="acct-item acct-item--link" @click.stop="toggleAccountPoints">
 						<text class="k">账号积分</text>
-						<text class="v">¥{{ account.accountPoints }}</text>
+						<text class="v">{{ displayAccountPoints }}</text>
 					</view>
 					<text v-if="!mine.agreementImg" class="acct-hint">点击此区域签署「开户优惠活动计划书」</text>
 				</view>
+
+				
+
+				
 
 				<view class="menu-card h5-glass-panel">
 					<view class="menu-item" @click="goDevice">
@@ -122,6 +136,7 @@ export default {
 				estimatedFreeQuota: '0.00',
 				accountPoints: '0.00'
 			},
+			accountPointsVisible: false,
 			defaultAvatar: H5_APP_LOGO,
 			feedbackUnread: false,
 			agreementLines: [
@@ -218,6 +233,10 @@ export default {
 		},
 		showWithdrawEntry() {
 			return Number(this.account.availableReward || 0) > 0;
+		},
+		displayAccountPoints() {
+			if (!this.accountPointsVisible) return '*****';
+			return `¥${this.account.accountPoints}`;
 		}
 	},
 	onShow() {
@@ -259,6 +278,21 @@ export default {
 		onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
 			if (ar <= 0) return;
+			if (!String(this.mine.agreementImg || '').trim()) {
+				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
+				this.$refs.agreementPopup.open();
+				return;
+			}
+			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
+		},
+		toggleAccountPoints() {
+			if (!this.accountPointsVisible) {
+				this.accountPointsVisible = true;
+				return;
+			}
+			this.onAccountPointsExchangeClick();
+		},
+		onAccountPointsExchangeClick() {
 			if (!String(this.mine.agreementImg || '').trim()) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
 				this.$refs.agreementPopup.open();
@@ -369,6 +403,40 @@ export default {
 	letter-spacing: 0.02em;
 }
 
+.notice-marquee {
+	overflow: hidden;
+	padding: 10px 0;
+	margin-bottom: 14px;
+}
+
+.notice-track {
+	display: flex;
+	width: max-content;
+	animation: marquee-move 14s linear infinite;
+}
+
+.notice-text {
+	flex-shrink: 0;
+	padding-left: 14px;
+	font-size: 12px;
+	font-weight: 600;
+	color: rgba(251, 191, 36, 0.95);
+	white-space: nowrap;
+}
+
+.notice-text--copy {
+	padding-left: 48px;
+}
+
+@keyframes marquee-move {
+	0% {
+		transform: translateX(0);
+	}
+	100% {
+		transform: translateX(-50%);
+	}
+}
+
 .profile-card {
 	display: flex;
 	gap: 12px;
@@ -438,6 +506,36 @@ export default {
 	font-size: 11px;
 	color: rgba(251, 191, 36, 0.9);
 	line-height: 1.45;
+}
+
+.fixed-notice,
+.example-card {
+	padding: 12px 14px;
+	margin-bottom: 14px;
+}
+
+.fixed-notice-title,
+.example-title {
+	display: block;
+	font-size: 13px;
+	font-weight: 700;
+	color: #f8fafc;
+	margin-bottom: 6px;
+}
+
+.fixed-notice-content,
+.example-content {
+	display: block;
+	font-size: 12px;
+	line-height: 1.6;
+	color: rgba(226, 232, 240, 0.92);
+}
+
+.fixed-notice-content {
+	text-align: center;
+	color: #fbbf24;
+	font-weight: 700;
+	font-size: 14px;
 }
 
 .k {

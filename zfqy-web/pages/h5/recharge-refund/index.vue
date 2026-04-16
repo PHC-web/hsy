@@ -40,9 +40,9 @@
 
 				<view class="rule-card h5-glass-panel">
 					<text class="rule-title">退款规则说明</text>
-					<text class="rule-item">1）重置后 180 天内无法退款。</text>
-					<text class="rule-item">2）满 180 天后，系统会自动给客户 3 天提取时间；若客户在第 181~183 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-					<text class="rule-item">3）如客户执意在 180 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+					<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
+					<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
+					<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
 				</view>
 
 				<button class="btn-refund" type="warn" :disabled="loading" @click="refundReset">申请退款并重置权益数据</button>
@@ -57,7 +57,7 @@
 </template>
 
 <script>
-import { h5HomeDashboard, h5MineInfo, h5RefundReset } from '@/pages/h5/common/api';
+import { h5HomeDashboard, h5MineInfo, h5RefundReset, h5TransferStatus } from '@/pages/h5/common/api';
 
 export default {
 	data() {
@@ -72,6 +72,8 @@ export default {
 				windowEndMs: 0,
 				cycleAnchorStartMs: 0
 			},
+			refundCycleDays: 180,
+			refundWindowDays: 3,
 			tick: 0,
 			tickTimer: null
 		};
@@ -120,7 +122,7 @@ export default {
 				return '当前处于权益处理开放窗口（含退款申请等），距窗口结束还剩：';
 			}
 			if (p === 'lock') {
-				return '下一开放窗口开始前为锁定周期，倒计时结束后可进入 3 天处理窗口：';
+				return `下一开放窗口开始前为锁定周期，倒计时结束后可进入 ${this.refundWindowDays} 天处理窗口：`;
 			}
 			return '您尚未充值';
 		},
@@ -145,6 +147,25 @@ export default {
 		this.clearTick();
 	},
 	methods: {
+		unwrapResult(payload) {
+			if (payload && typeof payload === 'object' && payload.success === true && payload.data && typeof payload.data === 'object') {
+				return payload.data;
+			}
+			return payload || {};
+		},
+		extractErrorMessage(err, fallback = '操作失败') {
+			try {
+				const raw = typeof err === 'string' ? err : err?.message || '';
+				if (raw) {
+					const parsed = JSON.parse(raw);
+					if (parsed?.data?.message) return String(parsed.data.message);
+					if (parsed?.message) return String(parsed.message);
+				}
+			} catch (e) {}
+			if (err?.data?.message) return String(err.data.message);
+			if (err?.message) return String(err.message);
+			return fallback;
+		},
 		clearTick() {
 			if (this.tickTimer) {
 				clearInterval(this.tickTimer);
@@ -162,22 +183,25 @@ export default {
 					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 					return;
 				}
-				const d = res.data || {};
+				const d = this.unwrapResult(res).data || this.unwrapResult(res) || {};
 				if (typeof d.serverTime === 'number') {
 					this.serverSkew = d.serverTime - Date.now();
 				}
 				this.countdown = Object.assign({}, this.countdown, d.countdown || {});
+				this.refundCycleDays = Number(d.refundCycle?.cycleDays || 180);
+				this.refundWindowDays = Number(d.refundCycle?.windowDays || 3);
 			} finally {
 				this.loading = false;
 			}
 		},
 		async goRecharge() {
 			const mine = await h5MineInfo();
-			if (mine.code !== 0) {
-				uni.showToast({ title: mine.message || '获取用户信息失败', icon: 'none' });
+			const mineRes = this.unwrapResult(mine);
+			if (mineRes.code !== 0) {
+				uni.showToast({ title: mineRes.message || '获取用户信息失败', icon: 'none' });
 				return;
 			}
-			const m = mine.data && mine.data.merchant;
+			const m = mineRes.data && mineRes.data.merchant;
 			if (!m || !String(m.agreementImg || '').trim()) {
 				uni.showToast({ title: '请先在「我的」中签署优惠活动计划书', icon: 'none' });
 				uni.navigateTo({ url: '/pages/h5/mine/index' });
@@ -189,7 +213,7 @@ export default {
 			const isWindow = this.countdown.phase === 'window';
 			const content = isWindow
 				? '退款后将不享有会员权益，确认退款？'
-				: '充值后180天内无法进行全额退款，现在退款需收取50%违约金，是否要进行退款？';
+				: `充值后${this.refundCycleDays}天内无法进行全额退款，现在退款需收取50%违约金，是否要进行退款？`;
 			uni.showModal({
 				title: '确认退款重置',
 				content,
@@ -198,17 +222,37 @@ export default {
 					this.loading = true;
 					uni.showLoading({ title: '处理中...', mask: true });
 					try {
-						const res = await h5RefundReset('用户在退款与周期页发起退款重置');
+						const rawRes = await h5RefundReset('用户在退款与周期页发起退款重置');
+						const res = this.unwrapResult(rawRes);
+						if (res.code === 409) {
+							const outBillNo = res.data && res.data.outBillNo;
+							let latestState = res.data && (res.data.refundState || res.data.transferState || '');
+							if (outBillNo) {
+								try {
+									const s = await h5TransferStatus(outBillNo);
+									const sr = this.unwrapResult(s);
+									if (sr.code === 0 && sr.data) latestState = sr.data.state || latestState;
+								} catch (e) {}
+							}
+							uni.showModal({
+								title: '退款处理中',
+								content: `当前状态：${latestState || 'PROCESSING'}\n退款单号：${outBillNo || '-'}\n\n原路退款由微信支付异步处理，稍后可再次进入本页刷新状态。`,
+								showCancel: false
+							});
+							return;
+						}
 						if (res.code !== 0) {
-							uni.showToast({ title: res.message || '操作失败', icon: 'none' });
+							uni.showToast({ title: this.extractErrorMessage(res, res.message || '操作失败'), icon: 'none' });
 							return;
 						}
 						uni.showModal({
-							title: '退款已发起',
-							content: `退款单号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计返还：¥${res.data.finalRefundAmount}\n\n款项将原路退回至微信，到账时间以微信支付为准。`,
+							title: '原路退款已发起',
+							content: `退款批次号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计退款：¥${res.data.finalRefundAmount}\n\n款项将原路退回至用户支付账户，到账时间以微信支付处理结果为准。`,
 							showCancel: false
 						});
 						await this.load();
+					} catch (e) {
+						uni.showToast({ title: this.extractErrorMessage(e, '操作失败'), icon: 'none' });
 					} finally {
 						this.loading = false;
 						uni.hideLoading();

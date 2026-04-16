@@ -13,6 +13,8 @@ const uniPayOrderCollection = db.collection('uni-pay-orders');
 const mobileCodeCollection = db.collection('hsy-h5-mobile-codes');
 const feedbackTicketCollection = db.collection('hsy-h5-feedback');
 const feedbackMessageCollection = db.collection('hsy-h5-feedback-messages');
+const systemSettingCollection = db.collection('hsy-system-settings');
+const transferOrderCollection = db.collection('hsy-transfer-orders');
 const subsidyEngine = require('./subsidy-engine.js');
 
 function loadWechatLocalConfig() {
@@ -68,6 +70,8 @@ const SMS_SECRET = process.env.DCLOUD_SMS_SECRET || process.env.SMS_SECRET || ''
 const SMS_TEMPLATE_ID = process.env.H5_BIND_MOBILE_TEMPLATE_ID || '';
 const SMS_NAME = process.env.H5_SMS_NAME || '慧收盈';
 const MOBILE_CODE_TTL_MS = 5 * 60 * 1000;
+const WX_TRANSFER_SCENE_ID = pickWxSecret('WX_TRANSFER_SCENE_ID', payLocal.WX_TRANSFER_SCENE_ID, 20) || '1000';
+const WX_TRANSFER_NOTIFY_URL = pickWxSecret('WX_TRANSFER_NOTIFY_URL', payLocal.WX_TRANSFER_NOTIFY_URL, 500);
 
 function getOperator(event) {
 	const ctx = event?.context || {};
@@ -1030,13 +1034,14 @@ function wxWithdrawCredentials() {
 }
 
 function wxRechargeCredentials() {
+	const fallback = wxWithdrawCredentials();
 	return {
-		mchId: WX_PAY_RECHARGE_MCH_ID,
-		appId: WX_PAY_RECHARGE_APPID,
-		mchApiV3Key: WX_PAY_RECHARGE_MCH_API_V3_KEY,
-		mchSerialNo: WX_PAY_RECHARGE_MCH_SERIAL_NO,
-		privateKey: WX_PAY_RECHARGE_PRIVATE_KEY,
-		platformCert: WX_PAY_RECHARGE_PLATFORM_CERT
+		mchId: WX_PAY_RECHARGE_MCH_ID || fallback.mchId,
+		appId: WX_PAY_RECHARGE_APPID || fallback.appId,
+		mchApiV3Key: WX_PAY_RECHARGE_MCH_API_V3_KEY || fallback.mchApiV3Key,
+		mchSerialNo: WX_PAY_RECHARGE_MCH_SERIAL_NO || fallback.mchSerialNo,
+		privateKey: WX_PAY_RECHARGE_PRIVATE_KEY || fallback.privateKey,
+		platformCert: WX_PAY_RECHARGE_PLATFORM_CERT || fallback.platformCert
 	};
 }
 
@@ -1044,7 +1049,31 @@ function wxRechargeCredentials() {
 function wxCredentialsForPayOrder(order) {
 	const profile = order && order.custom && order.custom.wx_pay_profile;
 	if (profile === 'recharge') return wxRechargeCredentials();
+	if (profile === 'withdraw') return wxWithdrawCredentials();
+	const mchid = safeText(order?.custom?.wx_pay_mchid || order?.mchid || order?.provider_mchid, 40);
+	if (mchid && mchid === wxRechargeCredentials().mchId) return wxRechargeCredentials();
+	if (mchid && mchid === wxWithdrawCredentials().mchId) return wxWithdrawCredentials();
+	if (String(order?.type || '') === 'h5_quota_recharge') return wxRechargeCredentials();
 	return wxWithdrawCredentials();
+}
+
+function explicitMchIdOfOrder(order) {
+	return safeText(order?.custom?.wx_pay_mchid || order?.mchid || order?.provider_mchid, 40);
+}
+
+function wxCredentialsByMchId(mchId) {
+	const id = safeText(mchId, 40);
+	if (!id) return null;
+	const rc = wxRechargeCredentials();
+	if (id === rc.mchId) return rc;
+	const wc = wxWithdrawCredentials();
+	if (id === wc.mchId) return wc;
+	return null;
+}
+
+function isWxOrderNotExistsError(e) {
+	const msg = String(e?.wxBody?.message || e?.wxBody?.code || e?.message || '').toLowerCase();
+	return msg.includes('订单不存在') || msg.includes('order_not_exist') || msg.includes('resource_not_exists');
 }
 
 function ensureWxWithdrawPayConfig() {
@@ -1123,10 +1152,28 @@ class WxPayRequestError extends Error {
 }
 
 function normalizeWxPayResponseData(raw) {
-	if (raw !== null && typeof raw === 'object') return raw;
+	if (raw !== null && typeof raw === 'object') {
+		let cur = raw;
+		// 兼容代理/网关常见包裹：{success,data} / {code,data} / {result,data}
+		for (let i = 0; i < 3; i++) {
+			if (cur && typeof cur === 'object') {
+				if (Object.prototype.hasOwnProperty.call(cur, 'prepay_id')) return cur;
+				if (Object.prototype.hasOwnProperty.call(cur, 'data') && cur.data && typeof cur.data === 'object') {
+					cur = cur.data;
+					continue;
+				}
+				if (Object.prototype.hasOwnProperty.call(cur, 'result') && cur.result && typeof cur.result === 'object') {
+					cur = cur.result;
+					continue;
+				}
+			}
+			break;
+		}
+		return cur;
+	}
 	if (typeof raw === 'string') {
 		try {
-			return JSON.parse(raw);
+			return normalizeWxPayResponseData(JSON.parse(raw));
 		} catch (_) {
 			return { _raw: raw };
 		}
@@ -1134,7 +1181,50 @@ function normalizeWxPayResponseData(raw) {
 	return {};
 }
 
-async function wxPayRequestFor(creds, method, urlPathWithQuery, bodyObj) {
+function normalizeProxyResp(resp) {
+	if (resp && typeof resp === 'object') {
+		// httpProxyForEip 常见返回：{ success, data, statusCode? }，其中 data 还可能再包一层 { data, statusCode }
+		let payload = resp;
+		let status = Number(resp.statusCode || resp.status || 200);
+		if (Object.prototype.hasOwnProperty.call(resp, 'success') && Object.prototype.hasOwnProperty.call(resp, 'data')) {
+			payload = resp.data;
+		}
+		if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+			const nestedStatus = Number(payload.statusCode || payload.status || 0);
+			if (nestedStatus) status = nestedStatus;
+			payload = payload.data;
+		}
+		return { status, data: payload };
+	}
+	return { status: 200, data: resp };
+}
+
+async function requestViaEipProxyIfPossible(method, url, bodyObj, headers) {
+	if (!uniCloud.httpProxyForEip) return null;
+	try {
+		if (method === 'GET') {
+			const qIdx = url.indexOf('?');
+			const base = qIdx >= 0 ? url.slice(0, qIdx) : url;
+			const params = {};
+			if (qIdx >= 0) {
+				const query = new URLSearchParams(url.slice(qIdx + 1));
+				for (const [k, v] of query.entries()) params[k] = v;
+			}
+			const r = await uniCloud.httpProxyForEip.get(base, params);
+			return normalizeProxyResp(r);
+		}
+		if (method === 'POST') {
+			const r = await uniCloud.httpProxyForEip.postJson(url, bodyObj || {}, headers || {});
+			return normalizeProxyResp(r);
+		}
+		return null;
+	} catch (e) {
+		console.error(`[requestViaEipProxyIfPossible] ${method} ${url} failed`, e && e.message);
+		return null;
+	}
+}
+
+async function wxPayRequestFor(creds, method, urlPathWithQuery, bodyObj, opts = {}) {
 	const url = `https://api.mch.weixin.qq.com${urlPathWithQuery}`;
 	const bodyString = bodyObj ? JSON.stringify(bodyObj) : '';
 	const headers = {
@@ -1143,15 +1233,34 @@ async function wxPayRequestFor(creds, method, urlPathWithQuery, bodyObj) {
 		'Content-Type': 'application/json',
 		'User-Agent': 'hsy-merchant-cloudfn'
 	};
-	const resp = await uniCloud.httpclient.request(url, {
-		method,
-		data: bodyString || undefined,
-		dataType: 'json',
-		contentType: 'application/json',
-		headers,
-		timeout: 15000
-	});
+	const useEipProxy = !!opts.useEipProxy;
+	const proxyResp = useEipProxy ? await requestViaEipProxyIfPossible(method, url, bodyObj, headers) : null;
+	const resp = proxyResp
+		? { status: proxyResp.status, data: proxyResp.data }
+		: await uniCloud.httpclient.request(url, {
+				method,
+				data: bodyString || undefined,
+				dataType: 'json',
+				contentType: 'application/json',
+				headers,
+				timeout: 15000
+		  });
 	const data = normalizeWxPayResponseData(resp.data);
+	// 代理模式下有时会返回 200 + 错误对象，需主动识别
+	if (
+		data &&
+		typeof data === 'object' &&
+		(data.code || data.errcode) &&
+		!data.prepay_id &&
+		!data.trade_state &&
+		!data.transfer_bill_no &&
+		!data.out_bill_no
+	) {
+		console.error(
+			`[wxPayRequestFor] ${method} ${urlPathWithQuery} logical_error wechat_json=${JSON.stringify(data)}`
+		);
+		throw new WxPayRequestError(resp.status || 400, data, urlPathWithQuery);
+	}
 	if (resp.status >= 400) {
 		console.error(
 			`[wxPayRequestFor] ${method} ${urlPathWithQuery} http=${resp.status} wechat_json=${JSON.stringify(data)}`
@@ -1211,6 +1320,62 @@ async function wxPayCreateRefundFor(creds, { outTradeNo, outRefundNo, refundFen,
 		body.notify_url = H5_REFUND_NOTIFY_URL;
 	}
 	return wxPayRequestFor(creds, 'POST', '/v3/refund/domestic/refunds', body);
+}
+
+async function wxPayQueryRefundFor(creds, outRefundNo) {
+	const path = `/v3/refund/domestic/refunds/${encodeURIComponent(safeText(outRefundNo, 64))}`;
+	return wxPayRequestFor(creds, 'GET', path, null);
+}
+
+/**
+ * 微信支付 V3 商家转账（升级版，单笔）
+ * https://pay.weixin.qq.com/doc/v3/merchant/4012716436
+ */
+async function wxPayMerchantTransferToOpenid(creds, { appid, openid, amountFen, outBillNo, reason }) {
+	if (!WX_TRANSFER_SCENE_ID) {
+		throw new Error('未配置 WX_TRANSFER_SCENE_ID（商家转账场景ID）');
+	}
+	const body = {
+		appid: safeText(appid, 80),
+		out_bill_no: safeText(outBillNo, 64),
+		transfer_scene_id: safeText(WX_TRANSFER_SCENE_ID, 20),
+		openid: safeText(openid, 128),
+		transfer_amount: Math.round(Number(amountFen || 0)),
+		transfer_remark: safeText(reason || 'H5退款补偿打款', 32)
+	};
+	if (WX_TRANSFER_NOTIFY_URL && isValidNotifyUrl(WX_TRANSFER_NOTIFY_URL)) {
+		body.notify_url = WX_TRANSFER_NOTIFY_URL;
+	}
+	return wxPayRequestFor(creds, 'POST', '/v3/fund-app/mch-transfer/transfer-bills', body, { useEipProxy: true });
+}
+
+async function wxPayQueryMerchantTransfer(creds, outBillNo) {
+	const path = `/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/${encodeURIComponent(safeText(outBillNo, 64))}`;
+	return wxPayRequestFor(creds, 'GET', path, null, { useEipProxy: true });
+}
+
+function normalizeTransferState(raw) {
+	const s = String(raw || '').toUpperCase();
+	if (!s) return 'UNKNOWN';
+	return s;
+}
+
+function isTransferTerminalState(state) {
+	return ['SUCCESS', 'FAIL', 'FAILED', 'CANCELLED'].includes(normalizeTransferState(state));
+}
+
+function normalizeRefundState(raw) {
+	const s = String(raw || '').toUpperCase();
+	if (!s) return 'UNKNOWN';
+	return s;
+}
+
+function isRefundSuccessState(state) {
+	return normalizeRefundState(state) === 'SUCCESS';
+}
+
+function isRefundFailedState(state) {
+	return ['ABNORMAL', 'CLOSED', 'CHANGE'].includes(normalizeRefundState(state));
 }
 
 function normalizePem(pemLike) {
@@ -1278,23 +1443,52 @@ function wxAckFail(msg) {
 
 async function applyRechargeByOrder(orderDoc) {
 	const custom = orderDoc.custom || {};
+	if (custom.recharge_applied) return;
 	if (!custom.merchant_id) return;
 	const merchant = await getMerchantByIdOrUserId(custom.merchant_id);
 	if (!merchant) return;
 	const now = nowTs();
+	const biz = await getBizSettings();
+	const refundCycle = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
 	const targetPrice = Number(custom.target_price || 0);
 	const beforePrice = Number(custom.before_price || 0);
-	const grantDelta = Math.max(0, Number((grantYuanByRechargePrice(targetPrice) - grantYuanByRechargePrice(beforePrice)).toFixed(2)));
+	const grantDelta = Math.max(
+		0,
+		Number((grantYuanByRechargePrice(targetPrice, biz.rechargeRules) - grantYuanByRechargePrice(beforePrice, biz.rechargeRules)).toFixed(2))
+	);
 	const prevRem = Number(merchant.remaining_quota || 0);
 	const afterRem = Number((prevRem + grantDelta).toFixed(2));
 	const volAdd = Number(custom.add_quota || 0);
+	const addPaidYuan = Number(Number(custom.paid_amount || 0).toFixed(2));
+	const prevTrackedTotal = Number(merchant.recharge_total_yuan || 0);
+	let baseRechargeTotal = Number.isFinite(prevTrackedTotal) && prevTrackedTotal > 0 ? prevTrackedTotal : 0;
+	if (baseRechargeTotal <= 0 && addPaidYuan > 0) {
+		const logRes = await operationLogCollection
+			.where({
+				user_id: merchant.user_id || merchant._id,
+				action: 'h5_quota_recharge',
+				refunded: false
+			})
+			.field({ package_price: true })
+			.limit(500)
+			.get();
+		let fromLogs = 0;
+		(logRes.data || []).forEach((x) => {
+			fromLogs += Number(x.package_price || 0);
+		});
+		baseRechargeTotal = Number(fromLogs.toFixed(2));
+	}
+	const nextRechargeTotalYuan = Number((baseRechargeTotal + addPaidYuan).toFixed(2));
 	await merchantCollection.doc(merchant._id).update({
 		remaining_quota: afterRem,
-		estimated_free_quota: afterRem,
+		estimated_free_quota: Number(custom.target_quota || 0),
 		recharge_package_id: custom.package_id || '',
 		recharge_package_price: targetPrice,
 		recharge_package_quota: Number(custom.target_quota || 0),
 		recharge_cycle_start: now,
+		recharge_cycle_days: Number(refundCycle.cycleDays || 180),
+		recharge_window_days: Number(refundCycle.windowDays || 3),
+		recharge_total_yuan: nextRechargeTotalYuan,
 		recharge_update_time: now,
 		update_time: now
 	});
@@ -1320,6 +1514,16 @@ async function applyRechargeByOrder(orderDoc) {
 		refunded: false,
 		create_time: now
 	});
+	if (orderDoc._id) {
+		await uniPayOrderCollection.doc(orderDoc._id).update({
+			custom: {
+				...custom,
+				recharge_applied: true,
+				recharge_applied_at: now
+			},
+			update_date: now
+		});
+	}
 }
 
 function pickAuthProfile(data) {
@@ -1954,15 +2158,31 @@ async function h5FinanceRecords(data) {
 async function h5MineInfo(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserId = merchant.user_id || merchant._id;
+		const unapplied = await uniPayOrderCollection
+			.where({ user_id: merchantUserId, type: 'h5_quota_recharge', status: 1, user_order_success: true })
+			.orderBy('create_date', 'desc')
+			.limit(20)
+			.get();
+		for (const o of unapplied.data || []) {
+			if (!(o.custom && o.custom.recharge_applied)) {
+				await applyRechargeByOrder(o);
+			}
+		}
+		merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const biz = await getBizSettings();
+		const rewardByPackage = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
+		const rechargeRewardYuan = Number(rewardByPackage || 0);
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
 				merchant: compactMerchantInfo(merchant),
 				account: {
-					availableReward: Number(merchant.available_reward || 0).toFixed(2),
+					availableReward: Number(rechargeRewardYuan || 0).toFixed(2),
 					estimatedFreeQuota: Number(merchant.estimated_free_quota || 0).toFixed(2),
 					accountPoints: Number(merchant.account_points || 0).toFixed(2)
 				}
@@ -1974,21 +2194,92 @@ async function h5MineInfo(data) {
 	}
 }
 
-/** 充值档位对应的「免满5万流水即可领取积分」权益额度（元，与套餐文案 3800/5700/7600 一致；非交易量 quota 字段） */
-const H5_WITHDRAW_QUOTA_YUAN_BY_PRICE = {
-	1000: 7600,
-	800: 5700,
-	600: 3800,
-	0.1: 3800
+const BIZ_SETTING_KEY = 'h5_biz_params';
+const DEFAULT_RECHARGE_RULES = [
+	{ price: 600, rewardYuan: 3800, quota: 1000000, tip: '600元配置100万交易量，等于补贴市场价的3800元手续费' },
+	{ price: 800, rewardYuan: 5700, quota: 1500000, tip: '800元配置150万交易量，等于补贴市场价的5700元手续费' },
+	{ price: 1000, rewardYuan: 7600, quota: 2000000, tip: '1000元配置200万交易量，等于补贴市场价的7600元手续费' }
+];
+const DEFAULT_BIZ_SETTINGS = {
+	rechargeRules: DEFAULT_RECHARGE_RULES,
+	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
+	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	refundCycle: { cycleDays: 180, windowDays: 3 },
+	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 }
 };
 
-function grantYuanByRechargePrice(price) {
-	const p = Number(price || 0);
-	if (H5_WITHDRAW_QUOTA_YUAN_BY_PRICE[p] != null) return H5_WITHDRAW_QUOTA_YUAN_BY_PRICE[p];
-	if (p >= 1000) return H5_WITHDRAW_QUOTA_YUAN_BY_PRICE[1000];
-	if (p >= 800) return H5_WITHDRAW_QUOTA_YUAN_BY_PRICE[800];
-	if (p >= 600) return H5_WITHDRAW_QUOTA_YUAN_BY_PRICE[600];
-	return 0;
+function sanitizeBizSettings(raw = {}) {
+	const rechargeRules = (Array.isArray(raw.rechargeRules) ? raw.rechargeRules : DEFAULT_RECHARGE_RULES)
+		.map((x) => ({
+			price: Number(x?.price || 0),
+			rewardYuan: Number(x?.rewardYuan || 0),
+			quota: Number(x?.quota || 0),
+			tip: String(x?.tip || '').trim().slice(0, 200)
+		}))
+		.filter((x) => x.price > 0 && x.rewardYuan >= 0)
+		.sort((a, b) => a.price - b.price);
+	const normRules = rechargeRules.length ? rechargeRules : DEFAULT_RECHARGE_RULES;
+	const wr = raw.withdrawRange || {};
+	const withdrawRange = {
+		memberMin: Math.max(1, Number(wr.memberMin || DEFAULT_BIZ_SETTINGS.withdrawRange.memberMin)),
+		memberMax: Math.max(1, Number(wr.memberMax || DEFAULT_BIZ_SETTINGS.withdrawRange.memberMax)),
+		nonMemberMin: Math.max(1, Number(wr.nonMemberMin || DEFAULT_BIZ_SETTINGS.withdrawRange.nonMemberMin)),
+		nonMemberMax: Math.max(1, Number(wr.nonMemberMax || DEFAULT_BIZ_SETTINGS.withdrawRange.nonMemberMax))
+	};
+	if (withdrawRange.memberMin > withdrawRange.memberMax) withdrawRange.memberMax = withdrawRange.memberMin;
+	if (withdrawRange.nonMemberMin > withdrawRange.nonMemberMax) withdrawRange.nonMemberMax = withdrawRange.nonMemberMin;
+	const oc = raw.optimizeConfig || {};
+	const optimizeConfig = {
+		enabled: oc.enabled !== false,
+		thresholdYuan: Math.max(0, Number(oc.thresholdYuan || DEFAULT_BIZ_SETTINGS.optimizeConfig.thresholdYuan)),
+		aboveInstallments: Math.max(1, Number(oc.aboveInstallments || DEFAULT_BIZ_SETTINGS.optimizeConfig.aboveInstallments)),
+		belowInstallments: Math.max(1, Number(oc.belowInstallments || DEFAULT_BIZ_SETTINGS.optimizeConfig.belowInstallments))
+	};
+	const rc = raw.refundCycle || {};
+	const refundCycle = {
+		cycleDays: Math.max(1, Number(rc.cycleDays || DEFAULT_BIZ_SETTINGS.refundCycle.cycleDays)),
+		windowDays: Math.max(1, Number(rc.windowDays || DEFAULT_BIZ_SETTINGS.refundCycle.windowDays))
+	};
+	const riskRates = {};
+	const rr = raw.riskRates || {};
+	Object.keys(rr).forEach((k) => {
+		riskRates[String(k)] = Math.max(0, Math.min(100, Number(rr[k] || 0)));
+	});
+	return { rechargeRules: normRules, withdrawRange, optimizeConfig, refundCycle, riskRates };
+}
+
+async function getBizSettings() {
+	try {
+		const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(1).get();
+		if (r.data && r.data.length) return sanitizeBizSettings(r.data[0].value || {});
+	} catch (e) {
+		console.error('getBizSettings failed', e);
+	}
+	return sanitizeBizSettings(DEFAULT_BIZ_SETTINGS);
+}
+
+function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES) {
+	let p = Number(price || 0);
+	const defaultRules = (Array.isArray(DEFAULT_RECHARGE_RULES) ? DEFAULT_RECHARGE_RULES : []).slice().sort((a, b) => a.price - b.price);
+	const rules = (Array.isArray(rechargeRules) ? rechargeRules : DEFAULT_RECHARGE_RULES).slice().sort((a, b) => a.price - b.price);
+	// 0.1 元测试档与 600 档同权益：奖励计算按首档正式套餐金额处理
+	if (p === 0.1 && rules.length) {
+		p = Number(rules[0].price || 0);
+	}
+	let reward = 0;
+	for (const rule of rules) {
+		const pricePoint = Number(rule.price || 0);
+		if (p >= pricePoint) {
+			const configuredReward = Number(rule.rewardYuan || 0);
+			let defaultReward = 0;
+			for (const dr of defaultRules) {
+				if (pricePoint >= Number(dr.price || 0)) defaultReward = Number(dr.rewardYuan || 0);
+			}
+			// 配置被误改为 0 时，回退到系统默认奖励档位，保证 600/800/1000 档可正常展示奖励值
+			reward = Math.max(configuredReward, defaultReward);
+		}
+	}
+	return Number(reward || 0);
 }
 
 function shanghaiYMD(ts) {
@@ -2031,10 +2322,38 @@ function buildWithdrawReceivedInRange(merchantUserId, timeStart, timeEnd) {
 	]);
 }
 
-function h5WithdrawQuotaTotalYuan(merchant) {
-	const pkg = pickRechargePackage(merchant.recharge_package_id) || getRechargePackageByPrice(merchant.recharge_package_price);
-	const price = Number((pkg && pkg.price) || merchant.recharge_package_price || 0);
-	return grantYuanByRechargePrice(price);
+function resolveRechargePriceForReward(merchant, rechargeRules = DEFAULT_RECHARGE_RULES) {
+	const pid = safeText(merchant?.recharge_package_id, 40);
+	if (pid) {
+		// 兼容动态套餐 id：pkg_600 / pkg_0_1 / 自定义规则生成形式
+		const m = pid.match(/^pkg_(\d+)(?:_(\d+))?$/);
+		if (m) {
+			const n = Number(m[1] + (m[2] ? `.${m[2]}` : ''));
+			if (Number.isFinite(n) && n > 0) return n;
+		}
+		const r = (Array.isArray(rechargeRules) ? rechargeRules : []).find((x) => `pkg_${String(Number(x.price || 0)).replace('.', '_')}` === pid);
+		if (r) return Number(r.price || 0);
+	}
+	const quota = Number(merchant?.recharge_package_quota || 0);
+	if (quota > 0) {
+		const byQuota = (Array.isArray(rechargeRules) ? rechargeRules : [])
+			.filter((x) => Number(x.quota || 0) === quota)
+			.sort((a, b) => Number(a.price || 0) - Number(b.price || 0));
+		if (byQuota.length) return Number(byQuota[0].price || 0);
+	}
+	const directPrice = Number(merchant?.recharge_package_price || 0);
+	if (directPrice > 0) return directPrice;
+	return 0;
+}
+
+function h5WithdrawQuotaTotalYuan(merchant, rechargeRules = DEFAULT_RECHARGE_RULES) {
+	const quota = Number(merchant?.estimated_free_quota || merchant?.recharge_package_quota || 0);
+	// H5 固定业务档位：100万=3800，150万=5700，200万=7600（不受后台误配置影响）
+	if (quota >= 2000000) return 7600;
+	if (quota >= 1500000) return 5700;
+	if (quota >= 1000000) return 3800;
+	const price = resolveRechargePriceForReward(merchant, rechargeRules);
+	return grantYuanByRechargePrice(price, rechargeRules);
 }
 
 function h5MembershipInfo(merchant) {
@@ -2096,10 +2415,12 @@ async function h5WithdrawInfo(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
 		const member = isH5RechargeMemberForWithdraw(merchant);
+		const biz = await getBizSettings();
 		const ar = Number(merchant.available_reward || 0);
 		const ap = Number(merchant.account_points || 0);
 		const redeemable = Math.floor(Math.min(ar, ap));
-		const minPoints = member ? 10 : 30;
+		const minPoints = member ? Number(biz.withdrawRange.memberMin || 10) : Number(biz.withdrawRange.nonMemberMin || 30);
+		const maxPoints = member ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
 		const mship = h5MembershipInfo(merchant);
 		return {
 			code: 0,
@@ -2110,7 +2431,7 @@ async function h5WithdrawInfo(data) {
 				isRechargeMember: member,
 				membershipName: mship.name,
 				minPoints,
-				maxPoints: H5_WITHDRAW_MAX_POINTS,
+				maxPoints,
 				feePerOrderYuan: H5_WITHDRAW_FEE_YUAN,
 				inBusinessHours: isH5WithdrawBusinessHours(now),
 				pointEqualsYuan: true
@@ -2138,12 +2459,14 @@ async function h5WithdrawApply(data) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const member = isH5RechargeMemberForWithdraw(merchant);
-		const minP = member ? 10 : 30;
+		const biz = await getBizSettings();
+		const minP = member ? Number(biz.withdrawRange.memberMin || 10) : Number(biz.withdrawRange.nonMemberMin || 30);
+		const maxP = member ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
 		if (points < minP) {
 			return { code: 400, message: `单次兑换最低为 ${minP} 积分（${member ? '充值会员' : '非充值会员'}）` };
 		}
-		if (points > H5_WITHDRAW_MAX_POINTS) {
-			return { code: 400, message: `单次兑换最高为 ${H5_WITHDRAW_MAX_POINTS} 积分` };
+		if (points > maxP) {
+			return { code: 400, message: `单次兑换最高为 ${maxP} 积分` };
 		}
 		const ar = Number(merchant.available_reward || 0);
 		const ap = Number(merchant.account_points || 0);
@@ -2247,7 +2570,9 @@ async function h5HomeDashboard(data) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
-		let countdown = computeRechargeCountdown(merchant.recharge_cycle_start, now);
+		const biz = await getBizSettings();
+		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
+		let countdown = computeRechargeCountdown(merchant.recharge_cycle_start, now, cycleCfg.cycleDays, cycleCfg.windowDays);
 		if (countdown.normalized && Number(merchant.recharge_cycle_start || 0) !== Number(countdown.start || 0)) {
 			await merchantCollection.doc(merchant._id).update({
 				recharge_cycle_start: Number(countdown.start || 0),
@@ -2255,7 +2580,7 @@ async function h5HomeDashboard(data) {
 			});
 			const m2 = await getMerchantByIdOrUserId(merchant._id);
 			if (m2) merchant.recharge_cycle_start = m2.recharge_cycle_start;
-			countdown = computeRechargeCountdown(merchant.recharge_cycle_start, now);
+			countdown = computeRechargeCountdown(merchant.recharge_cycle_start, now, cycleCfg.cycleDays, cycleCfg.windowDays);
 		}
 		// 提现单 merchant_user_id 与商户 user_id 一致（见 withdrawApprove）
 		const withdrawMerchantKey = String(merchant.user_id || merchant._id || '');
@@ -2268,10 +2593,13 @@ async function h5HomeDashboard(data) {
 			withdrawSummary(buildWithdrawReceivedInRange(withdrawMerchantKey, yearR.start, yearR.end))
 		]);
 		const membership = h5MembershipInfo(merchant);
-		const withdrawQuotaTotalYuan = h5WithdrawQuotaTotalYuan(merchant);
-		const remainingQuota = Number(merchant.remaining_quota || 0);
+		const withdrawQuotaTotalYuan = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
+		const withdrawnYuan = Number(merchant.withdrawn || 0);
+		const pendingWithdrawYuan = Number(merchant.pending_withdraw || 0);
 		const usedQuotaYuan =
-			withdrawQuotaTotalYuan > 0 ? Math.max(0, Number((withdrawQuotaTotalYuan - remainingQuota).toFixed(2))) : 0;
+			withdrawQuotaTotalYuan > 0 ? Math.max(0, Number((withdrawnYuan + pendingWithdrawYuan).toFixed(2))) : 0;
+		const remainingQuota =
+			withdrawQuotaTotalYuan > 0 ? Math.max(0, Number((withdrawQuotaTotalYuan - usedQuotaYuan).toFixed(2))) : 0;
 		return {
 			code: 0,
 			message: 'ok',
@@ -2297,6 +2625,10 @@ async function h5HomeDashboard(data) {
 					windowStartMs: Number(countdown.windowStart || 0),
 					windowEndMs: Number(countdown.windowEnd || 0),
 					cycleAnchorStartMs: Number(countdown.start || 0)
+				},
+				refundCycle: {
+					cycleDays: Number(cycleCfg.cycleDays || 180),
+					windowDays: Number(cycleCfg.windowDays || 3)
 				}
 			}
 		};
@@ -2344,20 +2676,35 @@ const H5_RECHARGE_PACKAGES = [
 	{ id: 'pkg_1000', title: '1000元', price: 1000, quota: 2000000, benefitTip: '1000元配置200万交易量，等于补贴市场价的7600元手续费' }
 ];
 
-function pickRechargePackage(packageId) {
+function buildRechargePackagesFromRules(rechargeRules = DEFAULT_RECHARGE_RULES) {
+	const core = (Array.isArray(rechargeRules) ? rechargeRules : DEFAULT_RECHARGE_RULES)
+		.map((x) => ({
+			id: `pkg_${String(Number(x.price || 0)).replace('.', '_')}`,
+			title: `${Number(x.price || 0)}元`,
+			price: Number(x.price || 0),
+			quota: Number(x.quota || 0),
+			benefitTip: String(x.tip || '').trim()
+		}))
+		.filter((x) => x.price > 0)
+		.sort((a, b) => a.price - b.price);
+	if (!core.length) return H5_RECHARGE_PACKAGES;
+	return [H5_RECHARGE_PKG_TEST_01, ...core];
+}
+
+function pickRechargePackage(packageId, packages = H5_RECHARGE_PACKAGES) {
 	const id = safeText(packageId, 40);
-	return H5_RECHARGE_PACKAGES.find((x) => x.id === id) || null;
+	return packages.find((x) => x.id === id) || null;
 }
 
-function getRechargePackageByPrice(price) {
+function getRechargePackageByPrice(price, packages = H5_RECHARGE_PACKAGES) {
 	const p = Number(price || 0);
-	return H5_RECHARGE_PACKAGES.find((x) => Number(x.price) === p) || null;
+	return packages.find((x) => Number(x.price) === p) || null;
 }
 
-function computeRechargeCountdown(cycleStartTs, now = nowTs()) {
+function computeRechargeCountdown(cycleStartTs, now = nowTs(), cycleDays = 180, windowDays = 3) {
 	const DAY_MS = 24 * 60 * 60 * 1000;
-	const CYCLE_MS = 180 * DAY_MS;
-	const WINDOW_MS = 3 * DAY_MS;
+	const CYCLE_MS = Math.max(1, Number(cycleDays || 180)) * DAY_MS;
+	const WINDOW_MS = Math.max(1, Number(windowDays || 3)) * DAY_MS;
 	let start = Number(cycleStartTs || 0);
 	if (!start) {
 		return {
@@ -2412,6 +2759,18 @@ function computeRechargeCountdown(cycleStartTs, now = nowTs()) {
 	};
 }
 
+function resolveMerchantRefundCycleDays(merchant, globalRefundCycle = DEFAULT_BIZ_SETTINGS.refundCycle) {
+	const hasOldRecharge = Number(merchant?.recharge_package_price || 0) > 0 || Number(merchant?.recharge_cycle_start || 0) > 0;
+	const cycleDays = Number(merchant?.recharge_cycle_days || 0);
+	const windowDays = Number(merchant?.recharge_window_days || 0);
+	if (cycleDays > 0 && windowDays > 0) return { cycleDays, windowDays };
+	if (hasOldRecharge) return { cycleDays: 180, windowDays: 3 };
+	return {
+		cycleDays: Math.max(1, Number(globalRefundCycle?.cycleDays || 180)),
+		windowDays: Math.max(1, Number(globalRefundCycle?.windowDays || 3))
+	};
+}
+
 function requireH5AgreementSigned(merchant) {
 	const ok = String(merchant?.agreement_img || '').trim();
 	if (ok) return null;
@@ -2425,19 +2784,22 @@ async function h5RechargeOptions(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const needSign = requireH5AgreementSigned(merchant);
 		if (needSign) return needSign;
-		const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs());
+		const biz = await getBizSettings();
+		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
+		const rechargePackages = buildRechargePackagesFromRules(biz.rechargeRules);
+		const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs(), cycleCfg.cycleDays, cycleCfg.windowDays);
 		if (countdown.normalized && Number(merchant.recharge_cycle_start || 0) !== Number(countdown.start || 0)) {
 			await merchantCollection.doc(merchant._id).update({
 				recharge_cycle_start: Number(countdown.start || 0),
 				update_time: nowTs()
 			});
 		}
-		const currentPkg = pickRechargePackage(merchant.recharge_package_id) || getRechargePackageByPrice(merchant.recharge_package_price);
+		const currentPkg = pickRechargePackage(merchant.recharge_package_id, rechargePackages) || getRechargePackageByPrice(merchant.recharge_package_price, rechargePackages);
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
-				packages: H5_RECHARGE_PACKAGES,
+				packages: rechargePackages,
 				notifyUrls: { pay: H5_PAY_NOTIFY_URL, refund: H5_REFUND_NOTIFY_URL },
 				currentPackage: currentPkg
 					? {
@@ -2451,6 +2813,10 @@ async function h5RechargeOptions(data) {
 					phase: countdown.phase,
 					days180Left: countdown.days180Left,
 					refundDaysLeft: countdown.refundDaysLeft
+				},
+				refundCycle: {
+					cycleDays: Number(cycleCfg.cycleDays || 180),
+					windowDays: Number(cycleCfg.windowDays || 3)
 				}
 			}
 		};
@@ -2466,7 +2832,9 @@ async function h5RechargeCreate(data, event) {
 		if (!cfg.ok) return { code: 500, message: cfg.message };
 		const rc = wxRechargeCredentials();
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
-		const pkg = pickRechargePackage(data?.packageId);
+		const biz = await getBizSettings();
+		const rechargePackages = buildRechargePackagesFromRules(biz.rechargeRules);
+		const pkg = pickRechargePackage(data?.packageId, rechargePackages);
 		if (!pkg) return { code: 400, message: '请选择有效充值套餐' };
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
@@ -2474,7 +2842,7 @@ async function h5RechargeCreate(data, event) {
 		if (needSign) return needSign;
 		const openid = safeText(merchant.wx_openid, 100);
 		if (!openid) return { code: 400, message: '当前账号缺少微信openid，请重新登录后再试' };
-		const currentPkg = pickRechargePackage(merchant.recharge_package_id) || getRechargePackageByPrice(merchant.recharge_package_price);
+		const currentPkg = pickRechargePackage(merchant.recharge_package_id, rechargePackages) || getRechargePackageByPrice(merchant.recharge_package_price, rechargePackages);
 		const currentPrice = Number(currentPkg ? currentPkg.price : merchant.recharge_package_price || 0);
 		if (currentPrice > 0 && Number(pkg.price) <= currentPrice) {
 			return { code: 400, message: '仅支持补差价升级到更高档位' };
@@ -2498,7 +2866,14 @@ async function h5RechargeCreate(data, event) {
 		};
 		const wxRes = await wxPayRequestFor(rc, 'POST', '/v3/pay/transactions/jsapi', createBody);
 		const prepayId = safeText(wxRes.prepay_id, 120);
-		if (!prepayId) return { code: 500, message: '微信下单失败：未返回 prepay_id' };
+		if (!prepayId) {
+			const maybeMsg = safeText(
+				String(wxRes.message || wxRes.errmsg || wxRes.code || wxRes.errcode || wxRes._raw || ''),
+				180
+			);
+			console.error('[h5RechargeCreate] missing prepay_id wxRes=', JSON.stringify(wxRes));
+			return { code: 500, message: maybeMsg ? `微信下单失败：${maybeMsg}` : '微信下单失败：未返回 prepay_id' };
+		}
 
 		await uniPayOrderCollection.add({
 			provider: 'wxpay',
@@ -2585,6 +2960,9 @@ async function h5RechargeConfirm(data) {
 			return { code: 403, message: '订单不属于当前用户' };
 		}
 		if (Number(order.status) === 1 && order.user_order_success) {
+			if (!(order.custom && order.custom.recharge_applied)) {
+				await applyRechargeByOrder(order);
+			}
 			return { code: 0, message: '支付成功', data: { paid: true } };
 		}
 
@@ -2639,6 +3017,9 @@ async function h5WxPayNotify(data) {
 		const order = res.data && res.data[0];
 		if (!order) return { code: 0, message: '订单不存在，忽略', data: { ack: wxAckSuccess() } };
 		if (Number(order.status) === 1 && order.user_order_success) {
+			if (!(order.custom && order.custom.recharge_applied)) {
+				await applyRechargeByOrder(order);
+			}
 			return { code: 0, message: '已处理过', data: { ack: wxAckSuccess() } };
 		}
 		const now = nowTs();
@@ -2711,24 +3092,30 @@ async function h5WxRefundNotify(data) {
 
 async function h5RefundReset(data, event) {
 	try {
-		const cfgW = ensureWxWithdrawPayConfig();
 		const cfgR = ensureWxRechargePayConfig();
-		if (!cfgW.ok) return { code: 500, message: cfgW.message };
 		if (!cfgR.ok) return { code: 500, message: cfgR.message };
 
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
-		const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs());
+		const biz = await getBizSettings();
+		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
+		const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs(), cycleCfg.cycleDays, cycleCfg.windowDays);
 		const merchantUserId = merchant.user_id || merchant._id;
 		const logs = await operationLogCollection.where({ user_id: merchantUserId, action: 'h5_quota_recharge', refunded: false }).limit(1000).get();
 		const rows = logs.data || [];
-		if (!rows.length) return { code: 400, message: '暂无可退款充值记录' };
 		const now = nowTs();
-		let refundAmount = 0;
-		rows.forEach((x) => {
-			refundAmount += Number(x.package_price || 0);
-		});
+		let refundAmount = Number(Number(merchant.recharge_total_yuan || 0).toFixed(2));
+		if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+			refundAmount = 0;
+			rows.forEach((x) => {
+				refundAmount += Number(x.package_price || 0);
+			});
+			refundAmount = Number(refundAmount.toFixed(2));
+		}
+		if (refundAmount <= 0) {
+			return { code: 400, message: '暂无可退款充值金额' };
+		}
 		let penaltyAmount = 0;
 		if (countdown.phase === 'lock') {
 			penaltyAmount = Number((refundAmount * 0.5).toFixed(2));
@@ -2736,128 +3123,183 @@ async function h5RefundReset(data, event) {
 		const finalRefundAmount = Number((refundAmount - penaltyAmount).toFixed(2));
 		const targetRefundFen = Math.round(finalRefundAmount * 100);
 		if (targetRefundFen < 1) {
-			return { code: 400, message: '计算应退金额过小，无法发起微信退款' };
+			return { code: 400, message: '计算应退金额过小，无法发起商家转账' };
 		}
-
-		const rowsSorted = [...rows].sort((a, b) => Number(a.create_time || 0) - Number(b.create_time || 0));
-		const seenPn = new Set();
-		const payOrders = [];
-		for (const row of rowsSorted) {
-			const pn = safeText(row.platform_no, 40);
-			if (!pn || seenPn.has(pn)) continue;
-			seenPn.add(pn);
-			const ordRes = await uniPayOrderCollection.where({ out_trade_no: pn }).limit(1).get();
-			const ord = ordRes.data && ordRes.data[0];
-			if (!ord) return { code: 400, message: `找不到微信支付订单：${pn}` };
-			if (String(ord.user_id || '') !== String(merchantUserId)) return { code: 403, message: '充值订单不属于当前用户' };
-			if (String(ord.type || '') !== 'h5_quota_recharge') {
-				return { code: 400, message: `订单类型不可退款：${pn}` };
-			}
-			if (Number(ord.status) !== 1) {
-				return { code: 400, message: `订单未支付成功，无法退款：${pn}` };
-			}
-			payOrders.push(ord);
-		}
-		if (!payOrders.length) return { code: 400, message: '未匹配到可退款的支付订单' };
-
-		let totalRefundableFen = 0;
-		for (const o of payOrders) {
-			const tf = Number(o.total_fee || 0);
-			const rf = Number(o.refund_fee || 0);
-			totalRefundableFen += Math.max(0, tf - rf);
-		}
-		if (targetRefundFen > totalRefundableFen) {
-			return {
-				code: 400,
-				message: `可退金额不足（微信侧剩余可退 ${(totalRefundableFen / 100).toFixed(2)} 元），可能已部分退款`
-			};
-		}
-
-		const parts = distributeRefundFenAcrossOrders(payOrders, targetRefundFen);
-		const refundNo = `H5F${now}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-		const wxRefundResults = [];
 		const reason = safeText(data?.reason || '用户申请H5额度充值退款', 80);
-		for (let i = 0; i < payOrders.length; i++) {
-			const rf = parts[i];
-			if (rf <= 0) continue;
-			const ord = payOrders[i];
-			const totalFen = Number(ord.total_fee || 0);
-			const alreadyFen = Number(ord.refund_fee || 0);
-			if (rf > totalFen - alreadyFen) {
-				return { code: 400, message: `订单 ${ord.out_trade_no} 可退金额不足` };
+		const rc = wxRechargeCredentials();
+		const bizKey = `${merchant._id}_${targetRefundFen}_${countdown.phase}_${Number(merchant.recharge_cycle_start || 0)}_${refundAmount.toFixed(2)}_${rows
+			.map((x) => x._id)
+			.sort()
+			.join('_')}`;
+		const existRes = await transferOrderCollection.where({ biz_key: bizKey, is_deleted: false }).limit(1).get();
+		let transferOrder = existRes.data && existRes.data[0];
+		if (!transferOrder) {
+			const orderNos = Array.from(new Set(rows.map((x) => safeText(x.platform_no || '', 40)).filter(Boolean)));
+			const orderWhere = {
+				type: 'h5_quota_recharge',
+				user_id: merchant.user_id || merchant._id,
+				user_order_success: true,
+				status: db.command.in([1, 2])
+			};
+			if (orderNos.length) orderWhere.out_trade_no = db.command.in(orderNos);
+			const orderRes = await uniPayOrderCollection.where(orderWhere).limit(1000).get();
+			const orders = (orderRes.data || [])
+				.filter((o) => Number(o.total_fee || 0) - Number(o.refund_fee || 0) > 0)
+				.sort((a, b) => Number(a.create_date || 0) - Number(b.create_date || 0));
+			if (!orders.length) return { code: 400, message: '未找到可原路退款订单或订单已退款完成' };
+			const parts = distributeRefundFenAcrossOrders(orders, targetRefundFen);
+			const refundItems = orders
+				.map((o, idx) => {
+					const refundFen = Number(parts[idx] || 0);
+					if (refundFen <= 0) return null;
+					const outRefundNo = `H5RF${now}${String(idx).padStart(2, '0')}${randomStr(4).toUpperCase()}`.slice(0, 64);
+					return {
+						out_trade_no: safeText(o.out_trade_no, 40),
+						order_id: o._id,
+						total_fee: Number(o.total_fee || 0),
+						refund_fee: Number(o.refund_fee || 0),
+						apply_refund_fen: refundFen,
+						out_refund_no: outRefundNo,
+						state: 'INIT',
+						wx_refund_id: ''
+					};
+				})
+				.filter(Boolean);
+			if (!refundItems.length) return { code: 400, message: '计算退款金额失败，请稍后重试' };
+			const refundNo = `H5F${now}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+			const addRes = await transferOrderCollection.add({
+				biz_key: bizKey,
+				merchant_id: merchant._id,
+				merchant_user_id: merchant.user_id || merchant._id,
+				recharge_log_ids: rows.map((x) => x._id).filter(Boolean),
+				refund_no: refundNo,
+				out_bill_no: refundNo,
+				transfer_mch_id: rc.mchId,
+				refund_mode: 'domestic_refund',
+				refund_items: refundItems,
+				refund_amount: Number(refundAmount || 0),
+				penalty_amount: Number(penaltyAmount || 0),
+				final_refund_amount: Number(finalRefundAmount || 0),
+				final_refund_fen: targetRefundFen,
+				reason,
+				state: 'INIT',
+				applied: false,
+				is_deleted: false,
+				create_time: now,
+				update_time: now
+			});
+			const ordRes = await transferOrderCollection.doc(addRes.id).get();
+			transferOrder = ordRes.data && ordRes.data[0];
+		}
+		let items = Array.isArray(transferOrder.refund_items) ? transferOrder.refund_items : [];
+		const itemResults = [];
+		let hasFailed = false;
+		let hasPending = false;
+		for (let i = 0; i < items.length; i += 1) {
+			const item = items[i] || {};
+			const outRefundNo = safeText(item.out_refund_no, 64);
+			if (!outRefundNo) continue;
+			let st = normalizeRefundState(item.state);
+			let queryResp = item.query_resp || null;
+			if (!isRefundSuccessState(st)) {
+				try {
+					if (st === 'INIT') {
+						const created = await wxPayCreateRefundFor(rc, {
+							outTradeNo: item.out_trade_no,
+							outRefundNo,
+							refundFen: Number(item.apply_refund_fen || 0),
+							totalFen: Number(item.total_fee || 0),
+							reason
+						});
+						queryResp = created || {};
+					} else {
+						const queried = await wxPayQueryRefundFor(rc, outRefundNo);
+						queryResp = queried || {};
+					}
+					st = normalizeRefundState(queryResp.status || queryResp.refund_status || st);
+					item.state = st;
+					item.query_resp = queryResp;
+					item.wx_refund_id = safeText(queryResp.refund_id || item.wx_refund_id || '', 80);
+				} catch (e) {
+					const detail =
+						e && e.name === 'WxPayRequestError' && e.wxBody
+							? e.wxBody.message || e.wxBody.code || e.message
+							: e.message || 'refund request failed';
+					item.last_error = safeText(String(detail), 200);
+					if (String(detail).toLowerCase().includes('out_refund_no')) {
+						try {
+							const queried = await wxPayQueryRefundFor(rc, outRefundNo);
+							queryResp = queried || {};
+							st = normalizeRefundState(queryResp.status || queryResp.refund_status || item.state);
+							item.state = st;
+							item.query_resp = queryResp;
+							item.wx_refund_id = safeText(queryResp.refund_id || item.wx_refund_id || '', 80);
+						} catch (qe) {
+							hasFailed = true;
+						}
+					} else {
+						hasFailed = true;
+					}
+				}
 			}
-			const outRefundNo = `${refundNo}R${i}`.slice(0, 64);
-			let wxRes;
-			try {
-				const refundCreds = wxCredentialsForPayOrder(ord);
-				wxRes = await wxPayCreateRefundFor(refundCreds, {
-					outTradeNo: ord.out_trade_no,
-					outRefundNo,
-					refundFen: rf,
-					totalFen,
-					reason
-				});
-			} catch (e) {
-				const detail =
-					e && e.name === 'WxPayRequestError' && e.wxBody
-						? e.wxBody.message || e.wxBody.code || e.message
-						: e.message || '请求失败';
-				console.error('[h5RefundReset] wxPayCreateRefund', ord.out_trade_no, detail);
-				return { code: 500, message: `微信支付退款失败：${safeText(String(detail), 200)}` };
-			}
-			const st = String(wxRes.status || '');
-			if (st !== 'SUCCESS' && st !== 'PROCESSING') {
-				return { code: 500, message: `微信退款状态异常：${st || '未知'}` };
-			}
-			wxRefundResults.push({
-				out_trade_no: ord.out_trade_no,
-				out_refund_no: outRefundNo,
-				status: st,
-				refund_id: wxRes.refund_id || ''
+			if (isRefundSuccessState(item.state)) item.refund_time = nowTs();
+			if (isRefundFailedState(item.state)) hasFailed = true;
+			if (!isRefundSuccessState(item.state) && !isRefundFailedState(item.state)) hasPending = true;
+			itemResults.push({
+				outRefundNo,
+				outTradeNo: item.out_trade_no,
+				state: item.state
 			});
 		}
-		if (!wxRefundResults.length) {
-			return { code: 500, message: '未能发起微信退款（拆分金额为0）' };
-		}
+		items = items.map((x) => x);
+		let batchState = 'PROCESSING';
+		if (hasFailed) batchState = 'FAILED';
+		else if (!hasPending) batchState = 'SUCCESS';
+		await transferOrderCollection.doc(transferOrder._id).update({
+			state: batchState,
+			refund_items: items,
+			update_time: nowTs()
+		});
+		transferOrder.state = batchState;
+		transferOrder.refund_items = items;
 
-		await operationLogCollection.where({ _id: db.command.in(rows.map((x) => x._id)) }).update({ refunded: true, refund_time: now });
-		// 仅收回 H5 充值带来的免门槛权益额度；待提现、历史提现、奖励、积分等保持原值
-		await merchantCollection.doc(merchant._id).update({
-			remaining_quota: 0,
-			estimated_free_quota: 0,
-			recharge_package_id: '',
-			recharge_package_price: 0,
-			recharge_package_quota: 0,
-			recharge_cycle_start: 0,
-			update_time: now
-		});
-		await operationLogCollection.add({
-			user_id: merchant.user_id || merchant._id,
-			user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
-			action: 'h5_refund_reset',
-			module: 'finance',
-			target_id: merchant._id,
-			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-			content: 'H5退款：已发起微信退款并清空充值权益额度（待提现/历史提现/奖励/积分不变）',
-			operator_source: 'h5',
-			operator: getOperator(event),
-			platform_no: refundNo,
-			refund_amount: refundAmount,
-			refund_penalty_amount: penaltyAmount,
-			refund_final_amount: finalRefundAmount,
-			refund_reason: reason,
-			create_time: now
-		});
+		if (batchState === 'SUCCESS') {
+			await finalizeTransferSuccessIfNeeded(transferOrder, event);
+			return {
+				code: 0,
+				message: '原路退款成功',
+				data: {
+					refundNo: transferOrder.refund_no,
+					refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
+					penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
+					finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
+					phase: countdown.phase,
+					outBillNo: transferOrder.refund_no,
+					refundState: batchState,
+					refundItems: itemResults
+				}
+			};
+		}
+		if (batchState === 'FAILED') {
+			return {
+				code: 500,
+				message: '部分原路退款失败，请稍后重试',
+				data: {
+					refundNo: transferOrder.refund_no,
+					outBillNo: transferOrder.refund_no,
+					refundState: batchState,
+					refundItems: itemResults
+				}
+			};
+		}
 		return {
-			code: 0,
-			message: '退款已发起，款项将原路退回',
+			code: 409,
+			message: '原路退款处理中，请稍后查询结果',
 			data: {
-				refundNo,
-				refundAmount: Number(refundAmount || 0).toFixed(2),
-				penaltyAmount: Number(penaltyAmount || 0).toFixed(2),
-				finalRefundAmount: Number(finalRefundAmount || 0).toFixed(2),
-				phase: countdown.phase,
-				wxRefunds: wxRefundResults
+				refundNo: transferOrder.refund_no,
+				outBillNo: transferOrder.refund_no,
+				refundState: batchState,
+				refundItems: itemResults
 			}
 		};
 	} catch (e) {
@@ -2866,11 +3308,119 @@ async function h5RefundReset(data, event) {
 	}
 }
 
+async function h5TransferStatus(data, event) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const outBillNo = safeText(data?.outBillNo || data?.refundNo, 64);
+		if (!outBillNo) return { code: 400, message: '缺少转账单号' };
+		const ordRes = await transferOrderCollection
+			.where({ out_bill_no: outBillNo, merchant_id: merchant._id, is_deleted: false, refund_mode: 'domestic_refund' })
+			.limit(1)
+			.get();
+		const ord = ordRes.data && ordRes.data[0];
+		if (!ord) return { code: 404, message: '退款单不存在' };
+		const rc = wxCredentialsByMchId(ord.transfer_mch_id) || wxRechargeCredentials();
+		let hasFailed = false;
+		let hasPending = false;
+		const nextItems = [];
+		for (const item of Array.isArray(ord.refund_items) ? ord.refund_items : []) {
+			const next = { ...item };
+			const outRefundNo = safeText(next.out_refund_no, 64);
+			if (!outRefundNo) {
+				nextItems.push(next);
+				continue;
+			}
+			try {
+				const q = await wxPayQueryRefundFor(rc, outRefundNo);
+				next.query_resp = q || {};
+				next.state = normalizeRefundState(q?.status || q?.refund_status || next.state);
+				next.wx_refund_id = safeText(q?.refund_id || next.wx_refund_id || '', 80);
+				if (isRefundSuccessState(next.state)) next.refund_time = nowTs();
+			} catch (e) {}
+			if (isRefundFailedState(next.state)) hasFailed = true;
+			if (!isRefundSuccessState(next.state) && !isRefundFailedState(next.state)) hasPending = true;
+			nextItems.push(next);
+		}
+		let batchState = 'PROCESSING';
+		if (hasFailed) batchState = 'FAILED';
+		else if (!hasPending) batchState = 'SUCCESS';
+		await transferOrderCollection.doc(ord._id).update({
+			state: batchState,
+			refund_items: nextItems,
+			update_time: nowTs()
+		});
+		ord.state = batchState;
+		ord.refund_items = nextItems;
+		if (batchState === 'SUCCESS') await finalizeTransferSuccessIfNeeded(ord, event);
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				outBillNo,
+				state: ord.state,
+				refundNo: ord.refund_no,
+				refundState: ord.state,
+				transferMchId: ord.transfer_mch_id
+			}
+		};
+	} catch (e) {
+		console.error('h5TransferStatus failed', e);
+		return { code: 500, message: '查询失败' };
+	}
+}
+
 function monthNo(ts) {
 	const d = new Date(ts);
 	const y = d.getFullYear();
 	const m = String(d.getMonth() + 1).padStart(2, '0');
 	return `${y}-${m}`;
+}
+
+async function finalizeTransferSuccessIfNeeded(transferOrder, event) {
+	if (!transferOrder || transferOrder.applied) return;
+	const merchantId = safeText(transferOrder.merchant_id, 80);
+	if (!merchantId) return;
+	const merchant = await getMerchantByIdOrUserId(merchantId);
+	if (!merchant) return;
+	const now = nowTs();
+	const rechargeLogIds = Array.isArray(transferOrder.recharge_log_ids) ? transferOrder.recharge_log_ids.filter(Boolean) : [];
+	if (rechargeLogIds.length) {
+		await operationLogCollection.where({ _id: db.command.in(rechargeLogIds) }).update({ refunded: true, refund_time: now });
+	}
+	await merchantCollection.doc(merchant._id).update({
+		remaining_quota: 0,
+		estimated_free_quota: 0,
+		recharge_package_id: '',
+		recharge_package_price: 0,
+		recharge_package_quota: 0,
+		recharge_cycle_start: 0,
+		recharge_total_yuan: 0,
+		update_time: now
+	});
+	await operationLogCollection.add({
+		user_id: merchant.user_id || merchant._id,
+		user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
+		action: 'h5_refund_reset',
+		module: 'finance',
+		target_id: merchant._id,
+		target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+		content: 'H5退款：原路退款成功并清空充值权益额度（待提现/历史提现/奖励/积分不变）',
+		operator_source: 'h5',
+		operator: getOperator(event),
+		platform_no: transferOrder.out_bill_no || transferOrder.refund_no || '',
+		refund_amount: Number(transferOrder.refund_amount || 0),
+		refund_penalty_amount: Number(transferOrder.penalty_amount || 0),
+		refund_final_amount: Number(transferOrder.final_refund_amount || 0),
+		refund_reason: safeText(transferOrder.reason || '', 80),
+		create_time: now
+	});
+	await transferOrderCollection.doc(transferOrder._id).update({
+		applied: true,
+		applied_at: now,
+		update_time: now
+	});
 }
 
 /** 自然月 YYYY-MM（北京时间） */
@@ -3022,6 +3572,7 @@ async function h5IncomeList(data) {
 			.get();
 		const pendingRows = (pendingRes.data || []).filter((x) => {
 			if (x.expire_time && x.expire_time < now) return false;
+			if (!Number(x.claim_open_time || 0)) return false;
 			if (x.claim_open_time && x.claim_open_time > now) return false;
 			return true;
 		});
@@ -3087,31 +3638,15 @@ async function claimPackets(merchant, packetIds) {
 			console.error('sumEligibleRealFlowYuan', e);
 		}
 	}
-	/** 非充值/权益用尽后：当月合理流水需达 5 万才可领 release_pool 补贴 */
-	const NON_MEMBER_MONTH_FLOW_MIN = 50000;
-	const initialRemainingYuan = Number(merchant.remaining_quota || 0);
-	let remainingBucket = initialRemainingYuan;
 	let claimedAmount = 0;
 	const claimedIds = [];
 	for (const row of rows) {
 		if (row.expire_time && row.expire_time < now) continue;
+		if (!Number(row.claim_open_time || 0)) continue;
 		if (row.claim_open_time && row.claim_open_time > now) continue;
 		const need = row.unlock_flow_yuan != null ? Number(row.unlock_flow_yuan) : null;
 		if (need != null && Number.isFinite(need) && flowThisMonth + 1e-6 < need) continue;
 		const amt = Number(row.amount || 0);
-		const sk = row.subsidy_kind || '';
-		if (sk === 'release_pool') {
-			if (remainingBucket > 1e-6) {
-				if (remainingBucket + 1e-6 >= amt) {
-					remainingBucket = Number((remainingBucket - amt).toFixed(4));
-				} else {
-					if (flowThisMonth + 1e-6 < NON_MEMBER_MONTH_FLOW_MIN) continue;
-					remainingBucket = 0;
-				}
-			} else if (flowThisMonth + 1e-6 < NON_MEMBER_MONTH_FLOW_MIN) {
-				continue;
-			}
-		}
 		claimedAmount += amt;
 		claimedIds.push(row._id);
 		await incomePacketCollection.doc(row._id).update({
@@ -3126,10 +3661,6 @@ async function claimPackets(merchant, packetIds) {
 			available_reward: Number(merchant.available_reward || 0) + claimedAmount,
 			account_points: Number(merchant.account_points || 0) + claimedAmount
 		};
-		if (Math.abs(remainingBucket - initialRemainingYuan) > 1e-6) {
-			merchantUpd.remaining_quota = remainingBucket;
-			merchantUpd.estimated_free_quota = remainingBucket;
-		}
 		await merchantCollection.doc(merchant._id).update(merchantUpd);
 		if (merchant.device_id) {
 			const mRes = await machineCollection.where({ device_id: merchant.device_id, is_deleted: false }).limit(1).get();
@@ -3833,6 +4364,74 @@ async function quotaDelete(data, event) {
 	}
 }
 
+async function bizConfigGet() {
+	try {
+		const value = await getBizSettings();
+		return { code: 0, message: 'ok', data: value };
+	} catch (error) {
+		console.error('bizConfigGet failed:', error);
+		return { code: 500, message: '获取参数配置失败' };
+	}
+}
+
+async function bizConfigSave(data, event) {
+	try {
+		const now = nowTs();
+		const val = sanitizeBizSettings(data || {});
+		const operator = getOperator(event);
+		const exist = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(1).get();
+		if (exist.data && exist.data.length) {
+			await systemSettingCollection.doc(exist.data[0]._id).update({
+				value: val,
+				update_time: now,
+				update_user: operator
+			});
+		} else {
+			await systemSettingCollection.add({
+				key: BIZ_SETTING_KEY,
+				value: val,
+				create_time: now,
+				update_time: now,
+				update_user: operator
+			});
+		}
+		return { code: 0, message: '保存成功' };
+	} catch (error) {
+		console.error('bizConfigSave failed:', error);
+		return { code: 500, message: '保存参数配置失败' };
+	}
+}
+
+async function debugGetEgressIp() {
+	const urls = ['https://api64.ipify.org?format=json', 'https://api.ipify.org?format=json', 'https://ifconfig.me/ip'];
+	const results = [];
+	for (const url of urls) {
+		try {
+			const resp = await uniCloud.httpclient.request(url, {
+				method: 'GET',
+				dataType: 'text',
+				timeout: 1800
+			});
+			const raw = String(resp.data || '').trim();
+			let ip = '';
+			try {
+				const json = JSON.parse(raw);
+				ip = String(json.ip || json.ip_addr || '').trim();
+			} catch (e) {
+				const m = raw.match(/(\d{1,3}\.){3}\d{1,3}/);
+				ip = m ? String(m[0]) : '';
+			}
+			results.push({ url, status: Number(resp.status || 0), ip, raw: raw.slice(0, 120) });
+			if (ip) {
+				return { code: 0, message: 'ok', data: { ip, probes: results } };
+			}
+		} catch (e) {
+			results.push({ url, status: 0, ip: '', raw: safeText(e.message || 'request failed', 120) });
+		}
+	}
+	return { code: 500, message: '未获取到出口IP，请稍后重试', data: { ip: '', probes: results } };
+}
+
 exports.main = async (event, context) => {
 	const { action, data, params } = event;
 	const actualData = data || params;
@@ -3896,6 +4495,8 @@ exports.main = async (event, context) => {
 			return await h5WxRefundNotify(actualData);
 		case 'h5RefundReset':
 			return await h5RefundReset(actualData, event);
+		case 'h5TransferStatus':
+			return await h5TransferStatus(actualData, event);
 		case 'h5PendingReturnPoints':
 			return await h5PendingReturnPoints(actualData);
 		case 'h5IncomeList':
@@ -3932,6 +4533,12 @@ exports.main = async (event, context) => {
 			return await feedbackAdminMessages(actualData);
 		case 'feedbackAdminReply':
 			return await feedbackAdminReply(actualData, context);
+		case 'bizConfigGet':
+			return await bizConfigGet();
+		case 'bizConfigSave':
+			return await bizConfigSave(actualData, event);
+		case 'debugGetEgressIp':
+			return await debugGetEgressIp();
 		default:
 			return { code: 400, message: '无效的操作' };
 	}

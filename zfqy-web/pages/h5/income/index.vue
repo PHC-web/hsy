@@ -163,10 +163,11 @@ export default {
 			const slots = isLeft ? leftSlots : rightSlots;
 			const s = slots[pairIndex % slots.length];
 			const delay = (idx % 5) * 0.12;
+			const z = Math.max(2, this.packets.length - idx + 2);
 			if (isLeft) {
-				return { top: `${s.top}%`, left: `${s.left}%`, animationDelay: `${delay}s` };
+				return { top: `${s.top}%`, left: `${s.left}%`, animationDelay: `${delay}s`, zIndex: z };
 			}
-			return { top: `${s.top}%`, right: `${s.right}%`, animationDelay: `${delay}s` };
+			return { top: `${s.top}%`, right: `${s.right}%`, animationDelay: `${delay}s`, zIndex: z };
 		},
 		togglePendingExpand() {
 			this.pendingExpanded = !this.pendingExpanded;

@@ -108,6 +108,18 @@
 		"_id": "system_tag"
 	},
 	{
+		"menu_id": "system_biz_config",
+		"name": "参数配置",
+		"icon": "admin-icons-shezhi",
+		"url": "/pages/system/biz-config/index",
+		"sort": 1038,
+		"parent_id": "system_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1775582941000,
+		"_id": "system_biz_config"
+	},
+	{
 		"permission": [],
 		"enable": true,
 		"menu_id": "safety_statistics",

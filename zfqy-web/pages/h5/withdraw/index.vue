@@ -13,7 +13,7 @@
 			<text class="nav-placeholder"></text>
 		</view>
 
-		<scroll-view class="scroll" scroll-y :show-scrollbar="false">
+		<view class="scroll">
 			<view class="inner">
 				<view class="card h5-glass-panel">
 					<text class="card-label">当前可兑换积分</text>
@@ -25,19 +25,11 @@
 				<view class="card h5-glass-panel">
 					<text class="field-label">兑换积分（整数）</text>
 					<input
-						class="field-input"
-						type="number"
-						:value="pointsInput"
+						class="field-input input h5-glass-input"
+						v-model="pointsInput"
 						placeholder="请输入要兑换的积分"
-						@input="onPointsInput"
 					/>
 					<text class="field-hint">本次范围：{{ info.minPoints }}～{{ info.maxPoints }} 分 / 笔</text>
-				</view>
-
-				<view class="card h5-glass-panel summary" v-if="previewPoints > 0">
-					<text class="sum-line">兑换面值：¥{{ previewPoints }}</text>
-					<text class="sum-line">手续费（{{ info.feePerOrderYuan }} 元/笔）：−¥{{ info.feePerOrderYuan }}</text>
-					<text class="sum-line sum-strong">预估到账（税前参考）：¥{{ previewPayable }}</text>
 				</view>
 
 				<view class="card h5-glass-panel rules">
@@ -59,7 +51,7 @@
 				</button>
 				<view class="bottom-spacer"></view>
 			</view>
-		</scroll-view>
+		</view>
 	</view>
 </template>
 
@@ -120,9 +112,6 @@ export default {
 	methods: {
 		goBack() {
 			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' }) });
-		},
-		onPointsInput(e) {
-			this.pointsInput = e.detail.value || '';
 		},
 		async loadInfo() {
 			this.loading = true;
@@ -217,6 +206,8 @@ export default {
 	position: relative;
 	z-index: 1;
 	box-sizing: border-box;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
 }
 .inner {
 	padding: 0 16px 24px;
@@ -269,7 +260,14 @@ export default {
 	background: rgba(15, 23, 42, 0.45);
 	border: 1px solid rgba(255, 255, 255, 0.12);
 	color: #f8fafc;
+	caret-color: #f8fafc;
+	-webkit-text-fill-color: #f8fafc;
 	font-size: 16px;
+}
+
+.field-input::placeholder {
+	color: rgba(148, 163, 184, 0.75);
+	-webkit-text-fill-color: rgba(148, 163, 184, 0.75);
 }
 .field-hint {
 	display: block;

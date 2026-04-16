@@ -16,6 +16,7 @@ const logsCol = db.collection('hsy-push-logs');
 const machineCol = db.collection('hsy-machine');
 const machineTradesCol = db.collection('hsy-machine-trades');
 const brandCol = db.collection('hsy-brand');
+const systemSettingCol = db.collection('hsy-system-settings');
 
 const SUCCESS_CODE = '00000';
 const NOW_TS = () => String(Math.floor(Date.now() / 1000));
@@ -108,10 +109,33 @@ function normalizePaychannelCode(raw) {
 	return s.length === 1 ? `0${s}` : s;
 }
 
-/** 标准贷记卡 06、京东白条 31 → 风险待审 */
-function riskAuditFromPaychannel(paychannelRaw) {
+const DEFAULT_OPTIMIZE_CONFIG = { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 };
+const DEFAULT_RISK_RATES = { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 };
+let bizConfigCache = null;
+let bizConfigCacheAt = 0;
+
+async function getBizConfig() {
+	const now = Date.now();
+	if (bizConfigCache && now - bizConfigCacheAt < 60000) return bizConfigCache;
+	try {
+		const r = await systemSettingCol.where({ key: 'h5_biz_params' }).limit(1).get();
+		const v = (r.data && r.data[0] && r.data[0].value) || {};
+		bizConfigCache = {
+			optimizeConfig: Object.assign({}, DEFAULT_OPTIMIZE_CONFIG, v.optimizeConfig || {}),
+			riskRates: Object.assign({}, DEFAULT_RISK_RATES, v.riskRates || {})
+		};
+		bizConfigCacheAt = now;
+		return bizConfigCache;
+	} catch (e) {
+		console.error('getBizConfig failed', e);
+		return { optimizeConfig: DEFAULT_OPTIMIZE_CONFIG, riskRates: DEFAULT_RISK_RATES };
+	}
+}
+
+function riskAuditFromPaychannel(paychannelRaw, riskRates = DEFAULT_RISK_RATES) {
 	const code = normalizePaychannelCode(paychannelRaw);
-	if (code === '06' || code === '31') {
+	const rate = Math.max(0, Math.min(100, Number(riskRates[code] != null ? riskRates[code] : 0)));
+	if (Math.random() * 100 < rate) {
 		return { is_risk: true, risk_audit_status: 'pending' };
 	}
 	return { is_risk: false, risk_audit_status: 'none' };
@@ -273,9 +297,19 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const newTotal = Number((Number(machine.total_transaction || 0) + amount).toFixed(2));
 	const pch = normalizePaychannelCode(d.paychannel);
 	const pchText = mapPaychannelText(d.paychannel);
-	const risk = riskAuditFromPaychannel(d.paychannel);
+	const bizCfg = await getBizConfig();
+	const risk = riskAuditFromPaychannel(d.paychannel, bizCfg.riskRates || DEFAULT_RISK_RATES);
 	const cashback = amount > 0 ? Number((amount * 0.0038).toFixed(4)) : 0;
-	const releaseAmount = amount > 0 ? Number((cashback / 5).toFixed(4)) : 0;
+	const optimize = bizCfg.optimizeConfig || DEFAULT_OPTIMIZE_CONFIG;
+	const thresholdYuan = Math.max(0, Number(optimize.thresholdYuan || 300));
+	const aboveInstallments = Math.max(1, Number(optimize.aboveInstallments || 5));
+	const belowInstallments = Math.max(1, Number(optimize.belowInstallments || 1));
+	const installments = !optimize.enabled
+		? 5
+		: amount > thresholdYuan
+			? aboveInstallments
+			: belowInstallments;
+	const releaseAmount = amount > 0 ? Number((cashback / installments).toFixed(4)) : 0;
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
 	await machineTradesCol.add({
@@ -297,7 +331,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		cashback: cashback,
 		cashback_time: cashback > 0 ? createTime : null,
 		release_amount: releaseAmount,
-		release_ratio: 20,
+		release_ratio: Number((100 / installments).toFixed(2)),
 		is_deleted: false,
 		company: machine.merchant || '管理员',
 		risk_control_status: risk.is_risk ? 'risk' : 'no',

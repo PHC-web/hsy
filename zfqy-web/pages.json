@@ -281,6 +281,12 @@
 					"style": {
 						"navigationBarTitleText": "用户日志"
 					}
+				},
+				{
+					"path": "biz-config/index",
+					"style": {
+						"navigationBarTitleText": "参数配置"
+					}
 				}
 			]
 		},

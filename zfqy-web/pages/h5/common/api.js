@@ -97,6 +97,10 @@ export function h5RefundReset(reason) {
 	return merchantCall('h5RefundReset', merchantIdentity({ reason }));
 }
 
+export function h5TransferStatus(outBillNo) {
+	return merchantCall('h5TransferStatus', merchantIdentity({ outBillNo }));
+}
+
 export function h5IncomeClaim(packetId) {
 	return merchantCall('h5IncomeClaim', merchantIdentity({ packetId }));
 }
