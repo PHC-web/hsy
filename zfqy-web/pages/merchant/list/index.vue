@@ -111,6 +111,33 @@
 				</view>
 			</view>
 		</uni-popup>
+		<uni-popup ref="imgPreviewPopup" type="center">
+			<view class="img-preview-modal">
+				<view
+					ref="previewViewport"
+					class="img-preview-viewport"
+					@wheel.prevent="onPreviewWheel"
+					@mousedown="onPreviewMouseDown"
+					@mousemove="onPreviewMouseMove"
+					@mouseup="onPreviewMouseUp"
+					@mouseleave="onPreviewMouseUp"
+				>
+					<image
+						ref="previewImage"
+						class="img-preview-main"
+						:src="previewImageUrl"
+						mode="widthFix"
+						:style="previewImageStyle"
+						@load="onPreviewImageLoad"
+					/>
+				</view>
+				<view class="img-preview-tip">滚轮缩放，按住鼠标左键拖动</view>
+				<view class="img-preview-actions">
+					<button size="mini" @click="resetPreviewTransform">重置</button>
+					<button size="mini" @click="closeImgPreview">关闭</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -161,18 +188,104 @@ export default {
 				mobile: '',
 				packageId: ''
 			},
+			previewImageUrl: '',
+			previewScale: 1,
+			previewOffsetX: 0,
+			previewOffsetY: 0,
+			previewDragging: false,
+			previewDragStartX: 0,
+			previewDragStartY: 0,
+			previewDragOriginX: 0,
+			previewDragOriginY: 0,
 			offlinePackages: [],
 			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E',
 			defaultAgreement: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M15 12h14l4 4v20H15V12Zm14 1.5V17h3.5L29 13.5ZM18 20h12v2H18v-2Zm0 5h12v2H18v-2Zm0 5h9v2h-9v-2Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
 		};
 	},
+	computed: {
+		previewImageStyle() {
+			return {
+				transform: `translate(${this.previewOffsetX}px, ${this.previewOffsetY}px) scale(${this.previewScale})`
+			};
+		}
+	},
 	mounted() {
 		this.search();
 	},
 	methods: {
+		getMouseClient(e) {
+			const evt = e && (e.originalEvent || e);
+			return {
+				x: Number(evt?.clientX || 0),
+				y: Number(evt?.clientY || 0)
+			};
+		},
+		getPreviewViewportRect() {
+			const ref = this.$refs.previewViewport;
+			const el = ref && ref.$el ? ref.$el : ref;
+			if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+			return el.getBoundingClientRect();
+		},
+		resetPreviewTransform() {
+			this.previewScale = 1;
+			this.previewOffsetX = 0;
+			this.previewOffsetY = 0;
+			this.previewDragging = false;
+		},
 		previewImg(url) {
 			if (!url) return;
+			this.resetPreviewTransform();
+			this.previewImageUrl = String(url);
+			if (this.$refs.imgPreviewPopup) {
+				this.$refs.imgPreviewPopup.open();
+				return;
+			}
 			uni.previewImage({ urls: [url], current: url });
+		},
+		onPreviewImageLoad() {
+			this.resetPreviewTransform();
+		},
+		onPreviewWheel(e) {
+			const rect = this.getPreviewViewportRect();
+			if (!rect) return;
+			const evt = e && (e.originalEvent || e);
+			const deltaY = Number(evt?.deltaY || 0);
+			const step = deltaY > 0 ? 0.92 : 1.08;
+			const oldScale = this.previewScale;
+			const newScale = Math.max(0.2, Math.min(8, Number((oldScale * step).toFixed(4))));
+			if (newScale === oldScale) return;
+			const mouse = this.getMouseClient(e);
+			const mx = mouse.x - rect.left;
+			const my = mouse.y - rect.top;
+			const contentX = (mx - this.previewOffsetX) / oldScale;
+			const contentY = (my - this.previewOffsetY) / oldScale;
+			this.previewScale = newScale;
+			this.previewOffsetX = mx - contentX * newScale;
+			this.previewOffsetY = my - contentY * newScale;
+		},
+		onPreviewMouseDown(e) {
+			const evt = e && (e.originalEvent || e);
+			if (evt?.button != null && evt.button !== 0) return;
+			const mouse = this.getMouseClient(e);
+			this.previewDragging = true;
+			this.previewDragStartX = mouse.x;
+			this.previewDragStartY = mouse.y;
+			this.previewDragOriginX = this.previewOffsetX;
+			this.previewDragOriginY = this.previewOffsetY;
+		},
+		onPreviewMouseMove(e) {
+			if (!this.previewDragging) return;
+			const mouse = this.getMouseClient(e);
+			this.previewOffsetX = this.previewDragOriginX + (mouse.x - this.previewDragStartX);
+			this.previewOffsetY = this.previewDragOriginY + (mouse.y - this.previewDragStartY);
+		},
+		onPreviewMouseUp() {
+			this.previewDragging = false;
+		},
+		closeImgPreview() {
+			if (this.$refs.imgPreviewPopup) this.$refs.imgPreviewPopup.close();
+			this.previewImageUrl = '';
+			this.resetPreviewTransform();
 		},
 		parseTimestampRange(filter) {
 			if (!Array.isArray(filter) || filter.length < 2) return { start: '', end: '' };
@@ -575,6 +688,55 @@ export default {
 	display: flex;
 	justify-content: flex-end;
 	gap: 8px;
+}
+
+.img-preview-modal {
+	width: 760px;
+	max-width: 92vw;
+	max-height: 90vh;
+	background: #fff;
+	border-radius: 10px;
+	padding: 12px;
+	box-sizing: border-box;
+}
+
+.img-preview-viewport {
+	width: 100%;
+	height: 76vh;
+	max-height: 76vh;
+	background: #f8fafc;
+	border-radius: 8px;
+	overflow: hidden;
+	position: relative;
+	cursor: grab;
+	user-select: none;
+}
+
+.img-preview-viewport:active {
+	cursor: grabbing;
+}
+
+.img-preview-main {
+	position: absolute;
+	left: 0;
+	top: 0;
+	width: 100%;
+	height: auto;
+	transform-origin: 0 0;
+	will-change: transform;
+}
+
+.img-preview-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 10px;
+}
+
+.img-preview-tip {
+	margin-top: 8px;
+	font-size: 12px;
+	color: #6b7280;
 }
 </style>
 

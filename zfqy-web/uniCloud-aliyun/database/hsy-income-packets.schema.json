@@ -14,9 +14,10 @@
 		"claim_open_time": { "bsonType": "timestamp", "description": "可开始领取时间" },
 		"subsidy_kind": {
 			"bsonType": "string",
-			"description": "recharge_vesting=充值用户分期；non_recharge_lump=非充值5万档；non_recharge_extra=非充值每满1万"
+			"description": "recharge_vesting=充值用户分期；non_recharge_lump=非充值5万档；non_recharge_extra=非充值每满1万；coupon_reward=优惠券达标奖励"
 		},
 		"dedup_key": { "bsonType": "string", "description": "防重复生成键" },
+		"coupon_instance_id": { "bsonType": "string", "description": "关联 hsy-coupon-instances，领取后回写券状态" },
 		"subsidy_flow_month": { "bsonType": "string", "description": "流水归属月 YYYY-MM" },
 		"subsidy_block_index": { "bsonType": "int", "description": "万元档序号(0起)" },
 		"installment_index": { "bsonType": "int", "description": "第几期(1-5)" },

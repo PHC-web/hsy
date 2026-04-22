@@ -22,7 +22,17 @@
 				</view>
 
 				<text class="hero-title">商家收款免手续费</text>
-				<text class="hero-sub">平台联合收单补贴，商家笔笔收款补贴手续费</text>
+				<text class="hero-sub">平台联合收单补贴，商家笔笔收款补贴手续费。</text>
+				<view class="subsidy-ticker" v-if="tickerList.length">
+					<view class="subsidy-ticker-track" :style="{ animationDuration: `${tickerDuration}s` }">
+						<view v-for="(item, idx) in tickerRenderList" :key="`${item.id}_${idx}`" class="subsidy-ticker-row">
+							<image :src="item.avatar || appLogo" mode="aspectFill" class="subsidy-avatar" />
+							<text class="subsidy-text">{{ item.name }} 已获得补贴</text>
+							<text class="subsidy-amount">¥{{ item.amount }}</text>
+							<text class="subsidy-text">！</text>
+						</view>
+					</view>
+				</view>
 
 				<view class="mascot-stage">
 					<view class="ingot-overlay">
@@ -36,7 +46,10 @@
 						:style="bubbleStyle(idx)"
 						@click.stop="claimOne(row)"
 					>
-						<text class="bubble-amt">{{ row.amount }}</text>
+						<image class="bubble-ingot-image" src="/static/h5/yuanbao.png" mode="aspectFit" />
+						<view class="bubble-badge">
+							<text class="bubble-amt">+{{ row.amount }}</text>
+						</view>
 					</view>
 				</view>
 
@@ -108,6 +121,7 @@
 
 <script>
 import { h5IncomeList, h5IncomeClaimAll, h5IncomeClaim } from '@/pages/h5/common/api';
+import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
 	data() {
@@ -117,6 +131,8 @@ export default {
 			pendingTotal: '0.00',
 			pendingCount: 0,
 			summaryPoints: '0.00',
+			tickerList: [],
+			appLogo: H5_APP_LOGO,
 			loading: false,
 			pendingExpanded: true,
 			claimingId: ''
@@ -131,6 +147,12 @@ export default {
 		},
 		claimBtnText() {
 			return this.claimDisabled ? '暂无奖励' : '一键领取';
+		},
+		tickerRenderList() {
+			return this.tickerList.length > 1 ? [...this.tickerList, ...this.tickerList] : this.tickerList;
+		},
+		tickerDuration() {
+			return Math.max(10, this.tickerList.length * 3);
 		}
 	},
 	onShow() {
@@ -192,6 +214,17 @@ export default {
 				this.detailList = d.detailList || [];
 				this.pendingTotal = d.pendingTotal != null ? String(d.pendingTotal) : '0.00';
 				this.pendingCount = Number(d.pendingCount || 0);
+				const realTicker = (d.subsidyTicker || []).map((x, idx) => ({
+					id: x.id || `ticker_${idx}`,
+					name: String(x.name || '商户用户'),
+					avatar: String(x.avatar || ''),
+					amount: Number(x.amount || 0).toFixed(2)
+				}));
+				// 临时置顶一条测试播报，便于确认滚动样式效果。
+				this.tickerList = [
+					{ id: 'ticker_demo', name: '测试商户', avatar: '', amount: '200.00' },
+					...realTicker
+				];
 				const su = d.summary || {};
 				this.summaryPoints = su.accountPoints != null ? String(su.accountPoints) : '0.00';
 			} finally {
@@ -300,45 +333,46 @@ export default {
 
 .hero {
 	position: relative;
-	padding: 10px 16px 22px;
+	padding: 20rpx 0rpx 44rpx 0rpx;
 	overflow: hidden;
-	margin-bottom: 14px;
+	margin-bottom: 28rpx;
 	background-color: #7f1d1d;
 	background-image: url('/static/h5/income-mascot-cat.png');
 	background-position: center;
 	background-repeat: no-repeat;
-	background-size: cover;
+	background-size: 100% 100%;
 }
 
 .hero-top {
+	padding: 0rpx 20rpx 0rpx 20rpx;
 	position: relative;
 	z-index: 1;
 	display: flex;
 	justify-content: space-between;
 	align-items: flex-start;
-	margin-bottom: 6px;
+	margin-bottom: 12rpx;
 }
 
 .pill {
 	display: flex;
 	align-items: center;
-	gap: 4px;
-	padding: 6px 10px;
-	border-radius: 999px;
-	font-size: 11px;
+	gap: 8rpx;
+	padding: 12rpx 20rpx;
+	border-radius: 999rpx;
+	font-size: 22rpx;
 	max-width: 52%;
 }
 .pill-gold {
 	background: rgba(15, 23, 42, 0.35);
 	color: #fde68a;
-	border: 1px solid rgba(250, 204, 21, 0.35);
+	border: 2rpx solid rgba(250, 204, 21, 0.35);
 }
 .pill-service {
-	background: rgba(255, 255, 255, 0.08);
+	background: rgba(15, 23, 42, 0.35);
 	color: #e2e8f0;
-	border: 1px solid rgba(255, 255, 255, 0.16);
+	border: 2rpx solid rgba(255, 255, 255, 0.16);
 }
-.pill-icon { font-size: 12px; line-height: 1; }
+.pill-icon { font-size: 24rpx; line-height: 1; }
 .pill-txt { flex: 1; line-height: 1.3; }
 
 .hero-title {
@@ -346,11 +380,17 @@ export default {
 	z-index: 1;
 	display: block;
 	text-align: center;
-	font-size: 22px;
-	font-weight: 800;
-	color: #f8fafc;
-	letter-spacing: 0.5px;
-	text-shadow: 0 2px 20px rgba(0, 0, 0, 0.35);
+	margin: 8rpx auto 0;
+	padding: 10rpx 20rpx 8rpx;
+	width: fit-content;
+	max-width: 92%;
+	font-size: 40rpx;
+	font-weight: 900;
+	color: #ffffff;
+	letter-spacing: 1px;
+	border-radius: 12rpx;
+	background: rgba(127, 29, 29, 0.42);
+	text-shadow: 0 3px 16px rgba(0, 0, 0, 0.3), 0 1px 1px rgba(127, 29, 29, 0.6);
 }
 
 .hero-sub {
@@ -358,20 +398,91 @@ export default {
 	z-index: 1;
 	display: block;
 	text-align: center;
-	margin-top: 8px;
-	padding: 0 12px;
-	font-size: 12px;
-	line-height: 1.55;
-	color: rgba(203, 213, 225, 0.92);
+	margin: 10rpx auto 0;
+	padding: 8rpx 20rpx;
+	width: fit-content;
+	max-width: 92%;
+	font-size: 22rpx;
+	font-weight: 600;
+	line-height: 1.5;
+	color: rgba(255, 247, 237, 0.98);
+	border-radius: 12rpx;
+	background: rgba(127, 29, 29, 0.35);
+	text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.subsidy-ticker {
+	position: relative;
+	z-index: 1;
+	margin: 12rpx auto 0;
+	width: 100%;
+	height: 58rpx;
+	border-radius: 999px;
+	/* background: rgba(15, 23, 42, 0.24); */
+	/* border: 2rpx solid rgba(255, 255, 255, 0.28); */
+	/* backdrop-filter: blur(6px); */
+	-webkit-backdrop-filter: blur(6px);
+	overflow: hidden;
+}
+
+.subsidy-ticker-track {
+	display: inline-flex;
+	align-items: center;
+	height: 58rpx;
+	white-space: nowrap;
+	will-change: transform;
+	animation-name: ticker-marquee-left;
+	animation-timing-function: linear;
+	animation-iteration-count: infinite;
+}
+
+.subsidy-ticker-row {
+	height: 58rpx;
+	padding: 0 28rpx 0 18rpx;
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 8rpx;
+	flex: 0 0 auto;
+}
+
+.subsidy-avatar {
+	width: 34rpx;
+	height: 34rpx;
+	border-radius: 50%;
+	border: 2rpx solid rgba(255, 255, 255, 0.6);
+	background: rgba(255, 255, 255, 0.0);
+	flex-shrink: 0;
+}
+
+.subsidy-text {
+	font-size: 23rpx;
+	line-height: 1;
+	color: #ffffff;
+	font-weight: 500;
+}
+
+.subsidy-amount {
+	font-size: 26rpx;
+	line-height: 1;
+	font-weight: 800;
+	color: #facc15;
+	text-shadow: 0 1px 6px rgba(250, 204, 21, 0.35);
+}
+
+@keyframes ticker-marquee-left {
+	0% { transform: translateX(100%); }
+	100% { transform: translateX(-100%); }
 }
 
 /* 仅叠气泡与金额；招财猫由整张 .hero 背景承担，避免重复一张小图 */
 .mascot-stage {
+	padding: 0rpx 20rpx 0rpx 20rpx;
 	position: relative;
 	z-index: 1;
-	margin-top: 18px;
-	min-height: 240px;
-	border-radius: 16px;
+	margin-top: 36rpx;
+	min-height: 600rpx;
+	border-radius: 32rpx;
 	overflow: visible;
 	background: transparent;
 }
@@ -380,10 +491,10 @@ export default {
 .ingot-overlay {
 	position: absolute;
 	left: 50%;
-	top: 70%;
+	top: 360rpx;
 	bottom: auto;
 	width: 56%;
-	max-width: 220px;
+	max-width: 440rpx;
 	transform: translateX(-50%);
 	text-align: center;
 	pointer-events: none;
@@ -402,35 +513,50 @@ export default {
 .bubble {
 	position: absolute;
 	z-index: 4;
-	width: 40px;
-	height: 40px;
+	width: 74px;
+	height: 84px;
 	padding: 0;
 	box-sizing: border-box;
-	border-radius: 50%;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: rgba(255, 255, 255, 0.12);
-	border: 1px solid rgba(255, 255, 255, 0.38);
-	box-shadow:
-		0 2px 10px rgba(0, 0, 0, 0.1),
-		inset 0 1px 0 rgba(255, 255, 255, 0.35);
-	backdrop-filter: blur(12px);
-	-webkit-backdrop-filter: blur(12px);
 	transform: translateY(-50%);
 	animation: bubble-float-y 2.6s ease-in-out infinite;
 }
+
+.bubble-ingot-image {
+	width: 56px;
+	height: 42px;
+	display: block;
+}
+
+.bubble-badge {
+	position: absolute;
+	left: 50%;
+	bottom: 4px;
+	transform: translateX(-50%);
+	min-width: 52px;
+	height: 24px;
+	padding: 0 12px;
+	border-radius: 999px;
+	background: linear-gradient(180deg, #fb7185 0%, #ef4444 72%, #dc2626 100%);
+	box-shadow: 0 2px 8px rgba(185, 28, 28, 0.3);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
 .bubble--busy {
 	opacity: 0.55;
 	pointer-events: none;
 }
 .bubble-amt {
-	font-size: 11px;
+	font-size: 15px;
 	font-weight: 800;
-	color: #ffffff;
+	color: #fff7ed;
 	line-height: 1;
 	white-space: nowrap;
-	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+	text-shadow: 0 1px 2px rgba(127, 29, 29, 0.35);
 }
 
 @keyframes bubble-float-y {
@@ -447,6 +573,7 @@ export default {
 	position: relative;
 	z-index: 1;
 	margin: 20px auto 0;
+
 	width: 86%;
 	height: 48px;
 	line-height: 48px;

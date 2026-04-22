@@ -66,12 +66,20 @@
 						<text class="menu-title">财务管理</text>
 						<text class="menu-arrow">›</text>
 					</view>
+					<view class="menu-item" @click="goCoupons">
+						<text class="menu-title">优惠券</text>
+						<text class="menu-arrow">›</text>
+					</view>
 					<view class="menu-item" @click="goPendingReturn">
 						<text class="menu-title">待返积分</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goMobile">
 						<text class="menu-title">手机号维护</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="onViewAgreement">
+						<text class="menu-title">查看协议</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goFeedback">
@@ -115,6 +123,25 @@
 					<text v-for="(line, idx) in agreementLines" :key="idx" :class="line.cls">{{ line.text }}</text>
 				</scroll-view>
 				<signature-pad @signed="onSigned" />
+			</view>
+		</uni-popup>
+		<uni-popup ref="agreementViewPopup" type="bottom">
+			<view class="agreement-view-sheet agreement-sheet--dark">
+				<view class="sheet-head">
+					<text class="sheet-title">我的协议</text>
+				</view>
+				<scroll-view scroll-y class="agreement-view-scroll">
+					<image
+						class="agreement-preview-image"
+						:src="mine.agreementImg || ''"
+						mode="widthFix"
+						@click="previewAgreementImage"
+					/>
+				</scroll-view>
+				<view class="agreement-view-actions">
+					<button class="agreement-view-btn" size="mini" @click="closeAgreementViewer">关闭</button>
+					<button class="agreement-view-btn" type="primary" size="mini" @click="resignAgreement">重新签署</button>
+				</view>
 			</view>
 		</uni-popup>
 	</view>
@@ -262,6 +289,9 @@ export default {
 		goFinance() {
 			uni.navigateTo({ url: '/pages/h5/finance/index' });
 		},
+		goCoupons() {
+			uni.navigateTo({ url: '/pages/h5/coupons/index' });
+		},
 		goPendingReturn() {
 			uni.navigateTo({ url: '/pages/h5/pending-return/index' });
 		},
@@ -274,6 +304,25 @@ export default {
 		onAcctCardClick() {
 			if (this.mine.agreementImg) return;
 			this.$refs.agreementPopup.open();
+		},
+		onViewAgreement() {
+			if (!String(this.mine.agreementImg || '').trim()) {
+				this.$refs.agreementPopup.open();
+				return;
+			}
+			this.$refs.agreementViewPopup.open();
+		},
+		previewAgreementImage() {
+			const src = String(this.mine.agreementImg || '').trim();
+			if (!src) return;
+			uni.previewImage({ urls: [src], current: src });
+		},
+		closeAgreementViewer() {
+			this.$refs.agreementViewPopup.close();
+		},
+		resignAgreement() {
+			this.$refs.agreementViewPopup.close();
+			setTimeout(() => this.$refs.agreementPopup.open(), 120);
 		},
 		onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
@@ -300,6 +349,116 @@ export default {
 			}
 			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
 		},
+		drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color = '#334155', font = '500 26px sans-serif') {
+			ctx.font = font;
+			ctx.fillStyle = color;
+			const s = String(text || '');
+			let line = '';
+			for (let i = 0; i < s.length; i += 1) {
+				const ch = s[i];
+				const test = line + ch;
+				if (ctx.measureText(test).width > maxWidth && line) {
+					ctx.fillText(line, x, y);
+					y += lineHeight;
+					line = ch;
+				} else {
+					line = test;
+				}
+			}
+			if (line) {
+				ctx.fillText(line, x, y);
+				y += lineHeight;
+			}
+			return y;
+		},
+		buildAgreementCompositeImage(signatureImage) {
+			// #ifndef H5
+			return Promise.resolve(signatureImage);
+			// #endif
+			// #ifdef H5
+			return new Promise((resolve, reject) => {
+				try {
+					const contentWidth = 1120;
+					const pagePadding = 52;
+					const lineHeight = 36;
+					const signAreaHeight = 210;
+					const draftCanvas = document.createElement('canvas');
+					const draftCtx = draftCanvas.getContext('2d');
+					if (!draftCtx) {
+						resolve(signatureImage);
+						return;
+					}
+
+					let estimateHeight = 180 + signAreaHeight;
+					const textMaxWidth = contentWidth - pagePadding * 2;
+					(this.agreementLines || []).forEach((line) => {
+						const t = String((line && line.text) || '');
+						draftCtx.font = line && line.cls && line.cls.includes('p-title') ? '700 30px sans-serif' : line && line.cls && line.cls.includes('p-sub') ? '700 27px sans-serif' : '500 26px sans-serif';
+						const rows = Math.max(1, Math.ceil(draftCtx.measureText(t).width / textMaxWidth));
+						estimateHeight += rows * lineHeight + 8;
+					});
+
+					const canvas = document.createElement('canvas');
+					canvas.width = contentWidth;
+					canvas.height = Math.max(estimateHeight, 1200);
+					const ctx = canvas.getContext('2d');
+					if (!ctx) {
+						resolve(signatureImage);
+						return;
+					}
+
+					ctx.fillStyle = '#ffffff';
+					ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+					let y = 70;
+					ctx.fillStyle = '#0f172a';
+					ctx.font = '700 38px sans-serif';
+					ctx.fillText('慧收盈“开户优惠”活动计划书', pagePadding, y);
+					y += 56;
+
+					for (const line of this.agreementLines || []) {
+						const cls = (line && line.cls) || '';
+						const text = (line && line.text) || '';
+						const isTitle = cls.includes('p-title');
+						const isSub = cls.includes('p-sub');
+						const color = isTitle ? '#0f172a' : isSub ? '#1e293b' : '#334155';
+						const font = isTitle ? '700 30px sans-serif' : isSub ? '700 27px sans-serif' : '500 26px sans-serif';
+						y = this.drawWrappedText(ctx, text, pagePadding, y, textMaxWidth, lineHeight, color, font);
+						y += 8;
+					}
+
+					const signTop = Math.max(y + 24, canvas.height - signAreaHeight - 36);
+					ctx.strokeStyle = '#94a3b8';
+					ctx.lineWidth = 2;
+					ctx.setLineDash([10, 8]);
+					ctx.strokeRect(pagePadding, signTop, textMaxWidth, signAreaHeight);
+					ctx.setLineDash([]);
+					ctx.fillStyle = '#475569';
+					ctx.font = '600 26px sans-serif';
+					ctx.fillText('用户签字/盖章', pagePadding + 16, signTop + 42);
+
+					const signImg = new Image();
+					signImg.onload = () => {
+						const signW = 280;
+						const signH = 120;
+						const signX = pagePadding + textMaxWidth - signW - 16;
+						const signY = signTop + 58;
+						ctx.drawImage(signImg, signX, signY, signW, signH);
+						ctx.fillStyle = '#64748b';
+						ctx.font = '500 24px sans-serif';
+						const ds = new Date();
+						const dateText = `签署日期：${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, '0')}-${String(ds.getDate()).padStart(2, '0')}`;
+						ctx.fillText(dateText, pagePadding + 16, signTop + signAreaHeight - 18);
+						resolve(canvas.toDataURL('image/png', 0.92));
+					};
+					signImg.onerror = () => resolve(signatureImage);
+					signImg.src = signatureImage;
+				} catch (e) {
+					reject(e);
+				}
+			});
+			// #endif
+		},
 		async onSigned(payload) {
 			const signatureImage = payload && (payload.dataUrl || payload.tempFilePath);
 			if (!signatureImage) {
@@ -308,8 +467,9 @@ export default {
 			}
 			uni.showLoading({ title: '提交签署...', mask: true });
 			try {
+				const agreementImage = await this.buildAgreementCompositeImage(signatureImage);
 				const res = await h5SignAgreement({
-					signatureImage,
+					signatureImage: agreementImage,
 					agreementVersion: '2026-03-27-v1'
 				});
 				if (res.code !== 0) {
@@ -317,6 +477,7 @@ export default {
 					return;
 				}
 				uni.showToast({ title: '签署成功', icon: 'success' });
+				this.$refs.agreementViewPopup.close();
 				this.$refs.agreementPopup.close();
 				this.loadMine();
 			} finally {
@@ -634,6 +795,42 @@ export default {
 	border-bottom: none;
 	backdrop-filter: blur(24px);
 	-webkit-backdrop-filter: blur(24px);
+}
+
+.agreement-view-sheet {
+	border-radius: 20px 20px 0 0;
+	padding: 16px 16px 12px;
+	margin: 0;
+	max-height: 88vh;
+	box-sizing: border-box;
+}
+
+.agreement-view-scroll {
+	max-height: 62vh;
+	margin-top: 10px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 12px;
+	padding: 10px;
+	box-sizing: border-box;
+	background: rgba(0, 0, 0, 0.2);
+}
+
+.agreement-preview-image {
+	display: block;
+	width: 100%;
+	border-radius: 8px;
+	background: #fff;
+}
+
+.agreement-view-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+	margin-top: 12px;
+}
+
+.agreement-view-btn {
+	margin: 0;
 }
 
 .sheet-title {

@@ -28,6 +28,13 @@
 			</view>
 		</view>
 		<view class="uni-container">
+			<view class="page-intro">
+				<text class="page-title">优惠券模板与发放</text>
+				<text class="page-sub">
+					先维护模板：自然月「合理真实流水」达到门槛（元）后，用户可获得对应积分奖励（元，与账号积分同口径）；在有效天数内未达标则券作废。点击「发放」可向全体正常商户或指定用户（每行一个
+					user_id 或手机号）下发考核实例；达标后用户将在「收益」页看到待领气泡。
+				</text>
+			</view>
 			<view class="table-wrap admin-table-slot">
 				<uni-table :key="tableKey" border stripe :loading="loading" empty-text="暂无优惠券数据">
 					<uni-tr>
@@ -37,11 +44,12 @@
 						<uni-th align="center" width="180" filter-type="search" @filter-change="headerFilterChange($event, 'name')">名称</uni-th>
 						<uni-th align="center" filter-type="search" @filter-change="headerFilterChange($event, 'description')">说明</uni-th>
 						<uni-th align="center" width="90" filter-type="select" :filter-data="typeFilterData" @filter-change="headerFilterChange($event, 'type')">类型</uni-th>
-						<uni-th align="center" width="110" filter-type="search" @filter-change="headerFilterChange($event, 'amount')">金额（元）</uni-th>
-						<uni-th align="center" width="150" filter-type="search" @filter-change="headerFilterChange($event, 'monthlyThreshold')">月需消费总额（元）</uni-th>
-						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'validDays')">有效天数</uni-th>
+						<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'amount')">达标积分（元）</uni-th>
+						<uni-th align="center" width="150" filter-type="search" @filter-change="headerFilterChange($event, 'monthlyThreshold')">月流水门槛（元）</uni-th>
+						<uni-th align="center" width="110" filter-type="search" @filter-change="headerFilterChange($event, 'validDays')">有效天数</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">更新时间</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">创建时间</uni-th>
+						<uni-th align="center" width="90">发放</uni-th>
 						<uni-th align="center" width="150">操作</uni-th>
 					</uni-tr>
 					<uni-tr v-for="item in list" :key="item.id">
@@ -56,6 +64,9 @@
 						<uni-td align="center">{{ item.validDays }}</uni-td>
 						<uni-td align="center">{{ item.updateTime }}</uni-td>
 						<uni-td align="center">{{ item.createTime }}</uni-td>
+						<uni-td align="center">
+							<button size="mini" type="default" @click="openIssue(item)">发放</button>
+						</uni-td>
 						<uni-td align="center">
 							<view class="row-ops">
 								<button size="mini" type="primary" @click="openEdit(item)">编辑</button>
@@ -90,19 +101,54 @@
 						<uni-forms-item label="类型" required>
 							<uni-data-select v-model="formData.type" :localdata="typeOptions" />
 						</uni-forms-item>
-						<uni-forms-item label="金额（元）" required>
-							<uni-easyinput v-model="formData.amount" type="number" placeholder="请输入金额" />
+						<uni-forms-item label="达标积分（元）" required>
+							<uni-easyinput v-model="formData.amount" type="number" placeholder="达标后赠送的积分，单位：元" />
 						</uni-forms-item>
-						<uni-forms-item label="月需消费总额（元）" required>
-							<uni-easyinput v-model="formData.monthlyThreshold" type="number" placeholder="请输入月需消费总额" />
+						<uni-forms-item label="月流水门槛（元）" required>
+							<uni-easyinput v-model="formData.monthlyThreshold" type="number" placeholder="自然月合理真实流水需达到的金额" />
 						</uni-forms-item>
 						<uni-forms-item label="有效天数" required>
-							<uni-easyinput v-model="formData.validDays" type="number" placeholder="请输入有效天数" />
+							<uni-easyinput v-model="formData.validDays" type="number" placeholder="从发放日起算；期内未达标则作废" />
 						</uni-forms-item>
 					</uni-forms>
 					<view class="dialog-actions">
 						<button type="primary" size="mini" @click="save">确定</button>
 						<button size="mini" @click="resetForm">重置</button>
+					</view>
+				</view>
+			</uni-popup>
+
+			<uni-popup ref="issuePopup" type="center">
+				<view class="issue-panel">
+					<view class="dialog-title">发放优惠券</view>
+					<text class="issue-tip">模板：{{ issueForm.couponName || '-' }}</text>
+					<view class="issue-scope">
+						<text class="issue-label">发放范围</text>
+						<radio-group class="issue-rg" @change="onIssueScopeChange">
+							<label class="issue-radio-lab">
+								<radio value="selected" :checked="issueForm.scope === 'selected'" color="#409eff" />
+								<text>指定用户</text>
+							</label>
+							<label class="issue-radio-lab">
+								<radio value="all" :checked="issueForm.scope === 'all'" color="#409eff" />
+								<text>全体正常商户</text>
+							</label>
+						</radio-group>
+					</view>
+					<view v-if="issueForm.scope === 'selected'" class="issue-keys">
+						<text class="issue-label">用户列表（每行一个 user_id 或手机号）</text>
+						<textarea
+							v-model="issueForm.keysText"
+							class="issue-textarea"
+							placeholder="每行一个。示例：507f1f77bcf86cd799439011 或 13800138000"
+						/>
+					</view>
+					<view v-else class="issue-keys">
+						<text class="issue-warn">将向「使用状态=正常」的商户批量创建考核记录，已存在同模板在考核/待领中的用户会自动跳过。</text>
+					</view>
+					<view class="dialog-actions">
+						<button type="primary" size="mini" :loading="issueLoading" @click="submitIssue">确认发放</button>
+						<button size="mini" @click="closeIssue">取消</button>
 					</view>
 				</view>
 			</uni-popup>
@@ -166,7 +212,14 @@ export default {
 				pageSize: 10,
 				total: 0
 			},
-			tableKey: 1
+			tableKey: 1,
+			issueLoading: false,
+			issueForm: {
+				couponId: '',
+				couponName: '',
+				scope: 'selected',
+				keysText: ''
+			}
 		};
 	},
 	computed: {
@@ -340,8 +393,8 @@ export default {
 				名称: item.name,
 				说明: item.description || '',
 				类型: item.typeText,
-				金额: item.amount,
-				月需消费总额: item.monthlyThreshold,
+				达标积分元: item.amount,
+				月流水门槛元: item.monthlyThreshold,
 				有效天数: item.validDays,
 				更新时间: item.updateTime,
 				创建时间: item.createTime
@@ -414,6 +467,55 @@ export default {
 			this.pageInfo.pageSize = size;
 			this.pageInfo.currentPage = 1;
 			this.search();
+		},
+		openIssue(row) {
+			if (!row || !row.id) return;
+			this.issueForm = {
+				couponId: row.id,
+				couponName: row.name || '',
+				scope: 'selected',
+				keysText: ''
+			};
+			this.$refs.issuePopup.open();
+		},
+		closeIssue() {
+			this.$refs.issuePopup.close();
+		},
+		onIssueScopeChange(e) {
+			const v = e.detail && e.detail.value;
+			if (v === 'all' || v === 'selected') this.issueForm.scope = v;
+		},
+		submitIssue() {
+			if (!this.issueForm.couponId) return;
+			if (this.issueForm.scope === 'selected' && !String(this.issueForm.keysText || '').trim()) {
+				uni.showToast({ title: '请填写至少一个用户', icon: 'none' });
+				return;
+			}
+			this.issueLoading = true;
+			this.$request(
+				'couponIssue',
+				{
+					couponId: this.issueForm.couponId,
+					scope: this.issueForm.scope,
+					merchantKeysText: this.issueForm.keysText
+				},
+				{ functionName: 'merchant' }
+			)
+				.then((res) => {
+					if (res.code !== 0) {
+						uni.showToast({ title: res.message || '发放失败', icon: 'none' });
+						return;
+					}
+					const n = res.data && res.data.issued != null ? res.data.issued : 0;
+					uni.showToast({ title: `成功发放 ${n} 人`, icon: 'success' });
+					this.closeIssue();
+				})
+				.catch(() => {
+					uni.showToast({ title: '发放失败', icon: 'none' });
+				})
+				.finally(() => {
+					this.issueLoading = false;
+				});
 		}
 	}
 };
@@ -425,6 +527,73 @@ export default {
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
+}
+
+.page-intro {
+	margin-bottom: 12px;
+}
+.page-title {
+	display: block;
+	font-size: 18px;
+	font-weight: 700;
+	color: #303133;
+}
+.page-sub {
+	display: block;
+	margin-top: 6px;
+	font-size: 12px;
+	color: #606266;
+	line-height: 1.6;
+}
+
+.issue-panel {
+	width: 520px;
+	max-width: 92vw;
+	background: #fff;
+	border-radius: 8px;
+	padding: 18px 20px 20px;
+}
+.issue-tip {
+	display: block;
+	font-size: 13px;
+	color: #606266;
+	margin-bottom: 12px;
+}
+.issue-scope {
+	margin-bottom: 12px;
+}
+.issue-label {
+	display: block;
+	font-size: 13px;
+	color: #303133;
+	margin-bottom: 6px;
+	font-weight: 600;
+}
+.issue-rg {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+.issue-radio-lab {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	color: #303133;
+}
+.issue-textarea {
+	width: 100%;
+	min-height: 120px;
+	padding: 8px 10px;
+	border: 1px solid #dcdfe6;
+	border-radius: 4px;
+	font-size: 13px;
+	box-sizing: border-box;
+}
+.issue-warn {
+	font-size: 12px;
+	color: #e6a23c;
+	line-height: 1.5;
 }
 
 .header-actions {

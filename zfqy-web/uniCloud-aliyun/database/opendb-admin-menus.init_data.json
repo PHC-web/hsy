@@ -636,6 +636,18 @@
 		"_id": "merchant_withdraw_list"
 	},
 	{
+		"menu_id": "merchant_recharge_gift_shipment",
+		"name": "充值赠品发货",
+		"icon": "",
+		"url": "/pages/merchant/recharge-gift/index",
+		"sort": 1625,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_recharge_gift_shipment"
+	},
+	{
 		"menu_id": "merchant_coupon",
 		"name": "优惠券管理",
 		"icon": "",

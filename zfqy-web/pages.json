@@ -542,6 +542,12 @@
 					}
 				},
 				{
+					"path": "recharge-gift/index",
+					"style": {
+						"navigationBarTitleText": "充值赠品发货"
+					}
+				},
+				{
 					"path": "coupon/index",
 					"style": {
 						"navigationBarTitleText": "优惠券管理"
@@ -647,6 +653,15 @@
 					"path": "pending-return/index",
 					"style": {
 						"navigationBarTitleText": "待返积分",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "coupons/index",
+					"style": {
+						"navigationBarTitleText": "优惠券",
 						"navigationStyle": "custom",
 						"topWindow": false,
 						"leftWindow": false

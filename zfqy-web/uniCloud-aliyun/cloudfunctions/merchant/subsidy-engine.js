@@ -74,13 +74,18 @@ async function sumEligibleReleasePoints(db, merchantUserId, start, end) {
 				_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
 			])
 		)
-		.field({ amount: true, release_amount: true })
+		.field({ amount: true, release_amount: true, release_ratio: true })
 		.limit(20000)
 		.get();
 	let total = 0;
 	for (const row of res.data || []) {
+		const amount = Number(row.amount || 0);
 		const hasRelease = row.release_amount !== undefined && row.release_amount !== null;
-		const release = hasRelease ? Number(row.release_amount || 0) : Number(row.amount || 0) * 0.0038 / 5;
+		let release = hasRelease ? Number(row.release_amount || 0) : Number((amount * 0.0038 / (amount > 300 ? 5 : 1)).toFixed(4));
+		const rr = Number(row.release_ratio);
+		if (!hasRelease && Number.isFinite(rr) && rr >= 99) {
+			release = Number((amount * 0.0038).toFixed(4));
+		}
 		if (Number.isFinite(release) && release > 0) total += release;
 	}
 	return Number(total.toFixed(4));

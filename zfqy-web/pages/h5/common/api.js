@@ -81,12 +81,17 @@ export function h5PendingReturnPoints() {
 	return merchantCall('h5PendingReturnPoints', merchantIdentity());
 }
 
+export function h5CouponMyList() {
+	return merchantCall('h5CouponMyList', merchantIdentity());
+}
+
 export function h5RechargeOptions() {
 	return merchantCall('h5RechargeOptions', merchantIdentity());
 }
 
-export function h5RechargeCreate(packageId) {
-	return merchantCall('h5RechargeCreate', merchantIdentity({ packageId }));
+export function h5RechargeCreate(payload) {
+	const p = typeof payload === 'string' ? { packageId: payload } : payload || {};
+	return merchantCall('h5RechargeCreate', merchantIdentity(p));
 }
 
 export function h5RechargeConfirm(orderNo) {

@@ -5,6 +5,7 @@ import {
 // #ifndef VUE3
 const statConfig = require('uni-stat-config').default || require('uni-stat-config');
 // #endif
+const DISPLAY_APP_NAME = '慧收盈';
 
 export default {
 	namespaced: true,
@@ -14,11 +15,11 @@ export default {
 		routes: [],
 		theme: uni.getStorageSync(uniAdminCacheKey.theme) || 'default',
 		// #ifndef VUE3
-		appName: process.env.VUE_APP_NAME || '',
+		appName: DISPLAY_APP_NAME,
 		appid: statConfig && statConfig.appid || '',
 		// #endif
 		// #ifdef VUE3
-		appName: process.env.UNI_APP_NAME || '',
+		appName: DISPLAY_APP_NAME,
 		appid: process.env.UNI_APP_ID || ''
 		// #endif
 	},

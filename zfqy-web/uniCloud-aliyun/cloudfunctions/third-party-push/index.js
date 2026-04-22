@@ -294,6 +294,8 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 
 	const createTime = parseXingyiOrderTime(d.orderdat, d.ordertime, receiveTs);
 	const bound = machine.is_bound === 1 && machine.bind_user_id;
+	// 未绑定商户机具的流水不写入刷卡记录表，避免进入后台刷卡记录统计口径。
+	if (!bound) return;
 	const newTotal = Number((Number(machine.total_transaction || 0) + amount).toFixed(2));
 	const pch = normalizePaychannelCode(d.paychannel);
 	const pchText = mapPaychannelText(d.paychannel);
@@ -304,11 +306,10 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const thresholdYuan = Math.max(0, Number(optimize.thresholdYuan || 300));
 	const aboveInstallments = Math.max(1, Number(optimize.aboveInstallments || 5));
 	const belowInstallments = Math.max(1, Number(optimize.belowInstallments || 1));
-	const installments = !optimize.enabled
-		? 5
-		: amount > thresholdYuan
-			? aboveInstallments
-			: belowInstallments;
+	// 业务口径：
+	// - 300元以下（含300）：首期100%，不分5期
+	// - 300元以上：首期20%，按5期口径
+	const installments = amount > thresholdYuan ? aboveInstallments : belowInstallments;
 	const releaseAmount = amount > 0 ? Number((cashback / installments).toFixed(4)) : 0;
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
@@ -399,7 +400,7 @@ async function writeLog(pushType, success, dataId, firstagentid, summary, errorM
 async function handleTYY0001(body) {
 	const { firstagentid, timestamp, reqdatajson } = body || {};
 	if (!reqdatajson || !reqdatajson.logno) {
-		return { body: failRes('缺少reqdatajson或logno'), statusCode: 200 };
+		return failRes('缺少reqdatajson或logno');
 	}
 	const d = reqdatajson;
 	const now = Date.now();
@@ -456,11 +457,11 @@ async function handleTYY0001(body) {
 			}
 		}
 		await writeLog('TYY0001', true, addRes.id, firstagentid, `流水号:${d.logno} 商户:${d.mercid} 金额:${d.txnamt}`);
-		return { body: successRes(), statusCode: 200 };
+		return successRes();
 	} catch (e) {
 		console.error('TYY0001 入库失败:', e);
 		await writeLog('TYY0001', false, '', firstagentid, `logno:${d.logno}`, e.message);
-		return { body: failRes(e.message || '入库失败'), statusCode: 200 };
+		return failRes(e.message || '入库失败');
 	}
 }
 
@@ -470,7 +471,7 @@ async function handleTYY0001(body) {
 async function handleTYY0002(body) {
 	const { firstagentid, timestamp, reqdatajson } = body || {};
 	if (!reqdatajson || !reqdatajson.mercid) {
-		return { body: failRes('缺少reqdatajson或mercid'), statusCode: 200 };
+		return failRes('缺少reqdatajson或mercid');
 	}
 	const d = reqdatajson;
 	const now = Date.now();
@@ -493,11 +494,11 @@ async function handleTYY0002(body) {
 	try {
 		const addRes = await merchantsCol.add(doc);
 		await writeLog('TYY0002', true, addRes.id, firstagentid, `商户号:${d.mercid} 名称:${d.mercname}`);
-		return { body: successRes(), statusCode: 200 };
+		return successRes();
 	} catch (e) {
 		console.error('TYY0002 入库失败:', e);
 		await writeLog('TYY0002', false, '', firstagentid, `mercid:${d.mercid}`, e.message);
-		return { body: failRes(e.message || '入库失败'), statusCode: 200 };
+		return failRes(e.message || '入库失败');
 	}
 }
 
@@ -507,7 +508,7 @@ async function handleTYY0002(body) {
 async function handleTYY0003(body) {
 	const { firstagentid, timestamp, reqdatajson } = body || {};
 	if (!reqdatajson || !reqdatajson.termno || !reqdatajson.termphyno) {
-		return { body: failRes('缺少reqdatajson或termno/termphyno'), statusCode: 200 };
+		return failRes('缺少reqdatajson或termno/termphyno');
 	}
 	const d = reqdatajson;
 	const now = Date.now();
@@ -537,11 +538,11 @@ async function handleTYY0003(body) {
 		}
 		const action = d.mercid ? '绑定' : '解绑';
 		await writeLog('TYY0003', true, addRes.id, firstagentid, `终端:${d.termphyno} ${action} 商户:${d.mercid || '-'}`);
-		return { body: successRes(), statusCode: 200 };
+		return successRes();
 	} catch (e) {
 		console.error('TYY0003 入库失败:', e);
 		await writeLog('TYY0003', false, '', firstagentid, `termphyno:${d.termphyno}`, e.message);
-		return { body: failRes(e.message || '入库失败'), statusCode: 200 };
+		return failRes(e.message || '入库失败');
 	}
 }
 
@@ -552,7 +553,7 @@ async function handleTYY0004(body) {
 	const { firstagentid, timestamp, reqdatajson } = body || {};
 		const pushId = reqdatajson && reqdatajson.id;
 		if (!reqdatajson || pushId === undefined || pushId === null || String(pushId).trim() === '') {
-		return { body: failRes('缺少reqdatajson或id'), statusCode: 200 };
+		return failRes('缺少reqdatajson或id');
 	}
 	const d = reqdatajson;
 	const now = Date.now();
@@ -572,11 +573,11 @@ async function handleTYY0004(body) {
 	try {
 		const addRes = await commfeesCol.add(doc);
 		await writeLog('TYY0004', true, addRes.id, firstagentid, `id:${d.id} 商户:${d.mercid} 金额:${d.receivefee}`);
-		return { body: successRes(), statusCode: 200 };
+		return successRes();
 	} catch (e) {
 		console.error('TYY0004 入库失败:', e);
 		await writeLog('TYY0004', false, '', firstagentid, `id:${d.id}`, e.message);
-		return { body: failRes(e.message || '入库失败'), statusCode: 200 };
+		return failRes(e.message || '入库失败');
 	}
 }
 
@@ -588,7 +589,7 @@ exports.main = async (event, context) => {
 		try {
 			body = JSON.parse(body || '{}');
 		} catch (e) {
-			return { body: failRes('请求体非合法JSON'), statusCode: 200 };
+			return failRes('请求体非合法JSON');
 		}
 	}
 	if (!body || typeof body !== 'object') {
@@ -597,7 +598,7 @@ exports.main = async (event, context) => {
 	const verify = verifyEnvelope(body);
 	if (!verify.ok) {
 		await writeLog('SIGN', false, '', body.firstagentid || '', '验签失败', verify.msg);
-		return { body: failRes(verify.msg, '10002'), statusCode: 200 };
+		return failRes(verify.msg, '10002');
 	}
 
 	// 路径兼容：可能带云函数名前缀，只认末尾
@@ -614,8 +615,5 @@ exports.main = async (event, context) => {
 		return await handleTYY0004(body);
 	}
 
-	return {
-		body: failRes('未知推送类型，路径需为 /TYY0001.ag | /TYY0002.ag | /TYY0003.ag | /TYY0004.ag', '404'),
-		statusCode: 200
-	};
+	return failRes('未知推送类型，路径需为 /TYY0001.ag | /TYY0002.ag | /TYY0003.ag | /TYY0004.ag', '404');
 };

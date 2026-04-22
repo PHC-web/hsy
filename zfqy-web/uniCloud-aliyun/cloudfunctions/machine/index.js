@@ -10,13 +10,14 @@ const incomePacketCollection = db.collection('hsy-income-packets');
 // 格式化时间
 function formatTime(timestamp) {
 	if (!timestamp) return '';
-	const date = new Date(timestamp);
-	const year = date.getFullYear();
-	const month = String(date.getMonth() + 1).padStart(2, '0');
-	const day = String(date.getDate()).padStart(2, '0');
-	const hours = String(date.getHours()).padStart(2, '0');
-	const minutes = String(date.getMinutes()).padStart(2, '0');
-	const seconds = String(date.getSeconds()).padStart(2, '0');
+	// 云函数运行环境可能为 UTC，这里固定按东八区输出，避免后台显示少 8 小时。
+	const date = new Date(Number(timestamp) + 8 * 60 * 60 * 1000);
+	const year = date.getUTCFullYear();
+	const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+	const day = String(date.getUTCDate()).padStart(2, '0');
+	const hours = String(date.getUTCHours()).padStart(2, '0');
+	const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+	const seconds = String(date.getUTCSeconds()).padStart(2, '0');
 	return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
@@ -353,7 +354,8 @@ async function virtualSwipe(data, event) {
 		}
 
 		const cashback = Number((swipeAmount * 0.0038).toFixed(4));
-		const releaseAmount = Number((cashback / 5).toFixed(4));
+		const installments = swipeAmount > 300 ? 5 : 1;
+		const releaseAmount = Number((cashback / installments).toFixed(4));
 		const newTotal = Number((Number(machine.total_transaction || 0) + swipeAmount).toFixed(2));
 		const now = Date.now();
 		await machineCollection.where({ device_id: deviceId, is_deleted: false }).update({
@@ -381,7 +383,7 @@ async function virtualSwipe(data, event) {
 			cashback: cashback,
 			cashback_time: cashback > 0 ? now : null,
 			release_amount: releaseAmount,
-			release_ratio: 20,
+			release_ratio: Number((100 / installments).toFixed(2)),
 			is_deleted: false,
 			company: machine.merchant || '管理员',
 			risk_control_status: 'no',
@@ -608,6 +610,34 @@ async function getCardRecordList(data) {
 		} else if (muidArr.length > 1) {
 			query = query.where({ user_id: db.command.in(muidArr) });
 		}
+		// 强约束：仅统计“当前仍处于已绑定状态”的机具流水，且绑定用户与流水 user_id 一致。
+		const boundMachineWhere = {
+			is_deleted: false,
+			is_bound: 1,
+			bind_user_id: db.command.neq('')
+		};
+		if (brandKeyArr.length === 1) {
+			boundMachineWhere.brand_id = brandKeyArr[0];
+		} else if (brandKeyArr.length > 1) {
+			boundMachineWhere.brand_id = db.command.in(brandKeyArr);
+		}
+		if (muidArr.length === 1) {
+			boundMachineWhere.bind_user_id = muidArr[0];
+		} else if (muidArr.length > 1) {
+			boundMachineWhere.bind_user_id = db.command.in(muidArr);
+		}
+		const boundMachineRes = await machineCollection
+			.where(boundMachineWhere)
+			.field({ device_id: true, bind_user_id: true })
+			.get();
+		const boundRows = boundMachineRes.data || [];
+		const boundDeviceIds = [...new Set(boundRows.map((x) => String(x.device_id || '')).filter(Boolean))];
+		const boundUserIds = [...new Set(boundRows.map((x) => String(x.bind_user_id || '')).filter(Boolean))];
+		if (!boundDeviceIds.length || !boundUserIds.length) {
+			return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
+		}
+		query = query.where({ device_id: db.command.in(boundDeviceIds) });
+		query = query.where({ user_id: db.command.in(boundUserIds) });
 		const actArr = Array.isArray(isActivatedList)
 			? [...new Set(isActivatedList.map((x) => String(x)))]
 			: [];
@@ -705,7 +735,23 @@ async function getCardRecordList(data) {
 			query = query.where({ trade_type: 'real' });
 		}
 
-		query = query.where({ stats_eligible: db.command.neq(false) });
+		// 刷卡记录页仅统计“已绑定商户机具”的流水：
+		// 1) stats_eligible 必须显式为 true
+		// 2) user_id 必须非空（未绑定机具流水 user_id 为空，不参与本页统计）
+		// 3) 交易用户展示字段至少有一项非空（避免历史脏数据把未绑定流水统计进来）
+		query = query.where({ stats_eligible: true });
+		query = query.where(
+			db.command.and([
+				{ user_id: db.command.neq('') },
+				{ user_id: db.command.neq(null) }
+			])
+		);
+		query = query.where(
+			db.command.or([
+				{ user_name: db.command.neq('') },
+				{ user_mobile: db.command.neq('') }
+			])
+		);
 		query = query.where(
 			db.command.or([
 				{ is_risk_trade: db.command.neq(true) },

@@ -1,0 +1,29 @@
+{
+	"bsonType": "object",
+	"description": "发放给商户的优惠券实例：考核自然月流水，达标后生成待领取权益红包",
+	"required": [],
+	"permission": { "read": true, "create": true, "update": true, "delete": false },
+	"properties": {
+		"_id": { "description": "主键" },
+		"coupon_template_id": { "bsonType": "string", "description": "hsy-coupons 模板 _id" },
+		"merchant_user_id": { "bsonType": "string", "description": "商户 user_id 或 _id" },
+		"merchant_id": { "bsonType": "string", "description": "商户文档 _id" },
+		"coupon_name": { "bsonType": "string" },
+		"coupon_description": { "bsonType": "string" },
+		"monthly_threshold_yuan": { "bsonType": "number", "description": "自然月合理流水门槛（元）" },
+		"reward_yuan": { "bsonType": "number", "description": "达标后奖励积分（元，与账号积分同口径）" },
+		"issued_at": { "bsonType": "timestamp" },
+		"valid_until": { "bsonType": "timestamp", "description": "考核截止；此前未达标则作废" },
+		"status": {
+			"bsonType": "string",
+			"description": "tracking=考核中 reward_issued=已发待领红包 claimed=已领取 expired_no_qualify=过期未达标"
+		},
+		"qualified_at": { "bsonType": "timestamp" },
+		"qualified_flow_yuan": { "bsonType": "number" },
+		"claimed_at": { "bsonType": "timestamp" },
+		"income_packet_id": { "bsonType": "string" },
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" },
+		"issue_operator": { "bsonType": "string", "description": "后台发放操作人" }
+	}
+}

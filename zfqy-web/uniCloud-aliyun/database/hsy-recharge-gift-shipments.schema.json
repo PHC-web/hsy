@@ -1,0 +1,31 @@
+{
+	"bsonType": "object",
+	"description": "H5 充值满额（如1000元档）赠品发货登记，后台维护快递单号与签收状态",
+	"required": [],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "系统自动生成" },
+		"merchant_id": { "bsonType": "string", "description": "商户文档 _id" },
+		"merchant_user_id": { "bsonType": "string", "description": "商户 user_id" },
+		"order_no": { "bsonType": "string", "description": "充值支付订单号 out_trade_no" },
+		"gift_type": { "bsonType": "string", "description": "speaker | scan_pos" },
+		"gift_label": { "bsonType": "string", "description": "赠品展示名" },
+		"wx_nickname": { "bsonType": "string" },
+		"mobile": { "bsonType": "string" },
+		"device_id": { "bsonType": "string" },
+		"brand_name": { "bsonType": "string" },
+		"tracking_no": { "bsonType": "string", "description": "物流单号" },
+		"receipt_status": {
+			"bsonType": "string",
+			"description": "pending 待发货 shipped 已发货 signed 已签收"
+		},
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" },
+		"update_user": { "bsonType": "string", "description": "最后操作管理员" }
+	}
+}

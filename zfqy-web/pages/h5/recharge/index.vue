@@ -25,7 +25,7 @@
 							:key="item.id"
 							class="pkg"
 							:class="selectedId === item.id ? 'pkg-active' : ''"
-							@click="selectedId = item.id"
+							@click="onSelectPackage(item)"
 						>
 							<view class="pkg-head">
 								<text class="pkg-title">{{ item.title }}</text>
@@ -33,6 +33,21 @@
 							</view>
 							<text class="pkg-tip">{{ item.benefitTip }}</text>
 							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价：¥{{ item.price - currentPackage.price }}</text>
+						</view>
+					</view>
+
+					<view v-if="selectedPackage && selectedPackage.giftChoiceRequired" class="gift-card h5-glass-panel">
+						<text class="gift-title">实物赠品（请任选其一）</text>
+						<text class="gift-hint">含 1000 元正式档与 0.2 元测试档；支付成功后由平台按您所选安排发货，可在「我的」联系客服查询进度。</text>
+						<view
+							v-for="opt in selectedPackage.giftOptions || []"
+							:key="opt.value"
+							class="gift-row"
+							:class="giftChoice === opt.value ? 'gift-row--on' : ''"
+							@click="giftChoice = opt.value"
+						>
+							<text class="gift-radio">{{ giftChoice === opt.value ? '●' : '○' }}</text>
+							<text class="gift-label">{{ opt.label }}</text>
 						</view>
 					</view>
 
@@ -72,13 +87,23 @@ export default {
 			loading: false,
 			currentPackage: null,
 			refundCycleDays: 180,
-			refundWindowDays: 3
+			refundWindowDays: 3,
+			giftChoice: ''
 		};
 	},
 	computed: {
+		selectedPackage() {
+			return this.packages.find((x) => x.id === this.selectedId) || null;
+		},
+		giftOk() {
+			const p = this.selectedPackage;
+			if (!p || !p.giftChoiceRequired) return true;
+			return this.giftChoice === 'speaker' || this.giftChoice === 'scan_pos';
+		},
 		canUpgrade() {
 			const picked = this.packages.find((x) => x.id === this.selectedId);
 			if (!picked) return false;
+			if (!this.giftOk) return false;
 			if (!this.currentPackage) return true;
 			return Number(picked.price) > Number(this.currentPackage.price);
 		},
@@ -96,6 +121,10 @@ export default {
 		this.ensureAgreementAndLoad();
 	},
 	methods: {
+		onSelectPackage(item) {
+			this.selectedId = item.id;
+			this.syncGiftChoice();
+		},
 		async ensureAgreementAndLoad() {
 			this.rechargeReady = false;
 			this.gateText = '正在校验…';
@@ -142,13 +171,31 @@ export default {
 			} else {
 				this.selectedId = this.packages[0] ? this.packages[0].id : '';
 			}
+			this.syncGiftChoice();
+		},
+		syncGiftChoice() {
+			const p = this.packages.find((x) => x.id === this.selectedId);
+			if (!p || !p.giftChoiceRequired) {
+				this.giftChoice = '';
+				return;
+			}
+			const opts = p.giftOptions || [];
+			if (!opts.some((o) => o.value === this.giftChoice)) {
+				this.giftChoice = '';
+			}
 		},
 		async payNow() {
 			if (!this.selectedId) return;
+			if (!this.giftOk) {
+				uni.showToast({ title: '请选择赠品（蓝牙音响或扫码POS机）', icon: 'none' });
+				return;
+			}
 			this.loading = true;
 			uni.showLoading({ title: '处理中...', mask: true });
 			try {
-				const res = await h5RechargeCreate(this.selectedId);
+				const payload = { packageId: this.selectedId };
+				if (this.giftChoice) payload.rechargeGiftType = this.giftChoice;
+				const res = await h5RechargeCreate(payload);
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '充值失败', icon: 'none' });
 					return;
@@ -378,5 +425,61 @@ export default {
 	color: #60a5fa;
 	text-decoration: underline;
 	margin: 0 2px;
+}
+
+.gift-card {
+	margin-bottom: 14px;
+	padding: 14px 16px;
+	border-color: rgba(167, 243, 208, 0.25);
+	box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.12), 0 12px 40px rgba(0, 0, 0, 0.2);
+}
+
+.gift-title {
+	display: block;
+	font-size: 14px;
+	font-weight: 700;
+	color: #a7f3d0;
+	margin-bottom: 6px;
+}
+
+.gift-hint {
+	display: block;
+	font-size: 11px;
+	line-height: 1.55;
+	color: rgba(226, 232, 240, 0.75);
+	margin-bottom: 12px;
+}
+
+.gift-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 12px 14px;
+	margin-bottom: 8px;
+	border-radius: 12px;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgba(15, 23, 42, 0.3);
+}
+
+.gift-row:last-child {
+	margin-bottom: 0;
+}
+
+.gift-row--on {
+	border-color: rgba(52, 211, 153, 0.55);
+	background: rgba(16, 185, 129, 0.12);
+}
+
+.gift-radio {
+	font-size: 14px;
+	color: #6ee7b7;
+	width: 20px;
+	text-align: center;
+}
+
+.gift-label {
+	font-size: 14px;
+	font-weight: 600;
+	color: #f1f5f9;
 }
 </style>
