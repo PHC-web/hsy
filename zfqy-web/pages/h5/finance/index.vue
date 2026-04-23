@@ -14,10 +14,7 @@
 		</view>
 
 		<view class="filters h5-glass-panel">
-			<text class="f-label">类型</text>
-			<picker mode="selector" :range="typeLabels" :value="typeIndex" @change="onTypeChange">
-				<view class="picker-val">{{ typeLabels[typeIndex] }}</view>
-			</picker>
+			
 			<text class="f-label">开始日期</text>
 			<picker mode="date" :value="startDate" @change="onStartDate">
 				<view class="picker-val">{{ startDate }}</view>
@@ -51,9 +48,7 @@
 					</view>
 					<text class="row-status">状态：{{ item.status }}</text>
 					<text v-if="canLaunchConfirm(item)" class="row-action-tip">点击此处可进行收款</text>
-					<text v-if="item.extra && item.extra.platformNo" class="row-extra">单号：{{ item.extra.platformNo }}</text>
 					<text v-if="item.extra && item.extra.withdrawNo" class="row-extra">提现单：{{ item.extra.withdrawNo }}</text>
-					<text v-if="item.extra && item.extra.refundNo" class="row-extra">退款单：{{ item.extra.refundNo }}</text>
 				</view>
 				<view v-if="loading" class="loading-tip">加载中…</view>
 				<view v-if="hasMore && list.length" class="load-more">上拉或继续滑动加载更多</view>
@@ -64,13 +59,6 @@
 
 <script>
 import { h5FinanceRecords, h5WithdrawConfirmPackage } from '@/pages/h5/common/api';
-
-const TYPES = [
-	{ value: 'all', label: '全部' },
-	{ value: 'recharge', label: '充值' },
-	{ value: 'refund', label: '退款' },
-	{ value: 'withdraw', label: '提现' }
-];
 
 function todayStr() {
 	const d = new Date();
@@ -100,8 +88,6 @@ function dayBoundsToTs(startYmd, endYmd) {
 export default {
 	data() {
 		return {
-			typeLabels: TYPES.map((x) => x.label),
-			typeIndex: 0,
 			startDate: daysAgoStr(90),
 			endDate: todayStr(),
 			list: [],
@@ -142,9 +128,6 @@ export default {
 		goBack() {
 			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' }) });
 		},
-		onTypeChange(e) {
-			this.typeIndex = Number(e.detail.value || 0);
-		},
 		onStartDate(e) {
 			this.startDate = e.detail.value;
 		},
@@ -152,10 +135,8 @@ export default {
 			this.endDate = e.detail.value;
 		},
 		typeShort(t) {
-			if (t === 'recharge') return '充值';
-			if (t === 'refund') return '退款';
 			if (t === 'withdraw') return '提现';
-			return '';
+			return '提现';
 		},
 		canLaunchConfirm(item) {
 			return (
@@ -228,11 +209,9 @@ export default {
 				uni.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
 				return;
 			}
-			const recordType = TYPES[this.typeIndex].value;
 			if (!silent) this.loading = true;
 			try {
 				const res = await h5FinanceRecords({
-					recordType,
 					startTs,
 					endTs,
 					page: this.page,
@@ -308,8 +287,15 @@ export default {
 	margin-bottom: 4px;
 }
 
-.f-label:first-child {
+.f-hint + .f-label {
 	margin-top: 0;
+}
+
+.f-hint {
+	display: block;
+	font-size: 12px;
+	color: rgba(186, 199, 216, 0.75);
+	margin-bottom: 8px;
 }
 
 .picker-val {
@@ -370,16 +356,6 @@ export default {
 	padding: 2px 8px;
 	border-radius: 6px;
 	font-weight: 700;
-}
-
-.t-recharge {
-	background: rgba(59, 130, 246, 0.25);
-	color: #93c5fd;
-}
-
-.t-refund {
-	background: rgba(245, 158, 11, 0.25);
-	color: #fcd34d;
 }
 
 .t-withdraw {

@@ -1,0 +1,20 @@
+{
+	"bsonType": "object",
+	"description": "H5退款入口令牌",
+	"required": ["token", "merchant_id", "status", "expire_time", "create_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": false },
+	"properties": {
+		"_id": { "description": "ID" },
+		"token": { "bsonType": "string", "description": "退款入口令牌" },
+		"feedback_id": { "bsonType": "string", "description": "客服工单ID" },
+		"merchant_id": { "bsonType": "string", "description": "商户记录ID" },
+		"merchant_user_id": { "bsonType": "string", "description": "商户user_id" },
+		"status": { "bsonType": "string", "description": "active/expired" },
+		"expire_time": { "bsonType": "timestamp", "description": "过期时间" },
+		"last_access_time": { "bsonType": "timestamp", "description": "最近访问时间" },
+		"create_user": { "bsonType": "string", "description": "创建人" },
+		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
+		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
+		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false }
+	}
+}

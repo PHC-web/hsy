@@ -84,24 +84,24 @@
 						<text class="prestore-sub">快捷进入预存页面，升级档位与额度</text>
 						<view class="prestore-packages">
 							<view class="prestore-pkg-row">
-								<text class="prestore-pkg-tag">¥600档</text>
+								<text class="prestore-pkg-tag">黄金会员</text>
 								<text class="prestore-pkg-text">配置100万交易量，补贴市场价约3800元手续费</text>
 							</view>
 							<view class="prestore-pkg-row">
-								<text class="prestore-pkg-tag">¥800档</text>
+								<text class="prestore-pkg-tag">白金会员</text>
 								<text class="prestore-pkg-text">配置150万交易量，补贴市场价约5700元手续费</text>
 							</view>
 							<view class="prestore-pkg-row">
-								<text class="prestore-pkg-tag">¥1000档</text>
+								<text class="prestore-pkg-tag">钻石会员</text>
 								<text class="prestore-pkg-text">配置200万交易量，补贴市场价约7600元手续费</text>
 							</view>
-							<text class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（¥1000档专享）</text>
+							<text class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（钻石会员专享）</text>
 						</view>
 					</view>
 					<text class="prestore-arrow">›</text>
 				</view>
 
-				<view v-if="loading" class="loading-hint">
+				<view v-if="pending" class="loading-hint">
 					<text>加载中…</text>
 				</view>
 				<view class="bottom-spacer"></view>
@@ -130,6 +130,7 @@ export default {
 	data() {
 		return {
 			loading: false,
+			pending: false,
 			mine: {},
 			membership: { tier: 'normal', name: '普通会员', accent: '#94a3b8' },
 			withdraw: { today: '0.00', month: '0.00', year: '0.00' },
@@ -164,7 +165,10 @@ export default {
 	},
 	methods: {
 		async load() {
-			this.loading = true;
+			this.pending = true;
+			const maskTimer = setTimeout(() => {
+				this.loading = true;
+			}, 320);
 			try {
 				const res = await h5HomeDashboard();
 				if (res.code !== 0) {
@@ -180,6 +184,8 @@ export default {
 				this.pendingWithdraw = d.pendingWithdraw || '0.00';
 				this.quota = Object.assign({}, this.quota, d.quota || {});
 			} finally {
+				clearTimeout(maskTimer);
+				this.pending = false;
 				this.loading = false;
 			}
 		},

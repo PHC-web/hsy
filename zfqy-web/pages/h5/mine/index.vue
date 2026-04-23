@@ -82,7 +82,7 @@
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goFeedback">
-						<text class="menu-title">客服反馈</text>
+						<text class="menu-title">售后反馈</text>
 						<view class="menu-right">
 							<view v-if="feedbackUnread" class="menu-badge" aria-hidden="true"></view>
 							<text class="menu-arrow">›</text>
@@ -143,8 +143,7 @@
 					/>
 				</scroll-view>
 				<view class="agreement-view-actions">
-					<button class="agreement-view-btn" size="mini" @click="closeAgreementViewer">关闭</button>
-					<button class="agreement-view-btn" type="primary" size="mini" @click="resignAgreement">重新签署</button>
+					<button class="agreement-view-btn agreement-view-btn--only" type="primary" size="mini" @click="closeAgreementViewer">关闭</button>
 				</view>
 			</view>
 		</uni-popup>
@@ -153,7 +152,7 @@
 
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
-import { h5MineInfo, h5SignAgreement, h5FeedbackSummary } from '@/pages/h5/common/api';
+import { h5MineInfo, h5SignAgreement } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -161,6 +160,7 @@ export default {
 	data() {
 		return {
 			loading: false,
+			pending: false,
 			mine: {},
 			account: {
 				availableReward: '0.00',
@@ -289,7 +289,10 @@ export default {
 	},
 	methods: {
 		async loadMine() {
-			this.loading = true;
+			this.pending = true;
+			const maskTimer = setTimeout(() => {
+				this.loading = true;
+			}, 320);
 			try {
 				const res = await h5MineInfo();
 				if (res.code !== 0) {
@@ -301,11 +304,13 @@ export default {
 				});
 				this.account = (res.data && res.data.account) || this.account;
 				this.agreement = Object.assign({}, this.agreement, (res.data && res.data.agreement) || {});
-				const fb = await h5FeedbackSummary();
-				if (fb.code === 0 && fb.data) {
-					this.feedbackUnread = !!fb.data.unreadReply;
+				const fb = res.data && res.data.feedback;
+				if (fb) {
+					this.feedbackUnread = !!fb.unreadReply;
 				}
 			} finally {
+				clearTimeout(maskTimer);
+				this.pending = false;
 				this.loading = false;
 			}
 		},
@@ -345,10 +350,6 @@ export default {
 		},
 		closeAgreementViewer() {
 			this.$refs.agreementViewPopup.close();
-		},
-		resignAgreement() {
-			this.$refs.agreementViewPopup.close();
-			setTimeout(() => this.$refs.agreementPopup.open(), 120);
 		},
 		onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
@@ -864,13 +865,16 @@ export default {
 
 .agreement-view-actions {
 	display: flex;
-	justify-content: flex-end;
+	justify-content: center;
 	gap: 10px;
 	margin-top: 12px;
 }
 
 .agreement-view-btn {
 	margin: 0;
+}
+.agreement-view-btn--only {
+	min-width: 120px;
 }
 
 .sheet-title {

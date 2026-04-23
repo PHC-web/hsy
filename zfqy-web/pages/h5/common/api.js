@@ -1,13 +1,35 @@
+import pako from 'pako';
 import { getSession } from './session';
 
+function b64ToU8(b64) {
+	const binary = atob(b64);
+	const len = binary.length;
+	const u8 = new Uint8Array(len);
+	for (let i = 0; i < len; i += 1) u8[i] = binary.charCodeAt(i);
+	return u8;
+}
+
+function unpackH5CompressedResult(r) {
+	if (!r || r._cmp !== 1 || !r._b) return r;
+	try {
+		const text = pako.ungzip(b64ToU8(r._b), { to: 'string' });
+		return JSON.parse(text);
+	} catch (e) {
+		console.error('H5 响应解压失败', e);
+		return { code: 500, message: '数据解析失败' };
+	}
+}
+
 function merchantCall(action, params = {}) {
-	return uniCloud.callFunction({
-		name: 'merchant',
-		data: {
-			action,
-			params
-		}
-	}).then((r) => r.result || {});
+	return uniCloud
+		.callFunction({
+			name: 'merchant',
+			data: {
+				action,
+				params
+			}
+		})
+		.then((r) => unpackH5CompressedResult(r.result || {}));
 }
 
 function merchantIdentity(extra = {}) {
@@ -62,7 +84,7 @@ export function h5FinanceRecords(payload) {
 }
 
 export function h5MineInfo() {
-	return merchantCall('h5MineInfo', merchantIdentity());
+	return merchantCall('h5MineInfo', Object.assign(merchantIdentity(), { cmp: 1 }));
 }
 
 export function h5WithdrawInfo() {
@@ -78,7 +100,7 @@ export function h5WithdrawConfirmPackage(withdrawNo) {
 }
 
 export function h5HomeDashboard() {
-	return merchantCall('h5HomeDashboard', merchantIdentity());
+	return merchantCall('h5HomeDashboard', Object.assign(merchantIdentity(), { cmp: 1 }));
 }
 
 export function h5SignAgreement(payload) {
@@ -111,7 +133,12 @@ export function h5RechargeConfirm(orderNo) {
 }
 
 export function h5RefundReset(reason) {
-	return merchantCall('h5RefundReset', merchantIdentity({ reason }));
+	const p = typeof reason === 'string' ? { reason } : (reason || {});
+	return merchantCall('h5RefundReset', merchantIdentity(p));
+}
+
+export function h5RefundEntryValidate(payload) {
+	return merchantCall('h5RefundEntryValidate', merchantIdentity(payload || {}));
 }
 
 export function h5TransferStatus(outBillNo) {

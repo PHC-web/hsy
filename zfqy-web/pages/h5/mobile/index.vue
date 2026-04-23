@@ -24,7 +24,7 @@
 					placeholder-class="ph"
 					v-model="mobileInput"
 				/>
-				<text class="hint">当前未接入短信验证，请确认号码填写正确；保存后用于账户展示及业务联系。手机号在系统内须唯一，若与已有商户重复将无法保存。</text>
+				<text class="hint">请确认号码填写正确</text>
 				<button class="btn-save" type="primary" :loading="saving" :disabled="saveDisabled" @click="save">保存</button>
 			</view>
 		</view>

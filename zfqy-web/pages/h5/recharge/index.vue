@@ -31,6 +31,7 @@
 								<text class="pkg-title">{{ item.title }}</text>
 								<text class="pkg-price">¥{{ item.price }}</text>
 							</view>
+							<text v-if="item.membershipName" class="pkg-member">会员：{{ item.membershipName }}</text>
 							<text class="pkg-tip">{{ item.benefitTip }}</text>
 							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价：¥{{ item.price - currentPackage.price }}</text>
 						</view>
@@ -59,11 +60,6 @@
 						<text class="rule-item">1）充值后 {{ refundCycleDays }} 天内无法退款。</text>
 						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统将开放 {{ refundWindowDays }} 天窗口期供您提取；若您 {{ refundWindowDays }} 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
 						<text class="rule-item">3）如您执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
-						<view class="rule-item rule-item-line">
-							<text class="rule-item-text">4）退款请点击</text>
-							<text class="rule-link" @click="openRefundWindow">这里</text>
-							<text class="rule-item-text">。</text>
-						</view>
 					</view>
 				</block>
 				<view class="bottom-spacer"></view>
@@ -211,7 +207,10 @@ export default {
 					uni.showToast({ title: confirmRes.message || '支付确认中，请稍后刷新', icon: 'none' });
 					return;
 				}
-				const tier = this.resolveTierByPrice(pickedPackage ? Number(pickedPackage.price || 0) : 0);
+				const tier = this.resolveTierByPrice(
+					pickedPackage ? Number(pickedPackage.price || 0) : 0,
+					pickedPackage
+				);
 				const successUrl = `/pages/h5/recharge-success/index?tier=${encodeURIComponent(tier.tier)}&tierName=${encodeURIComponent(tier.name)}&paid=${encodeURIComponent(String(res.data.paidAmount || '0'))}&quota=${encodeURIComponent(String(res.data.quotaAdded || '0'))}&orderNo=${encodeURIComponent(String(res.data.orderNo || ''))}`;
 				uni.redirectTo({ url: successUrl });
 			} finally {
@@ -243,15 +242,16 @@ export default {
 				// #endif
 			});
 		},
-		openRefundWindow() {
-			uni.navigateTo({ url: '/pages/h5/recharge-refund/index' });
-		},
-		resolveTierByPrice(priceRaw) {
+		resolveTierByPrice(priceRaw, pkg) {
 			const price = Number(priceRaw || 0);
-			if (price >= 1000 || price === 0.2) return { tier: 'diamond', name: '钻石会员' };
-			if (price >= 800) return { tier: 'platinum', name: '铂金会员' };
-			if (price >= 600 || price === 0.1) return { tier: 'white_gold', name: '白金会员' };
-			return { tier: 'normal', name: '会员' };
+			let out;
+			if (price >= 1000 || price === 0.2) out = { tier: 'diamond', name: '钻石会员' };
+			else if (price >= 800) out = { tier: 'platinum', name: '铂金会员' };
+			else if (price >= 600 || price === 0.1) out = { tier: 'white_gold', name: '白金会员' };
+			else out = { tier: 'normal', name: '会员' };
+			const custom = pkg && String(pkg.membershipName || pkg.membership_name || '').trim();
+			if (custom) return { ...out, name: custom };
+			return out;
 		}
 	}
 };
@@ -353,6 +353,13 @@ export default {
 	align-items: center;
 }
 
+.pkg-member {
+	display: block;
+	margin-top: 6px;
+	font-size: 12px;
+	color: rgba(192, 132, 252, 0.95);
+}
+
 .pkg-title {
 	font-size: 16px;
 	font-weight: 700;
@@ -410,26 +417,6 @@ export default {
 	line-height: 1.65;
 	color: rgba(254, 243, 199, 0.88);
 	margin-top: 6px;
-}
-
-.rule-item-line {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: baseline;
-}
-
-.rule-item-text {
-	font-size: 12px;
-	line-height: 1.65;
-	color: rgba(254, 243, 199, 0.88);
-}
-
-.rule-link {
-	font-size: 12px;
-	line-height: 1.65;
-	color: #60a5fa;
-	text-decoration: underline;
-	margin: 0 2px;
 }
 
 .gift-card {

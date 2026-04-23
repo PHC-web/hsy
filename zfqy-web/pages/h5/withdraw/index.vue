@@ -39,10 +39,9 @@
 
 				<view class="card h5-glass-panel rules">
 					<text class="rules-title">兑换说明</text>
-					<text class="rules-item">1）非充值会员单笔 {{ nonMemberMin }}～{{ info.maxPoints }} 分；充值会员单笔 {{ memberMin }}～{{ info.maxPoints }} 分。</text>
-					<text class="rules-item">2）单笔手续费 {{ info.feePerOrderYuan }} 元，在兑换积分对应金额中扣除。</text>
-					<text class="rules-item">3）实际打款金额以适用税费政策及审核结果为准，此处「预估到账」仅供参考。</text>
-					<text class="rules-item">4）办理时间：工作日 9:00–18:00（北京时间）。</text>
+					<text class="rules-item">1）单笔手续费 {{ info.feePerOrderYuan }} 元，在兑换积分对应金额中扣除。</text>
+					<text class="rules-item">2）实际打款金额以适用税费政策及审核结果为准，此处「预估到账」仅供参考。</text>
+					<text class="rules-item">3）办理时间：工作日 9:00–18:00（北京时间）。</text>
 				</view>
 
 				<button

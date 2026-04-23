@@ -55,40 +55,77 @@
 		<uni-popup ref="detailPopup" type="center">
 			<view class="detail-popup">
 				<view class="detail-head">
-					<text class="detail-title">工单对话</text>
-					<text class="detail-close" @click="closeDetail">×</text>
-				</view>
-				<scroll-view scroll-y class="detail-messages">
-					<view
-						v-for="m in detailMessages"
-						:key="m.id"
-						class="dm-row"
-						:class="m.role === 'user' ? 'dm-row--user' : 'dm-row--admin'"
-					>
-						<view class="dm-bubble">
-							<text v-if="m.role === 'admin'" class="dm-meta">客服 · {{ m.adminName || '管理员' }}</text>
-							<text v-if="m.role === 'user'" class="dm-meta">用户</text>
-							<text v-if="m.content" class="dm-text">{{ m.content }}</text>
-							<view v-if="m.images && m.images.length" class="dm-imgs">
-								<image
-									v-for="(img, ix) in m.images"
-									:key="ix"
-									class="dm-img"
-									:src="img.url || img.fileID"
-									mode="aspectFill"
-									@click="previewImg(m.images, ix)"
-								/>
-							</view>
-							<video v-if="m.videoUrl" class="dm-video" :src="m.videoUrl" controls />
-							<text class="dm-time">{{ m.createTimeText }}</text>
+					<view class="detail-head-left">
+						<image v-if="currentMerchant && currentMerchant.avatar" class="merchant-avatar" :src="currentMerchant.avatar" mode="aspectFill" />
+						<view class="merchant-meta">
+							<text class="detail-title">{{ currentMerchant ? currentMerchant.name : '工单对话' }}</text>
+							<text v-if="currentMerchant" class="merchant-level">{{ currentMerchant.membershipName || '普通会员' }}</text>
 						</view>
 					</view>
-				</scroll-view>
+					<text class="detail-close" @click="closeDetail">×</text>
+				</view>
+				<view class="detail-messages-wrap">
+					<scroll-view
+						scroll-y
+						class="detail-messages"
+						:scroll-into-view="scrollIntoView"
+						scroll-with-animation
+					>
+						<view
+							v-for="m in detailMessages"
+							:key="m.id"
+							class="dm-row"
+							:class="m.role === 'user' ? 'dm-row--user' : 'dm-row--admin'"
+						>
+							<view class="dm-bubble">
+								<text v-if="m.role === 'admin'" class="dm-meta">客服 · {{ m.adminName || '管理员' }}</text>
+								<text v-if="m.role === 'user'" class="dm-meta">用户</text>
+								<text v-if="m.content" class="dm-text">{{ m.content }}</text>
+								<view v-if="m.images && m.images.length" class="dm-imgs">
+									<image
+										v-for="(img, ix) in m.images"
+										:key="ix"
+										class="dm-img"
+										:src="img.url || img.fileID"
+										mode="aspectFill"
+										@click="previewImg(m.images, ix)"
+									/>
+								</view>
+								<video v-if="m.videoUrl" class="dm-video" :src="m.videoUrl" controls />
+								<text class="dm-time">{{ m.createTimeText }}</text>
+							</view>
+						</view>
+						<view id="dm-bottom" class="dm-bottom-anchor"></view>
+					</scroll-view>
+				</view>
 				<view v-if="currentTicket && currentTicket.status === 'open'" class="detail-reply">
+					<view v-if="pendingImages.length || pendingVideoPath" class="pending-row">
+						<view v-for="(p, i) in pendingImages" :key="i" class="pending-item">
+							<image class="pending-thumb" :src="p" mode="aspectFill" />
+							<text class="pending-x" @click="removePendingImage(i)">×</text>
+						</view>
+						<view v-if="pendingVideoPath" class="pending-item pending-item--vid">
+							<text class="pending-vid-label">视频已选</text>
+							<text class="pending-x" @click="pendingVideoPath = ''">×</text>
+						</view>
+					</view>
 					<textarea v-model="replyText" class="reply-input" placeholder="输入回复内容" />
-					<button type="primary" size="mini" :loading="replying" :disabled="!replyText.trim()" @click="submitReply">
-						发送回复
-					</button>
+					<view class="reply-actions">
+						<button size="mini" :disabled="!!pendingVideoPath" @click="pickImages">图片</button>
+						<button size="mini" :disabled="pendingImages.length > 0" @click="pickVideo">视频</button>
+						<button
+							type="default"
+							size="mini"
+							:loading="sendingRefundEntry"
+							:disabled="!canSendRefundEntry"
+							@click="sendRefundEntry"
+						>
+							发送退款入口(72h)
+						</button>
+						<button type="primary" size="mini" :loading="replying" :disabled="sendReplyDisabled" @click="submitReply">
+							发送回复
+						</button>
+					</view>
 				</view>
 				<view v-else class="detail-closed">工单已结束，仅可查看历史消息。</view>
 			</view>
@@ -110,10 +147,27 @@ export default {
 			},
 			currentId: '',
 			currentTicket: null,
+			currentMerchant: null,
 			detailMessages: [],
 			replyText: '',
-			replying: false
+			pendingImages: [],
+			pendingVideoPath: '',
+			replying: false,
+			sendingRefundEntry: false,
+			scrollIntoView: ''
 		};
+	},
+	computed: {
+		canSendRefundEntry() {
+			return !!(this.currentTicket && this.currentTicket.status === 'open' && this.currentMerchant && this.currentMerchant.isMember);
+		},
+		sendReplyDisabled() {
+			const t = String(this.replyText || '').trim();
+			if (this.replying) return true;
+			if (this.pendingImages.length) return false;
+			if (this.pendingVideoPath) return false;
+			return !t;
+		}
 	},
 	onLoad() {
 		this.search();
@@ -159,6 +213,8 @@ export default {
 		async openDetail(item) {
 			this.currentId = item.id;
 			this.replyText = '';
+			this.pendingImages = [];
+			this.pendingVideoPath = '';
 			const ret = await this.$request(
 				'feedbackAdminMessages',
 				{ feedbackId: item.id },
@@ -169,12 +225,69 @@ export default {
 				return;
 			}
 			this.currentTicket = ret.data?.ticket || null;
+			this.currentMerchant = ret.data?.merchant || null;
 			this.detailMessages = ret.data?.messages || [];
 			this.$refs.detailPopup.open();
+			this.$nextTick(() => {
+				this.scrollToBottom();
+				// 弹层与 flex 布局在 H5 上晚一帧才完成高度，补几次滚底才稳定
+				[80, 200, 450].forEach((ms) => setTimeout(() => this.scrollToBottom(), ms));
+			});
 			this.loadList();
 		},
 		closeDetail() {
+			this.currentMerchant = null;
+			this.pendingImages = [];
+			this.pendingVideoPath = '';
+			this.scrollIntoView = '';
 			this.$refs.detailPopup.close();
+		},
+		scrollToBottom() {
+			this.scrollIntoView = '';
+			this.$nextTick(() => {
+				setTimeout(() => {
+					this.scrollIntoView = 'dm-bottom';
+				}, 16);
+			});
+		},
+		pickImages() {
+			if (this.pendingVideoPath) return;
+			const remain = 9 - this.pendingImages.length;
+			if (remain <= 0) return;
+			uni.chooseImage({
+				count: remain,
+				sizeType: ['compressed'],
+				sourceType: ['album', 'camera'],
+				success: (r) => {
+					const paths = r.tempFilePaths || [];
+					this.pendingImages = this.pendingImages.concat(paths);
+				}
+			});
+		},
+		pickVideo() {
+			if (this.pendingImages.length) return;
+			uni.chooseVideo({
+				sourceType: ['album', 'camera'],
+				maxDuration: 120,
+				success: (r) => {
+					this.pendingVideoPath = r.tempFilePath || '';
+				}
+			});
+		},
+		removePendingImage(i) {
+			this.pendingImages.splice(i, 1);
+		},
+		async uploadToCloud(localPath, extGuess) {
+			const ext =
+				extGuess ||
+				(localPath.indexOf('.') > -1 ? localPath.split('.').pop().toLowerCase().slice(0, 8) : 'jpg');
+			const cloudPath = `admin-feedback/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+			const up = await uniCloud.uploadFile({ filePath: localPath, cloudPath });
+			const fileID = String(up?.fileID || up?.fileId || up?.file_id || '').trim();
+			if (fileID) return fileID;
+			const directUrl = String(up?.tempFileURL || up?.url || up?.fileUrl || '').trim();
+			if (directUrl) return directUrl;
+			throw new Error('图片上传成功但未返回可用地址');
 		},
 		previewImg(images, start) {
 			const urls = (images || []).map((x) => x.url || x.fileID).filter(Boolean);
@@ -183,12 +296,21 @@ export default {
 		},
 		async submitReply() {
 			const text = String(this.replyText || '').trim();
-			if (!text || !this.currentId) return;
+			if ((!text && !this.pendingImages.length && !this.pendingVideoPath) || !this.currentId) return;
 			this.replying = true;
 			try {
+				const imageIds = [];
+				for (const p of this.pendingImages) {
+					const id = await this.uploadToCloud(p, 'jpg');
+					imageIds.push(id);
+				}
+				let videoId = '';
+				if (this.pendingVideoPath) {
+					videoId = await this.uploadToCloud(this.pendingVideoPath, 'mp4');
+				}
 				const ret = await this.$request(
 					'feedbackAdminReply',
-					{ feedbackId: this.currentId, text },
+					{ feedbackId: this.currentId, text, images: imageIds, video: videoId },
 					{ functionName: 'merchant' }
 				);
 				if (ret.code !== 0) {
@@ -196,11 +318,57 @@ export default {
 					return;
 				}
 				this.replyText = '';
+				this.pendingImages = [];
+				this.pendingVideoPath = '';
 				this.detailMessages = ret.data?.messages || [];
+				this.$nextTick(() => {
+					this.scrollToBottom();
+					setTimeout(() => this.scrollToBottom(), 100);
+				});
 				uni.showToast({ title: '已回复', icon: 'success' });
 				this.loadList();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '发送失败', icon: 'none' });
 			} finally {
 				this.replying = false;
+			}
+		},
+		async sendRefundEntry() {
+			if (!this.currentId) return;
+			if (!this.canSendRefundEntry) {
+				uni.showToast({ title: '该商户非会员，无法发送退款入口', icon: 'none' });
+				return;
+			}
+			this.sendingRefundEntry = true;
+			try {
+				const ret = await this.$request(
+					'feedbackAdminSendRefundEntry',
+					{ feedbackId: this.currentId },
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '发送失败', icon: 'none' });
+					return;
+				}
+				this.detailMessages = ret.data?.messages || [];
+				this.$nextTick(() => {
+					this.scrollToBottom();
+					setTimeout(() => this.scrollToBottom(), 100);
+				});
+				const link = String(ret.data?.entryUrl || '');
+				if (link) {
+					uni.setClipboardData({
+						data: link,
+						success: () => {
+							uni.showToast({ title: '已发送并复制退款入口', icon: 'success' });
+						}
+					});
+				} else {
+					uni.showToast({ title: '已发送退款入口', icon: 'success' });
+				}
+				this.loadList();
+			} finally {
+				this.sendingRefundEntry = false;
 			}
 		}
 	}
@@ -238,6 +406,7 @@ export default {
 
 .detail-popup {
 	width: min(92vw, 720px);
+	height: min(85vh, 720px);
 	max-height: 85vh;
 	background: #fff;
 	border-radius: 10px;
@@ -245,18 +414,53 @@ export default {
 	box-sizing: border-box;
 	display: flex;
 	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
 }
 
 .detail-head {
+	flex-shrink: 0;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	margin-bottom: 8px;
 }
 
+.detail-messages-wrap {
+	flex: 1 1 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.detail-head-left {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.merchant-avatar {
+	width: 34px;
+	height: 34px;
+	border-radius: 50%;
+	background: #f1f5f9;
+}
+
+.merchant-meta {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
 .detail-title {
 	font-weight: 700;
 	font-size: 16px;
+}
+
+.merchant-level {
+	font-size: 12px;
+	color: #64748b;
 }
 
 .detail-close {
@@ -267,12 +471,18 @@ export default {
 }
 
 .detail-messages {
-	flex: 1;
-	max-height: 48vh;
+	flex: 1 1 0;
+	height: 0;
+	min-height: 0;
 	border: 1px solid #e5e7eb;
 	border-radius: 8px;
 	padding: 8px;
 	box-sizing: border-box;
+}
+
+.dm-bottom-anchor {
+	width: 1px;
+	height: 1px;
 }
 
 .dm-row {
@@ -335,10 +545,64 @@ export default {
 }
 
 .detail-reply {
+	flex-shrink: 0;
 	margin-top: 10px;
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
+}
+
+.reply-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+}
+
+.pending-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.pending-item {
+	position: relative;
+	width: 56px;
+	height: 56px;
+}
+
+.pending-thumb {
+	width: 56px;
+	height: 56px;
+	border-radius: 8px;
+}
+
+.pending-x {
+	position: absolute;
+	top: -6px;
+	right: -6px;
+	width: 18px;
+	height: 18px;
+	line-height: 16px;
+	text-align: center;
+	border-radius: 50%;
+	background: rgba(0, 0, 0, 0.55);
+	color: #fff;
+	font-size: 12px;
+}
+
+.pending-item--vid {
+	width: auto;
+	height: 56px;
+	padding: 0 10px;
+	border-radius: 8px;
+	display: flex;
+	align-items: center;
+	background: #f1f5f9;
+}
+
+.pending-vid-label {
+	font-size: 12px;
+	color: #334155;
 }
 
 .reply-input {
@@ -352,6 +616,7 @@ export default {
 }
 
 .detail-closed {
+	flex-shrink: 0;
 	margin-top: 8px;
 	font-size: 12px;
 	color: #64748b;

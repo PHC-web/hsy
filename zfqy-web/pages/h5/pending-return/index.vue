@@ -16,14 +16,14 @@
 		<scroll-view class="scroll" scroll-y :show-scrollbar="false">
 			<view class="inner">
 				<view class="card h5-glass-panel hero">
-					<text class="hero-label">当前月起待返合计（参考）</text>
+					<text class="hero-label">当前月起待返合计</text>
 					<text class="hero-val">{{ totalText }} 分</text>
 					<text class="hero-sub">当前统计月：{{ currentMonth }}</text>
 				</view>
 
-				<view class="card h5-glass-panel note-card">
+				<!-- <view class="card h5-glass-panel note-card">
 					<text class="note-txt">{{ ruleNote }}</text>
-				</view>
+				</view> -->
 
 				<view v-if="!loading && !list.length" class="empty h5-glass-panel">
 					<text class="empty-txt">暂无可展示的待返分摊。绑定机具并产生合理真实流水后，将按规则在此按月汇总。</text>

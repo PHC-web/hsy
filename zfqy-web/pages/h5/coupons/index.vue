@@ -15,14 +15,14 @@
 
 		<scroll-view class="scroll" scroll-y :show-scrollbar="false">
 			<view class="inner">
-				<view class="card h5-glass-panel hero">
+			<!-- 	<view class="card h5-glass-panel hero">
 					<text class="hero-label">本月合理流水（元）</text>
 					<text class="hero-val">¥{{ monthFlow }}</text>
 					<text class="hero-sub">统计月 {{ monthNo }}；与「收益」页气泡待领规则一致，达标后请到「收益」点气泡领取积分。</text>
-				</view>
+				</view> -->
 
 				<view v-if="!loading && !list.length" class="empty h5-glass-panel">
-					<text class="empty-txt">暂无优惠券记录。平台发放后，将在此展示考核进度与奖励说明。</text>
+					<text class="empty-txt">暂无优惠券记录。</text>
 				</view>
 
 				<view v-for="row in list" :key="row.id" class="row h5-glass-panel">

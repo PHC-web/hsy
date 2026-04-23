@@ -10,6 +10,7 @@
 		"real_quota": { "bsonType": "number", "description": "实际额度", "default": 0 },
 		"price": { "bsonType": "number", "description": "套餐价格", "default": 0 },
 		"description": { "bsonType": "string", "description": "套餐说明" },
+		"membership_name": { "bsonType": "string", "description": "会员名称（H5 展示，如白金会员、钻石会员）" },
 		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
 		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
 		"delete_time": { "bsonType": "timestamp", "description": "删除时间" },

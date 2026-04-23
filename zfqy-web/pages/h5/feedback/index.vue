@@ -9,7 +9,7 @@
 
 		<view class="nav-bar">
 			<text class="nav-back" @click="goBack">‹ 返回</text>
-			<text class="nav-title">客服反馈</text>
+			<text class="nav-title">售后反馈</text>
 			<text v-if="ticket" class="nav-end" @click="onCloseFeedback">结束反馈</text>
 			<text v-else class="nav-end nav-end--placeholder"></text>
 		</view>
@@ -35,7 +35,7 @@
 				>
 					<view class="bubble h5-glass-panel" :class="m.role === 'user' ? 'bubble--user' : 'bubble--admin'">
 						<text v-if="m.role === 'admin'" class="bubble-meta">客服 · {{ m.adminName || '管理员' }}</text>
-						<text v-if="m.content" class="bubble-text">{{ m.content }}</text>
+						<text v-if="m.content && !m.refundEntryPath" class="bubble-text">{{ m.content }}</text>
 						<view v-if="m.images && m.images.length" class="img-grid">
 							<image
 								v-for="(img, ix) in m.images"
@@ -47,6 +47,17 @@
 							/>
 						</view>
 						<video v-if="m.videoUrl" class="vid" :src="m.videoUrl" controls object-fit="contain"></video>
+						<view v-if="m.refundEntryPath" class="refund-entry-box">
+							<button
+								class="refund-entry-btn"
+								size="mini"
+								type="primary"
+								:disabled="isRefundEntryExpired(m)"
+								@click="openRefundEntry(m)"
+							>
+								退款
+							</button>
+						</view>
 						<text class="bubble-time">{{ m.createTimeText }}</text>
 					</view>
 				</view>
@@ -95,7 +106,9 @@ export default {
 			pendingImages: [],
 			pendingVideoPath: '',
 			sending: false,
-			scrollInto: ''
+			scrollInto: '',
+			nowTick: Date.now(),
+			nowTimer: null
 		};
 	},
 	computed: {
@@ -109,6 +122,23 @@ export default {
 	},
 	onShow() {
 		this.loadThread();
+		if (!this.nowTimer) {
+			this.nowTimer = setInterval(() => {
+				this.nowTick = Date.now();
+			}, 1000);
+		}
+	},
+	onHide() {
+		if (this.nowTimer) {
+			clearInterval(this.nowTimer);
+			this.nowTimer = null;
+		}
+	},
+	onUnload() {
+		if (this.nowTimer) {
+			clearInterval(this.nowTimer);
+			this.nowTimer = null;
+		}
 	},
 	methods: {
 		goBack() {
@@ -130,8 +160,11 @@ export default {
 			}
 		},
 		scrollToBottom() {
+			this.scrollInto = '';
 			this.$nextTick(() => {
-				this.scrollInto = 'msg-bottom';
+				setTimeout(() => {
+					this.scrollInto = 'msg-bottom';
+				}, 16);
 			});
 		},
 		pickImages() {
@@ -165,6 +198,24 @@ export default {
 			const urls = (images || []).map((x) => x.url || x.fileID).filter(Boolean);
 			if (!urls.length) return;
 			uni.previewImage({ urls, current: urls[start] || urls[0] });
+		},
+		isRefundEntryExpired(msg) {
+			void this.nowTick;
+			const exp = Number(msg?.refundEntryExpireTime || 0);
+			if (!exp) return false;
+			return Date.now() > exp;
+		},
+		openRefundEntry(msg) {
+			if (this.isRefundEntryExpired(msg)) {
+				uni.showToast({ title: '退款入口已过期，请联系在线客服', icon: 'none' });
+				return;
+			}
+			const path = String(msg?.refundEntryPath || '').trim();
+			if (!path) {
+				uni.showToast({ title: '退款入口无效', icon: 'none' });
+				return;
+			}
+			uni.navigateTo({ url: path });
 		},
 		async uploadToCloud(localPath, extGuess) {
 			const session = getSession() || {};
@@ -244,21 +295,25 @@ export default {
 <style src="@/common/h5-glass.css"></style>
 <style scoped>
 .page {
-	min-height: 100vh;
+	height: 100vh;
+	height: 100dvh;
 	position: relative;
 	box-sizing: border-box;
 	background: transparent;
 	display: flex;
 	flex-direction: column;
+	overflow: hidden;
 }
 
 .nav-bar {
 	position: relative;
 	z-index: 2;
+	flex-shrink: 0;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 10px;
+	backdrop-filter: blur(8px);
 }
 
 .nav-back {
@@ -288,10 +343,12 @@ export default {
 
 .msg-scroll {
 	flex: 1;
-	height: 0;
+	min-height: 0;
+	height: auto;
 	position: relative;
 	z-index: 1;
 	box-sizing: border-box;
+	overflow: hidden;
 }
 
 .msg-inner {
@@ -370,6 +427,17 @@ export default {
 	color: rgba(148, 163, 184, 0.85);
 }
 
+.refund-entry-box {
+	margin-top: 6px;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+}
+
+.refund-entry-btn {
+	background: rgba(59, 130, 246, 0.9) !important;
+}
+
 .img-grid {
 	display: flex;
 	flex-wrap: wrap;
@@ -396,10 +464,13 @@ export default {
 }
 
 .composer {
-	margin: 0 10px 10px;
+	margin: 0 10px;
 	padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
 	position: relative;
 	z-index: 2;
+	flex-shrink: 0;
+	border-bottom-left-radius: 0;
+	border-bottom-right-radius: 0;
 }
 
 .pending-row {

@@ -37,6 +37,7 @@
 						<uni-th align="center" width="60">ID</uni-th>
 						<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'packageId')">套餐id</uni-th>
 						<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'title')">标题</uni-th>
+						<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'membershipName')">会员名称</uni-th>
 						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'bonusQuota')">免额度</uni-th>
 						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'realQuota')">额度</uni-th>
 						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'price')">套餐价格</uni-th>
@@ -52,6 +53,7 @@
 						<uni-td align="center">{{ item.id }}</uni-td>
 						<uni-td align="center">{{ item.packageId }}</uni-td>
 						<uni-td align="center">{{ item.title }}</uni-td>
+						<uni-td align="center">{{ item.membershipName || '—' }}</uni-td>
 						<uni-td align="center">{{ item.bonusQuota || '-' }}</uni-td>
 						<uni-td align="center">¥{{ Number(item.realQuota || 0).toFixed(2) }}</uni-td>
 						<uni-td align="center">¥{{ Number(item.price || 0).toFixed(2) }}</uni-td>
@@ -108,6 +110,9 @@
 						<uni-forms-item label="套餐说明" required>
 							<uni-easyinput v-model.trim="formData.description" placeholder="如图，一千元限时享一百五十万奖励额度，提现额度高达5700" />
 						</uni-forms-item>
+						<uni-forms-item label="会员名称">
+							<uni-easyinput v-model.trim="formData.membershipName" placeholder="H5 展示用，如：白金会员、钻石会员" />
+						</uni-forms-item>
 					</uni-forms>
 					<view class="dialog-actions">
 						<button type="primary" size="mini" @click="save">确定</button>
@@ -128,7 +133,8 @@ const defaultForm = () => ({
 	bonusQuota: 0,
 	realQuota: 0,
 	price: 0,
-	description: ''
+	description: '',
+	membershipName: ''
 });
 
 export default {
@@ -138,6 +144,7 @@ export default {
 			searchForm: {
 				packageId: '',
 				title: '',
+				membershipName: '',
 				bonusQuota: '',
 				realQuota: '',
 				price: '',
@@ -223,6 +230,7 @@ export default {
 			this.searchForm = {
 				packageId: '',
 				title: '',
+				membershipName: '',
 				bonusQuota: '',
 				realQuota: '',
 				price: '',
@@ -243,7 +251,7 @@ export default {
 		headerFilterChange(e, field) {
 			const { filterType, filter } = e || {};
 			const sf = this.searchForm;
-			if (filterType === 'search' && ['packageId', 'title', 'bonusQuota', 'realQuota', 'price', 'description'].includes(field)) {
+			if (filterType === 'search' && ['packageId', 'title', 'membershipName', 'bonusQuota', 'realQuota', 'price', 'description'].includes(field)) {
 				sf[field] = String(filter == null ? '' : filter).trim();
 			} else if (field === 'updateTime' && filterType === 'timestamp') {
 				const { start, end } = this.parseTimestampRange(filter);
@@ -268,7 +276,8 @@ export default {
 				bonusQuota: Number(String(row.bonusQuota || '').replace(/[^\d.]/g, '') || 0),
 				realQuota: row.realQuota,
 				price: row.price,
-				description: row.description
+				description: row.description,
+				membershipName: row.membershipName || ''
 			};
 			this.$refs.formPopup.open();
 		},
@@ -281,7 +290,8 @@ export default {
 				bonusQuota: Number(this.formData.bonusQuota || 0),
 				realQuota: Number(this.formData.realQuota || 0),
 				price: Number(this.formData.price || 0),
-				description: this.formData.description
+				description: this.formData.description,
+				membershipName: (this.formData.membershipName || '').trim()
 			};
 			this.$request('quotaSave', payload, { functionName: 'merchant' }).then((res) => {
 				if (res.code !== 0) {
@@ -337,6 +347,7 @@ export default {
 				额度: item.realQuota,
 				套餐价格: item.price,
 				套餐说明: item.description,
+				会员名称: item.membershipName || '',
 				更新时间: item.updateTime,
 				创建时间: item.createTime
 			}));

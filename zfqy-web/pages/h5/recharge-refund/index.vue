@@ -15,6 +15,11 @@
 
 		<scroll-view class="scroll" scroll-y :show-scrollbar="false">
 			<view class="inner">
+				<view v-if="!entryAllowed" class="rule-card h5-glass-panel">
+					<text class="rule-title">退款入口不可用</text>
+					<text class="rule-item">{{ entryError || '正在校验退款入口…' }}</text>
+				</view>
+				<template v-else>
 				<view class="countdown-card h5-glass-panel">
 					<view class="cd-head">
 						<text class="cd-title">退款窗口倒计时</text>
@@ -50,6 +55,7 @@
 				<view v-if="loading" class="loading-hint">
 					<text>加载中…</text>
 				</view>
+				</template>
 				<view class="bottom-spacer"></view>
 			</view>
 		</scroll-view>
@@ -57,12 +63,15 @@
 </template>
 
 <script>
-import { h5HomeDashboard, h5MineInfo, h5RefundReset, h5TransferStatus } from '@/pages/h5/common/api';
+import { h5HomeDashboard, h5MineInfo, h5RefundReset, h5TransferStatus, h5RefundEntryValidate } from '@/pages/h5/common/api';
 
 export default {
 	data() {
 		return {
 			loading: false,
+			entryAllowed: false,
+			entryError: '',
+			refundEntryToken: '',
 			serverSkew: 0,
 			countdown: {
 				phase: 'none',
@@ -132,8 +141,11 @@ export default {
 			return '';
 		}
 	},
+	onLoad(options) {
+		this.refundEntryToken = String(options?.rt || options?.refundToken || options?.token || '').trim();
+	},
 	onShow() {
-		this.load();
+		this.ensureRefundEntryAndLoad();
 		if (!this.tickTimer) {
 			this.tickTimer = setInterval(() => {
 				this.tick += 1;
@@ -175,7 +187,7 @@ export default {
 			}
 		},
 		goBack() {
-			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/recharge/index' }) });
+			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/feedback/index' }) });
 		},
 		async load() {
 			this.loading = true;
@@ -192,6 +204,26 @@ export default {
 				this.countdown = Object.assign({}, this.countdown, d.countdown || {});
 				this.refundCycleDays = Number(d.refundCycle?.cycleDays || 180);
 				this.refundWindowDays = Number(d.refundCycle?.windowDays || 3);
+			} finally {
+				this.loading = false;
+			}
+		},
+		async ensureRefundEntryAndLoad() {
+			this.entryAllowed = false;
+			this.entryError = '';
+			if (!this.refundEntryToken) {
+				this.entryError = '退款入口无效，请联系在线客服重新发送入口。';
+				return;
+			}
+			this.loading = true;
+			try {
+				const chk = await h5RefundEntryValidate({ refundEntryToken: this.refundEntryToken });
+				if (chk.code !== 0) {
+					this.entryError = chk.message || '退款入口校验失败，请联系在线客服。';
+					return;
+				}
+				this.entryAllowed = true;
+				await this.load();
 			} finally {
 				this.loading = false;
 			}
@@ -224,7 +256,10 @@ export default {
 					this.loading = true;
 					uni.showLoading({ title: '处理中...', mask: true });
 					try {
-						const rawRes = await h5RefundReset('用户在退款与周期页发起退款重置');
+						const rawRes = await h5RefundReset({
+							reason: '用户在退款与周期页发起退款重置',
+							refundEntryToken: this.refundEntryToken
+						});
 						const res = this.unwrapResult(rawRes);
 						if (res.code === 409) {
 							const outBillNo = res.data && res.data.outBillNo;
