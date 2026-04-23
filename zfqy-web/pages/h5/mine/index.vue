@@ -23,7 +23,7 @@
 					<view class="profile-main">
 						<text class="name">{{ mine.wxNickname || '微信用户' }}</text>
 						<text class="sub">{{ mine.mobile || '-' }}</text>
-						<text class="sub">{{ mine.brandName || '-' }} / {{ mine.deviceId || '未绑定' }}</text>
+						<text class="sub">{{ mine.brandName || '-' }} / {{ deviceDisplayText }}</text>
 					</view>
 				</view>
 				<view class="fixed-notice h5-glass-panel">
@@ -39,7 +39,6 @@
 						<text class="k">可用奖励</text>
 						<view class="acct-reward-right">
 							<text class="v">¥{{ account.availableReward }}</text>
-							<text v-if="showWithdrawEntry" class="withdraw-entry">提现 ›</text>
 						</view>
 					</view>
 					<view class="acct-item">
@@ -50,7 +49,7 @@
 						<text class="k">账号积分</text>
 						<text class="v">{{ displayAccountPoints }}</text>
 					</view>
-					<text v-if="!mine.agreementImg" class="acct-hint">点击此区域签署「开户优惠活动计划书」</text>
+					<text v-if="agreementNeedSign" class="acct-hint">点击此区域签署「{{ agreement.title || '开户优惠活动计划书' }}」</text>
 				</view>
 
 				
@@ -103,7 +102,6 @@
 					</view> -->
 				</view>
 
-				<button class="unbind-btn" type="warn" @click="confirmUnbind">解除绑定</button>
 				<view class="mine-bottom-spacer"></view>
 			</view>
 		</scroll-view>
@@ -123,7 +121,7 @@
 		<uni-popup ref="agreementPopup" type="bottom">
 			<view class="agreement-sheet agreement-sheet--dark">
 				<view class="sheet-head">
-					<text class="sheet-title">开户优惠活动计划书签署</text>
+					<text class="sheet-title">{{ agreement.title || '开户优惠活动计划书签署' }}</text>
 				</view>
 				<scroll-view scroll-y class="agreement-text">
 					<text v-for="(line, idx) in agreementLines" :key="idx" :class="line.cls">{{ line.text }}</text>
@@ -155,8 +153,7 @@
 
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
-import { h5MineInfo, h5SignAgreement, h5Unbind, h5FeedbackSummary } from '@/pages/h5/common/api';
-import { clearSession } from '@/pages/h5/common/session';
+import { h5MineInfo, h5SignAgreement, h5FeedbackSummary } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -173,6 +170,13 @@ export default {
 			accountPointsVisible: false,
 			defaultAvatar: H5_APP_LOGO,
 			feedbackUnread: false,
+			agreement: {
+				needSign: false,
+				currentVersion: '',
+				title: '开户优惠活动计划书',
+				pdfFileId: '',
+				notifyAllResign: false
+			},
 			agreementLines: [
 				{ cls: 'p p-title', text: '慧收盈“开户优惠”活动计划书（完整内容）' },
 				{ cls: 'p p-sub', text: '重要须知' },
@@ -271,6 +275,13 @@ export default {
 		displayAccountPoints() {
 			if (!this.accountPointsVisible) return '*****';
 			return `¥${this.account.accountPoints}`;
+		},
+		deviceDisplayText() {
+			const d = this.mine.deviceDisplay || this.mine.deviceId || '未绑定';
+			return String(d);
+		},
+		agreementNeedSign() {
+			return !!this.agreement.needSign;
 		}
 	},
 	onShow() {
@@ -285,8 +296,11 @@ export default {
 					uni.showToast({ title: res.message || '获取失败', icon: 'none' });
 					return;
 				}
-				this.mine = (res.data && res.data.merchant) || {};
+				this.mine = Object.assign({}, (res.data && res.data.merchant) || {}, {
+					deviceDisplay: (res.data && res.data.device && res.data.device.display) || ''
+				});
 				this.account = (res.data && res.data.account) || this.account;
+				this.agreement = Object.assign({}, this.agreement, (res.data && res.data.agreement) || {});
 				const fb = await h5FeedbackSummary();
 				if (fb.code === 0 && fb.data) {
 					this.feedbackUnread = !!fb.data.unreadReply;
@@ -314,11 +328,11 @@ export default {
 			uni.navigateTo({ url: '/pages/h5/feedback/index' });
 		},
 		onAcctCardClick() {
-			if (this.mine.agreementImg) return;
+			if (!this.agreementNeedSign) return;
 			this.$refs.agreementPopup.open();
 		},
 		onViewAgreement() {
-			if (!String(this.mine.agreementImg || '').trim()) {
+			if (this.agreementNeedSign) {
 				this.$refs.agreementPopup.open();
 				return;
 			}
@@ -339,7 +353,7 @@ export default {
 		onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
 			if (ar <= 0) return;
-			if (!String(this.mine.agreementImg || '').trim()) {
+			if (this.agreementNeedSign) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
 				this.$refs.agreementPopup.open();
 				return;
@@ -354,7 +368,7 @@ export default {
 			this.onAccountPointsExchangeClick();
 		},
 		onAccountPointsExchangeClick() {
-			if (!String(this.mine.agreementImg || '').trim()) {
+			if (this.agreementNeedSign) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
 				this.$refs.agreementPopup.open();
 				return;
@@ -482,7 +496,7 @@ export default {
 				const agreementImage = await this.buildAgreementCompositeImage(signatureImage);
 				const res = await h5SignAgreement({
 					signatureImage: agreementImage,
-					agreementVersion: '2026-03-27-v1'
+					agreementVersion: this.agreement.currentVersion || ''
 				});
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '签署失败', icon: 'none' });
@@ -496,29 +510,6 @@ export default {
 				uni.hideLoading();
 			}
 		},
-		confirmUnbind() {
-			uni.showModal({
-				title: '确认解除绑定',
-				content: '解除后将清空商户与机具关联及账户数据，是否继续？',
-				confirmText: '确认解绑',
-				success: async (r) => {
-					if (!r.confirm) return;
-					uni.showLoading({ title: '解绑中...', mask: true });
-					try {
-						const res = await h5Unbind('用户在我的页面主动解绑');
-						if (res.code !== 0) {
-							uni.showToast({ title: res.message || '解绑失败', icon: 'none' });
-							return;
-						}
-						uni.showToast({ title: '解绑成功', icon: 'success' });
-						clearSession();
-						setTimeout(() => uni.reLaunch({ url: '/pages/h5/auth/index' }), 400);
-					} finally {
-						uni.hideLoading();
-					}
-				}
-			});
-		},
 		goHome() {
 			uni.redirectTo({ url: '/pages/h5/home/index' });
 		},
@@ -526,7 +517,7 @@ export default {
 			uni.redirectTo({ url: '/pages/h5/income/index' });
 		},
 		goRecharge() {
-			if (!this.mine.agreementImg) {
+			if (this.agreementNeedSign) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
 				this.$refs.agreementPopup.open();
 				return;
@@ -761,12 +752,6 @@ export default {
 	color: rgba(148, 163, 184, 0.9);
 	font-size: 18px;
 	line-height: 1;
-}
-
-.unbind-btn {
-	margin-top: 8px;
-	border-radius: 999px;
-	opacity: 0.95;
 }
 
 .mine-bottom-spacer {

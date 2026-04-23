@@ -1,0 +1,21 @@
+{
+	"bsonType": "object",
+	"required": ["version", "pdf_file_id"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": true
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"title": { "bsonType": "string", "description": "协议标题" },
+		"version": { "bsonType": "string", "description": "协议版本号" },
+		"pdf_file_id": { "bsonType": "string", "description": "协议PDF fileID/url" },
+		"notify_all_resign": { "bsonType": "bool", "description": "是否通知全量重签", "default": false },
+		"is_current": { "bsonType": "bool", "description": "是否当前生效协议", "default": false },
+		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false },
+		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
+		"update_time": { "bsonType": "timestamp", "description": "更新时间" }
+	}
+}

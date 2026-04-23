@@ -16,12 +16,21 @@
 		<scroll-view class="scroll" scroll-y :show-scrollbar="false">
 			<view class="content">
 				<view class="card h5-glass-panel">
-					<text class="label">当前绑定机具号</text>
-					<text class="current">{{ currentDevice || '未绑定' }}</text>
+					<text class="label">已绑定码牌（{{ bindings.length }}）</text>
+					<view v-if="bindings.length" class="bind-list">
+						<view v-for="b in bindings" :key="b.deviceId" class="bind-item">
+							<view class="bind-main">
+								<text class="bind-device">{{ b.deviceId }}</text>
+							</view>
+							<text class="bind-meta">{{ b.brandName || '-' }} · {{ b.bindTimeText || '-' }}</text>
+							<button class="btn-unbind" size="mini" type="warn" @click="unbindOne(b)">解绑</button>
+						</view>
+					</view>
+					<text v-else class="hint">当前尚未绑定码牌</text>
 					<text class="label mt">新机具号（码牌）</text>
 					<input class="input" type="text" maxlength="80" placeholder="请输入机具号码" placeholder-class="ph" v-model="deviceInput" />
-					<text class="hint">绑定新码牌时，若已绑定其他机具将自动解绑旧机具（不清空账户余额类数据）。解除全部绑定请在「我的」页使用「解除绑定」。</text>
-					<button class="btn-save" type="primary" :loading="saving" :disabled="saveDisabled" @click="save">保存绑定</button>
+					<text class="hint">支持绑定多个码牌，绑定后流水按同一商户合并统计；解绑某个码牌不影响其他已绑定码牌。</text>
+					<button class="btn-save" type="primary" :loading="saving" :disabled="saveDisabled" @click="save">新增绑定</button>
 				</view>
 
 				<view class="section-title">绑定 / 解绑记录</view>
@@ -41,12 +50,12 @@
 </template>
 
 <script>
-import { h5MineInfo, h5BindMachine, h5MachineBindLogList } from '@/pages/h5/common/api';
+import { h5BindMachine, h5MachineBindingList, h5UnbindMachine, h5MachineBindLogList } from '@/pages/h5/common/api';
 
 export default {
 	data() {
 		return {
-			currentDevice: '',
+			bindings: [],
 			deviceInput: '',
 			saving: false,
 			logs: [],
@@ -59,11 +68,12 @@ export default {
 	computed: {
 		saveDisabled() {
 			const s = String(this.deviceInput || '').trim();
-			return this.saving || !s || s === String(this.currentDevice || '').trim();
+			if (this.saving || !s) return true;
+			return this.bindings.some((x) => String(x.deviceId || '').trim() === s);
 		}
 	},
 	onShow() {
-		this.prefill();
+		this.loadBindings();
 		this.resetLogs();
 		this.loadLogs(true);
 	},
@@ -71,12 +81,10 @@ export default {
 		goBack() {
 			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' }) });
 		},
-		async prefill() {
-			const res = await h5MineInfo();
-			if (res.code === 0 && res.data?.merchant) {
-				this.currentDevice = String(res.data.merchant.deviceId || '').trim();
-				this.deviceInput = this.currentDevice;
-			}
+		async loadBindings() {
+			const res = await h5MachineBindingList();
+			if (res.code !== 0) return;
+			this.bindings = Array.isArray(res.data?.list) ? res.data.list : [];
 		},
 		resetLogs() {
 			this.logs = [];
@@ -123,7 +131,34 @@ export default {
 					return;
 				}
 				uni.showToast({ title: res.message || '成功', icon: 'success' });
-				this.currentDevice = res.data?.merchant?.deviceId || d;
+				await this.loadBindings();
+				this.deviceInput = '';
+				this.resetLogs();
+				await this.loadLogs(true);
+			} finally {
+				this.saving = false;
+			}
+		},
+		async unbindOne(item) {
+			const did = String(item?.deviceId || '').trim();
+			if (!did) return;
+			const ok = await new Promise((resolve) =>
+				uni.showModal({
+					title: '确认解绑',
+					content: `确认解绑码牌 ${did} 吗？`,
+					success: (r) => resolve(!!r.confirm)
+				})
+			);
+			if (!ok) return;
+			this.saving = true;
+			try {
+				const res = await h5UnbindMachine(did);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '解绑失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '解绑成功', icon: 'success' });
+				await this.loadBindings();
 				this.resetLogs();
 				await this.loadLogs(true);
 			} finally {
@@ -198,14 +233,6 @@ export default {
 	margin-top: 14px;
 }
 
-.current {
-	display: block;
-	font-size: 16px;
-	font-weight: 700;
-	color: #a7f3d0;
-	word-break: break-all;
-}
-
 .input {
 	height: 44px;
 	padding: 0 12px;
@@ -226,6 +253,42 @@ export default {
 	font-size: 11px;
 	color: rgba(203, 213, 225, 0.82);
 	line-height: 1.5;
+}
+
+.bind-list {
+	margin-top: 8px;
+}
+
+.bind-item {
+	padding: 10px 12px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 10px;
+	margin-bottom: 8px;
+	background: rgba(15, 23, 42, 0.28);
+}
+
+.bind-main {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.bind-device {
+	font-size: 14px;
+	font-weight: 700;
+	color: #e2e8f0;
+}
+
+.bind-meta {
+	display: block;
+	margin-top: 4px;
+	margin-bottom: 8px;
+	font-size: 11px;
+	color: rgba(148, 163, 184, 0.95);
+}
+
+.btn-unbind {
+	border-radius: 999px;
 }
 
 .btn-save {

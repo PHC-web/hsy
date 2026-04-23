@@ -45,6 +45,14 @@ export function h5BindMachine(payload) {
 	return merchantCall('h5BindMachine', merchantIdentity(payload));
 }
 
+export function h5MachineBindingList(payload) {
+	return merchantCall('h5MachineBindingList', merchantIdentity(payload));
+}
+
+export function h5UnbindMachine(deviceId) {
+	return merchantCall('h5UnbindMachine', merchantIdentity({ deviceId }));
+}
+
 export function h5MachineBindLogList(payload) {
 	return merchantCall('h5MachineBindLogList', merchantIdentity(payload));
 }

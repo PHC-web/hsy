@@ -30,7 +30,7 @@
 						</view>
 					</view>
 					<view class="hero-foot">
-						<text class="hero-foot-txt">{{ mine.brandName || '-' }} · {{ mine.deviceId || '未绑定机具' }}</text>
+						<text class="hero-foot-txt">{{ mine.brandName || '-' }} · {{ deviceDisplayText }}</text>
 					</view>
 				</view>
 
@@ -153,6 +153,10 @@ export default {
 			if (total <= 0) return 0;
 			const p = Math.round((rem / total) * 1000) / 10;
 			return Math.min(100, Math.max(0, p));
+		},
+		deviceDisplayText() {
+			const d = this.mine.deviceDisplay || this.mine.deviceId || '未绑定';
+			return String(d);
 		}
 	},
 	onShow() {
@@ -168,7 +172,9 @@ export default {
 					return;
 				}
 				const d = res.data || {};
-				this.mine = d.merchant || {};
+				this.mine = Object.assign({}, d.merchant || {}, {
+					deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || ''
+				});
 				this.membership = d.membership || this.membership;
 				this.withdraw = d.withdraw || this.withdraw;
 				this.pendingWithdraw = d.pendingWithdraw || '0.00';

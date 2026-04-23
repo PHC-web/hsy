@@ -53,8 +53,8 @@
 					<uni-table ref="table" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
 							<uni-th align="center" width="130" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">提现用户</uni-th>
-							<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'companyKeyword')">分公司</uni-th>
-							<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'salesmanKeyword')">业务员</uni-th>
+							<!-- <uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'companyKeyword')">分公司</uni-th> -->
+							<!-- <uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'salesmanKeyword')">业务员</uni-th> -->
 							<uni-th align="center" width="110" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具号</uni-th>
 							<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'withdrawNo')">提现单号</uni-th>
 							<uni-th align="center" width="100">提现金额(元)</uni-th>
@@ -65,13 +65,13 @@
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'arrivalTime')">到账时间</uni-th>
 							<uni-th align="center" width="110" filter-type="select" :filter-data="arrivalFilterData" @filter-change="headerFilterChange($event, 'arrivalStatus')">是否到账</uni-th>
 							<uni-th align="center" width="90">审核状态</uni-th>
-							<uni-th align="center" width="180">失败原因</uni-th>
-							<uni-th align="center" width="120">管理员操作</uni-th>
+							<uni-th align="center" width="130">失败原因</uni-th>
+							<uni-th align="center" width="140">管理员操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="(item, idx) in list" :key="item.id || idx" v-if="item">
 							<uni-td class="cell-user">{{ item.userDisplay }}</uni-td>
-							<uni-td align="center">{{ item.company }}</uni-td>
-							<uni-td align="center">{{ item.salesman }}</uni-td>
+							<!-- <uni-td align="center">{{ item.company }}</uni-td> -->
+							<!-- <uni-td align="center">{{ item.salesman }}</uni-td> -->
 							<uni-td align="center">{{ item.deviceId }}</uni-td>
 							<uni-td align="center">{{ item.withdrawNo }}</uni-td>
 							<uni-td align="right" class="cell-money">{{ item.amountText }}</uni-td>
@@ -86,19 +86,29 @@
 								<text :class="item.arrivalClassName">{{ item.arrivalStatusText }}</text>
 							</uni-td>
 							<uni-td align="center">{{ item.auditStatusText || '-' }}</uni-td>
-							<uni-td align="center" class="cell-fail-reason">{{ item.transferError || '-' }}</uni-td>
+							<uni-td align="center" class="cell-fail-reason">
+								<button
+									v-if="item.transferError"
+									size="mini"
+									class="btn-reason"
+									@click="showFailReason(item)"
+								>查看</button>
+								<text v-else class="fail-empty">-</text>
+							</uni-td>
 							<uni-td align="center">
 								<view class="op-actions">
 									<button
 										v-if="item.auditRequired && item.auditStatus === 'pending'"
 										size="mini"
 										type="primary"
+										class="op-btn"
 										@click="approve(item, 'approve')"
 									>同意提现</button>
 									<button
 										v-if="item.auditRequired && item.auditStatus === 'pending'"
 										size="mini"
 										type="warn"
+										class="op-btn"
 										@click="approve(item, 'reject')"
 									>不同意提现</button>
 									<text v-else class="op-done">{{ item.auditStatusText || '已处理' }}</text>
@@ -577,6 +587,15 @@ export default {
 				uni.hideLoading();
 			}
 		},
+		showFailReason(item) {
+			const reason = String(item?.transferError || '').trim();
+			if (!reason) return;
+			uni.showModal({
+				title: '失败原因',
+				content: reason,
+				showCancel: false
+			});
+		},
 
 		onPageChanged(page) {
 			this.pageInfo.currentPage = page;
@@ -745,9 +764,22 @@ export default {
 }
 
 .cell-fail-reason {
-	color: #f56c6c;
 	font-size: 12px;
-	word-break: break-all;
+}
+
+.btn-reason {
+	min-width: 64px;
+	height: 26px;
+	line-height: 26px;
+	padding: 0 10px;
+	border-radius: 13px;
+	color: #f56c6c;
+	border: 1px solid #fbc4c4;
+	background: #fff5f5;
+}
+
+.fail-empty {
+	color: #c0c4cc;
 }
 
 .tag-paid {
@@ -778,9 +810,11 @@ export default {
 
 .op-actions {
 	display: flex;
+	flex-direction: column;
 	justify-content: center;
 	align-items: center;
 	gap: 6px;
+	min-height: 56px;
 }
 
 .op-inline {
@@ -791,6 +825,15 @@ export default {
 .op-done {
 	color: #67c23a;
 	font-weight: 600;
+	font-size: 12px;
+}
+
+.op-btn {
+	min-width: 78px;
+	height: 26px;
+	line-height: 26px;
+	padding: 0 8px;
+	border-radius: 13px;
 }
 
 </style>

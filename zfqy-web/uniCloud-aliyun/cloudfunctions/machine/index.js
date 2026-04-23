@@ -95,6 +95,35 @@ async function tryActivateMachineByTotal(machine, newTotal, now) {
 	return { activated: true, activatedTime: now };
 }
 
+async function refreshMerchantPrimaryDeviceByUserId(userId) {
+	const uid = String(userId || '').trim();
+	if (!uid) return;
+	const merchantRes = await merchantCollection
+		.where(db.command.or([{ user_id: uid }, { _id: uid }]))
+		.limit(1)
+		.get();
+	const merchant = merchantRes.data && merchantRes.data[0];
+	if (!merchant) return;
+	const boundRes = await machineCollection
+		.where({ is_deleted: false, is_bound: 1, bind_user_id: uid })
+		.field({ device_id: true, bind_time: true, brand_name: true })
+		.limit(200)
+		.get();
+	const rows = boundRes.data || [];
+	if (!rows.length) {
+		await merchantCollection.doc(merchant._id).update({ device_id: '', brand_name: '', bind_time: null });
+		return;
+	}
+	const primary = rows
+		.slice()
+		.sort((a, b) => Number(b.bind_time || 0) - Number(a.bind_time || 0))[0];
+	await merchantCollection.doc(merchant._id).update({
+		device_id: String(primary.device_id || ''),
+		brand_name: String(primary.brand_name || ''),
+		bind_time: Number(primary.bind_time || Date.now())
+	});
+}
+
 // 获取品牌列表（用于下拉框）
 async function getBrandList() {
 	try {
@@ -1233,7 +1262,9 @@ async function batchUnbindMachine(data, event) {
 				bind_user_name: '',
 				bind_user_mobile: ''
 			});
-			await merchantCollection.where({ device_id: deviceId }).update({ device_id: '' });
+			if (machine.bind_user_id) {
+				await refreshMerchantPrimaryDeviceByUserId(machine.bind_user_id);
+			}
 			await recordOperationLog(event, 'batchUnbind', deviceId, deviceId, `批量解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已软删除流水`);
 		}
 
@@ -1507,8 +1538,9 @@ async function unbindMachine(data, event) {
 			bind_user_mobile: ''
 		});
 
-		// 清空该机具对应商户的 device_id
-		await merchantCollection.where({ device_id: deviceId }).update({ device_id: '' });
+		if (machine.bind_user_id) {
+			await refreshMerchantPrimaryDeviceByUserId(machine.bind_user_id);
+		}
 
 		await recordOperationLog(event, 'unbind', deviceId, deviceId, `解绑机具: ${deviceId}，原绑定 ${bindUserName}/${bindUserMobile}，已软删除流水`);
 

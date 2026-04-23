@@ -1,0 +1,18 @@
+{
+	"bsonType": "object",
+	"description": "机器人推送日志",
+	"required": ["channel", "content", "success", "create_time"],
+	"permission": { "read": true, "create": true, "update": false, "delete": false },
+	"properties": {
+		"_id": { "description": "ID" },
+		"channel": { "bsonType": "string", "description": "推送通道，如 wecom_robot" },
+		"webhook": { "bsonType": "string", "description": "Webhook地址（脱敏前）" },
+		"content": { "bsonType": "string", "description": "推送内容" },
+		"success": { "bsonType": "bool", "description": "是否推送成功", "default": false },
+		"errmsg": { "bsonType": "string", "description": "失败原因或返回错误信息" },
+		"request": { "bsonType": "string", "description": "请求内容（JSON字符串）" },
+		"response": { "bsonType": "string", "description": "平台返回内容（JSON字符串）" },
+		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
+		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false }
+	}
+}

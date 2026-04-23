@@ -2,6 +2,8 @@
 const db = uniCloud.database();
 const brandCollection = db.collection('hsy-brand');
 const operationLogCollection = db.collection('hsy-operation-logs');
+const agreementCollection = db.collection('hsy-agreements');
+const merchantCollection = db.collection('hsy-merchant-users');
 
 exports.main = async (event, context) => {
 	const { action, data, params } = event;
@@ -21,6 +23,12 @@ exports.main = async (event, context) => {
 			return await getBrand(actualData);
 		case 'updateStatus':
 			return await updateBrandStatus(actualData);
+		case 'agreementCreate':
+			return await agreementCreate(actualData, event);
+		case 'agreementList':
+			return await agreementList(actualData);
+		case 'agreementSignList':
+			return await agreementSignList(actualData);
 		default:
 			return {
 				code: 400,
@@ -85,6 +93,180 @@ async function addBrand(data, event) {
 			code: 500,
 			message: '添加失败'
 		};
+	}
+}
+
+function safeText(v, max = 200) {
+	return String(v == null ? '' : v).trim().slice(0, max);
+}
+
+function mkAgreementVersion() {
+	const d = new Date();
+	const y = d.getFullYear();
+	const m = String(d.getMonth() + 1).padStart(2, '0');
+	const day = String(d.getDate()).padStart(2, '0');
+	const hh = String(d.getHours()).padStart(2, '0');
+	const mm = String(d.getMinutes()).padStart(2, '0');
+	const ss = String(d.getSeconds()).padStart(2, '0');
+	return `AG-${y}${m}${day}${hh}${mm}${ss}`;
+}
+
+async function agreementCreate(data, event) {
+	try {
+		const title = safeText(data?.title, 80) || '开户优惠活动计划书';
+		const pdfFileId = safeText(data?.pdfFileId || data?.pdf_url, 400);
+		const notifyAllResign = !!data?.notifyAllResign;
+		if (!pdfFileId) return { code: 400, message: '请先上传协议PDF' };
+		const now = Date.now();
+		const version = safeText(data?.version, 40) || mkAgreementVersion();
+		await agreementCollection.where({ is_deleted: false, is_current: true }).update({
+			is_current: false,
+			update_time: now
+		});
+		const addRes = await agreementCollection.add({
+			title,
+			version,
+			pdf_file_id: pdfFileId,
+			notify_all_resign: notifyAllResign,
+			is_current: true,
+			is_deleted: false,
+			create_time: now,
+			update_time: now
+		});
+		await recordOperationLog(
+			event,
+			'agreementCreate',
+			String(addRes.id || ''),
+			title,
+			`发布协议: ${title}(${version})，通知全员重签=${notifyAllResign ? '是' : '否'}`
+		);
+		return { code: 0, message: '发布成功', data: { id: addRes.id, version } };
+	} catch (error) {
+		console.error('agreementCreate failed:', error);
+		return { code: 500, message: '发布失败' };
+	}
+}
+
+async function agreementList(data) {
+	try {
+		const page = Math.max(1, Number(data?.page || 1));
+		const pageSize = Math.min(50, Math.max(1, Number(data?.pageSize || 10)));
+		const title = safeText(data?.title, 80);
+		let query = agreementCollection.where({ is_deleted: false });
+		if (title) query = query.where({ title: new RegExp(title) });
+		const countRes = await query.count();
+		const total = Number(countRes.total || 0);
+		const res = await query
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.orderBy('create_time', 'desc')
+			.get();
+		const allMerchants = await merchantCollection
+			.where({ is_deleted: db.command.neq(true) })
+			.field({ _id: true, agreement_img: true, agreement_version: true })
+			.limit(20000)
+			.get();
+		const merchants = allMerchants.data || [];
+		const merchantTotal = merchants.length;
+		const list = (res.data || []).map((x) => {
+			const signedCount = merchants.filter(
+				(m) => String(m.agreement_version || '') === String(x.version || '') && String(m.agreement_img || '').trim()
+			).length;
+			const needSignCount = x.notify_all_resign
+				? Math.max(0, merchantTotal - signedCount)
+				: merchants.filter((m) => !String(m.agreement_img || '').trim()).length;
+			return {
+				id: String(x._id || ''),
+				title: x.title || '',
+				version: x.version || '',
+				pdfFileId: x.pdf_file_id || '',
+				notifyAllResign: !!x.notify_all_resign,
+				isCurrent: !!x.is_current,
+				signedCount,
+				needSignCount,
+				merchantTotal,
+				createTime: formatTime(x.create_time),
+				updateTime: formatTime(x.update_time)
+			};
+		});
+		return { code: 0, message: '获取成功', data: { list, total, page, pageSize } };
+	} catch (error) {
+		console.error('agreementList failed:', error);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function agreementSignList(data) {
+	try {
+		const agreementId = safeText(data?.agreementId, 80);
+		if (!agreementId) return { code: 400, message: '缺少协议ID' };
+		const page = Math.max(1, Number(data?.page || 1));
+		const pageSize = Math.min(100, Math.max(1, Number(data?.pageSize || 20)));
+		const keyword = safeText(data?.keyword, 80);
+		const status = safeText(data?.status, 20);
+		const aRes = await agreementCollection.where({ _id: agreementId, is_deleted: false }).limit(1).get();
+		const agreement = aRes.data && aRes.data[0];
+		if (!agreement) return { code: 404, message: '协议不存在' };
+		const mRes = await merchantCollection
+			.where({ is_deleted: db.command.neq(true) })
+			.field({
+				_id: true,
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				agreement_version: true,
+				agreement_img: true,
+				agreement_signed_at: true
+			})
+			.limit(20000)
+			.get();
+		const version = String(agreement.version || '');
+		let rows = (mRes.data || []).map((m) => {
+			const matched = String(m.agreement_version || '') === version && String(m.agreement_img || '').trim();
+			return {
+				id: String(m._id || ''),
+				userId: String(m.user_id || m._id || ''),
+				nickname: m.wx_nickname || '-',
+				mobile: m.mobile || '-',
+				signed: !!matched,
+				signedAt: matched ? formatTime(m.agreement_signed_at) : '',
+				signImage: matched ? m.agreement_img || '' : '',
+				agreementVersion: m.agreement_version || ''
+			};
+		});
+		if (keyword) {
+			rows = rows.filter(
+				(x) =>
+					String(x.userId).includes(keyword) ||
+					String(x.nickname).includes(keyword) ||
+					String(x.mobile).includes(keyword)
+			);
+		}
+		if (status === 'signed') rows = rows.filter((x) => x.signed);
+		if (status === 'unsigned') rows = rows.filter((x) => !x.signed);
+		const total = rows.length;
+		const start = (page - 1) * pageSize;
+		const list = rows.slice(start, start + pageSize);
+		return {
+			code: 0,
+			message: '获取成功',
+			data: {
+				agreement: {
+					id: String(agreement._id || ''),
+					title: agreement.title || '',
+					version,
+					pdfFileId: agreement.pdf_file_id || '',
+					notifyAllResign: !!agreement.notify_all_resign
+				},
+				list,
+				total,
+				page,
+				pageSize
+			}
+		};
+	} catch (error) {
+		console.error('agreementSignList failed:', error);
+		return { code: 500, message: '获取失败' };
 	}
 }
 

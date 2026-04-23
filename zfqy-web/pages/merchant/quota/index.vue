@@ -37,8 +37,8 @@
 						<uni-th align="center" width="60">ID</uni-th>
 						<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'packageId')">套餐id</uni-th>
 						<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'title')">标题</uni-th>
-						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'bonusQuota')">加赠额度</uni-th>
-						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'realQuota')">实际额度</uni-th>
+						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'bonusQuota')">免额度</uni-th>
+						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'realQuota')">额度</uni-th>
 						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'price')">套餐价格</uni-th>
 						<uni-th align="center" filter-type="search" @filter-change="headerFilterChange($event, 'description')">套餐说明</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">更新时间</uni-th>
@@ -53,8 +53,8 @@
 						<uni-td align="center">{{ item.packageId }}</uni-td>
 						<uni-td align="center">{{ item.title }}</uni-td>
 						<uni-td align="center">{{ item.bonusQuota || '-' }}</uni-td>
-						<uni-td align="center">{{ item.realQuota }}</uni-td>
-						<uni-td align="center">{{ item.price }}</uni-td>
+						<uni-td align="center">¥{{ Number(item.realQuota || 0).toFixed(2) }}</uni-td>
+						<uni-td align="center">¥{{ Number(item.price || 0).toFixed(2) }}</uni-td>
 						<uni-td align="center">{{ item.description }}</uni-td>
 						<uni-td align="center">{{ item.updateTime }}</uni-td>
 						<uni-td align="center">{{ item.createTime }}</uni-td>
@@ -90,20 +90,20 @@
 						<view class="preview-btn">点击兑换</view>
 					</view>
 					<uni-forms ref="form" :modelValue="formData" label-width="110">
-						<uni-forms-item label="套餐id" required>
-							<uni-easyinput v-model.trim="formData.packageId" placeholder="填写字母数字，不重复即可" />
+						<uni-forms-item label="套餐id">
+							<uni-easyinput :value="previewPackageId" disabled placeholder="随套餐价格自动生成" />
 						</uni-forms-item>
-						<uni-forms-item label="标题" required>
-							<uni-easyinput v-model.trim="formData.title" placeholder="如图，1000000.00，填写金额" />
+						<uni-forms-item label="标题">
+							<uni-easyinput :value="previewTitle" disabled placeholder="随套餐价格自动生成" />
 						</uni-forms-item>
-						<uni-forms-item label="加赠额度">
-							<uni-easyinput v-model.trim="formData.bonusQuota" placeholder="如图，仅显示作用，不填不显示" />
+						<uni-forms-item label="免额度" required>
+							<uni-easyinput v-model="formData.bonusQuota" type="number" placeholder="例如 1000000" />
 						</uni-forms-item>
-						<uni-forms-item label="实际额度" required>
-							<uni-easyinput v-model="formData.realQuota" type="number" placeholder="实际提现额度" />
+						<uni-forms-item label="额度" required>
+							<uni-easyinput v-model="formData.realQuota" type="number" placeholder="例如 3800" />
 						</uni-forms-item>
 						<uni-forms-item label="套餐价格" required>
-							<uni-easyinput v-model="formData.price" type="number" placeholder="套餐价格" />
+							<uni-easyinput v-model="formData.price" type="number" placeholder="例如 600" />
 						</uni-forms-item>
 						<uni-forms-item label="套餐说明" required>
 							<uni-easyinput v-model.trim="formData.description" placeholder="如图，一千元限时享一百五十万奖励额度，提现额度高达5700" />
@@ -125,9 +125,7 @@
 <script>
 const defaultForm = () => ({
 	id: '',
-	packageId: '',
-	title: '',
-	bonusQuota: '',
+	bonusQuota: 0,
 	realQuota: 0,
 	price: 0,
 	description: ''
@@ -172,6 +170,16 @@ export default {
 	computed: {
 		allChecked() {
 			return this.list.length > 0 && this.selectedIds.length === this.list.length;
+		},
+		previewPackageId() {
+			const p = Number(this.formData.price || 0);
+			if (!p) return '';
+			return `pkg_${String(p).replace('.', '_')}`;
+		},
+		previewTitle() {
+			const p = Number(this.formData.price || 0);
+			if (!p) return '';
+			return `${p}元套餐`;
 		}
 	},
 	mounted() {
@@ -257,9 +265,7 @@ export default {
 			if (!row) return;
 			this.formData = {
 				id: row.id,
-				packageId: row.packageId,
-				title: row.title,
-				bonusQuota: row.bonusQuota || '',
+				bonusQuota: Number(String(row.bonusQuota || '').replace(/[^\d.]/g, '') || 0),
 				realQuota: row.realQuota,
 				price: row.price,
 				description: row.description
@@ -272,9 +278,7 @@ export default {
 		save() {
 			const payload = {
 				id: this.formData.id,
-				packageId: this.formData.packageId,
-				title: this.formData.title,
-				bonusQuota: this.formData.bonusQuota,
+				bonusQuota: Number(this.formData.bonusQuota || 0),
 				realQuota: Number(this.formData.realQuota || 0),
 				price: Number(this.formData.price || 0),
 				description: this.formData.description
@@ -329,8 +333,8 @@ export default {
 				ID: item.id,
 				套餐ID: item.packageId,
 				标题: item.title,
-				加赠额度: item.bonusQuota || '',
-				实际额度: item.realQuota,
+				免额度: item.bonusQuota || '',
+				额度: item.realQuota,
 				套餐价格: item.price,
 				套餐说明: item.description,
 				更新时间: item.updateTime,

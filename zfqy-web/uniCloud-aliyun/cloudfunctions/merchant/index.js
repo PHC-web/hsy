@@ -16,8 +16,10 @@ const feedbackTicketCollection = db.collection('hsy-h5-feedback');
 const feedbackMessageCollection = db.collection('hsy-h5-feedback-messages');
 const rechargeGiftShipmentCollection = db.collection('hsy-recharge-gift-shipments');
 const systemSettingCollection = db.collection('hsy-system-settings');
+const agreementCollection = db.collection('hsy-agreements');
 const transferOrderCollection = db.collection('hsy-transfer-orders');
 const transferLogCollection = db.collection('hsy-transfer-logs');
+const robotPushLogCollection = db.collection('hsy-robot-push-logs');
 const subsidyEngine = require('./subsidy-engine.js');
 /** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
@@ -77,6 +79,9 @@ const SMS_NAME = process.env.H5_SMS_NAME || '慧收盈';
 const MOBILE_CODE_TTL_MS = 5 * 60 * 1000;
 const WX_TRANSFER_SCENE_ID = pickWxSecret('WX_TRANSFER_SCENE_ID', payLocal.WX_TRANSFER_SCENE_ID, 20) || '1000';
 const WX_TRANSFER_NOTIFY_URL = pickWxSecret('WX_TRANSFER_NOTIFY_URL', payLocal.WX_TRANSFER_NOTIFY_URL, 500);
+const WECOM_ROBOT_WEBHOOK = String(
+	process.env.WECOM_ROBOT_WEBHOOK || payLocal.WECOM_ROBOT_WEBHOOK || 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=3f69eeb7-e0bc-4ec9-afea-028566bda416'
+).trim();
 
 function getOperator(event) {
 	const ctx = event?.context || {};
@@ -137,6 +142,81 @@ async function writeTransferLog(entry) {
 	} catch (e) {
 		console.error('writeTransferLog failed', e);
 	}
+}
+
+async function sendWecomRobotText(content) {
+	const text = safeText(content, 1800);
+	if (!WECOM_ROBOT_WEBHOOK || !text) return;
+	const now = nowTs();
+	let ok = false;
+	let respData = null;
+	let errMsg = '';
+	const payload = {
+		msgtype: 'text',
+		text: { content: text }
+	};
+	try {
+		const resp = await uniCloud.httpclient.request(WECOM_ROBOT_WEBHOOK, {
+			method: 'POST',
+			dataType: 'json',
+			contentType: 'application/json',
+			data: JSON.stringify(payload),
+			timeout: 3000
+		});
+		respData = resp?.data || null;
+		if (typeof respData === 'string') {
+			try {
+				respData = JSON.parse(respData);
+			} catch (e) {}
+		}
+		ok = Number(respData?.errcode || 0) === 0;
+		if (!ok) {
+			errMsg = safeText(respData?.errmsg || `errcode=${respData?.errcode}`, 300);
+		}
+	} catch (e) {
+		errMsg = safeText(e?.message || 'request failed', 300);
+		console.error('sendWecomRobotText failed', e);
+	} finally {
+		try {
+			await robotPushLogCollection.add({
+				channel: 'wecom_robot',
+				webhook: safeText(WECOM_ROBOT_WEBHOOK, 500),
+				content: text,
+				success: !!ok,
+				errmsg: errMsg,
+				request: safeJson(payload, 2000),
+				response: safeJson(respData || {}, 4000),
+				create_time: now,
+				is_deleted: false
+			});
+		} catch (logErr) {
+			console.error('robotPushLogCollection.add failed', logErr);
+		}
+	}
+}
+
+function maybeMerchantDisplayName(merchant) {
+	return (
+		safeText(merchant?.wx_nickname, 80) ||
+		safeText(merchant?.mobile, 30) ||
+		safeText(merchant?.user_id, 80) ||
+		safeText(merchant?._id, 80) ||
+		'未知商户'
+	);
+}
+
+function isWxBalanceInsufficientError(err) {
+	const txt = String(
+		err?.message ||
+			err?.wxBody?.message ||
+			err?.wxBody?.code ||
+			err?.wxBody?.detail ||
+			err?.wxBody?.err_code_des ||
+			''
+	).toLowerCase();
+	if (!txt) return false;
+	const keys = ['余额不足', '账户余额不足', '可用余额不足', 'insufficient', 'not enough', 'balance not enough'];
+	return keys.some((k) => txt.includes(k));
 }
 
 async function listMerchants(data) {
@@ -678,7 +758,7 @@ function arrivalStatusText(s) {
 
 function mapWithdrawItem(item) {
 	const auditStatus = safeText(item.audit_status || '', 24) || (item.audit_required ? 'pending' : 'none');
-	const auditMap = { pending: '待审核', approved: '已同意', failed: '审核失败', none: '-' };
+	const auditMap = { pending: '待审核', approved: '已同意', rejected: '已拒绝', failed: '审核失败', none: '-' };
 	return {
 		id: item._id,
 		withdrawNo: item.withdraw_no || '',
@@ -1247,6 +1327,9 @@ async function withdrawApprove(data) {
 				return { code: 0, message: '同意提现成功，微信打款处理中' };
 			} catch (e) {
 				const reason = safeText(e?.message || '微信提现失败', 180);
+				if (isWxBalanceInsufficientError(e)) {
+					await sendWecomRobotText('商户号运营账户余额不足，请及时充值。');
+				}
 				await withdrawCollection.doc(id).update({
 					audit_status: 'pending',
 					arrival_status: 'pending',
@@ -2083,9 +2166,11 @@ async function applyRechargeByOrder(orderDoc) {
 	const refundCycle = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
 	const targetPrice = Number(custom.target_price || 0);
 	const beforePrice = Number(custom.before_price || 0);
+	const targetReward = Number(custom.target_reward || 0);
+	const beforeReward = Number(custom.before_reward || 0);
 	const grantDelta = Math.max(
 		0,
-		Number((grantYuanByRechargePrice(targetPrice, biz.rechargeRules) - grantYuanByRechargePrice(beforePrice, biz.rechargeRules)).toFixed(2))
+		Number(((targetReward > 0 || beforeReward > 0 ? targetReward - beforeReward : grantYuanByRechargePrice(targetPrice, biz.rechargeRules) - grantYuanByRechargePrice(beforePrice, biz.rechargeRules))).toFixed(2))
 	);
 	const prevRem = Number(merchant.remaining_quota || 0);
 	const afterRem = Number((prevRem + grantDelta).toFixed(2));
@@ -2122,6 +2207,7 @@ async function applyRechargeByOrder(orderDoc) {
 		recharge_package_id: custom.package_id || '',
 		recharge_package_price: targetPrice,
 		recharge_package_quota: Number(custom.target_quota || 0),
+		recharge_package_reward: Number((targetReward > 0 ? targetReward : grantYuanByRechargePrice(targetPrice, biz.rechargeRules)) || 0),
 		recharge_cycle_start: now,
 		recharge_cycle_days: Number(refundCycle.cycleDays || 180),
 		recharge_window_days: Number(refundCycle.windowDays || 3),
@@ -2264,6 +2350,82 @@ function compactMerchantInfo(row) {
 	};
 }
 
+async function getCurrentAgreement() {
+	const res = await agreementCollection
+		.where({ is_deleted: false, is_current: true })
+		.orderBy('create_time', 'desc')
+		.limit(1)
+		.get();
+	return res.data && res.data[0] ? res.data[0] : null;
+}
+
+function isMerchantAgreementSatisfied(merchant, agreement) {
+	const hasSignedImage = !!String(merchant?.agreement_img || '').trim();
+	if (!agreement) return hasSignedImage;
+	if (!hasSignedImage) return false;
+	if (!agreement.notify_all_resign) return true;
+	const curVersion = String(agreement.version || '').trim();
+	if (!curVersion) return true;
+	return String(merchant?.agreement_version || '').trim() === curVersion;
+}
+
+async function listBoundMachinesByMerchant(merchant) {
+	const ids = [String(merchant?.user_id || '').trim(), String(merchant?._id || '').trim()].filter(Boolean);
+	const uniqIds = [...new Set(ids)];
+	if (!uniqIds.length) return [];
+	const res = await machineCollection
+		.where({
+			is_deleted: false,
+			is_bound: 1,
+			bind_user_id: uniqIds.length === 1 ? uniqIds[0] : db.command.in(uniqIds)
+		})
+		.field({ _id: true, device_id: true, brand_name: true, company: true, salesman: true, bind_time: true })
+		.limit(200)
+		.get();
+	return res.data || [];
+}
+
+async function merchantHasBoundMachine(merchant) {
+	const rows = await listBoundMachinesByMerchant(merchant);
+	return rows.length > 0;
+}
+
+async function refreshMerchantPrimaryMachine(merchantId) {
+	const merchant = await getMerchantByIdOrUserId(merchantId);
+	if (!merchant) return null;
+	const rows = await listBoundMachinesByMerchant(merchant);
+	if (!rows.length) {
+		await merchantCollection.doc(merchant._id).update({
+			device_id: '',
+			brand_name: '',
+			bind_time: null,
+			update_time: nowTs()
+		});
+		return null;
+	}
+	const primary = rows.slice().sort((a, b) => Number(b.bind_time || 0) - Number(a.bind_time || 0))[0];
+	await merchantCollection.doc(merchant._id).update({
+		device_id: safeText(primary.device_id || '', 80),
+		brand_name: safeText(primary.brand_name || '', 80),
+		bind_time: Number(primary.bind_time || nowTs()),
+		update_time: nowTs()
+	});
+	return primary;
+}
+
+function pickPrimaryBoundMachine(merchant, machines) {
+	const arr = Array.isArray(machines) ? machines : [];
+	if (!arr.length) return null;
+	const preferId = String(merchant?.device_id || '').trim();
+	if (preferId) {
+		const hit = arr.find((x) => String(x.device_id || '').trim() === preferId);
+		if (hit) return hit;
+	}
+	return arr
+		.slice()
+		.sort((a, b) => Number(b.bind_time || 0) - Number(a.bind_time || 0))[0];
+}
+
 function isValidCnMobile(m) {
 	return /^1\d{10}$/.test(String(m || '').trim());
 }
@@ -2348,6 +2510,7 @@ async function h5WechatLogin(data) {
 		};
 		const upsertRes = await upsertMerchantByAuth(profile);
 		const merchant = await getMerchantByIdOrUserId(upsertRes.id);
+		const hasBound = await merchantHasBoundMachine(merchant);
 		return {
 			code: 0,
 			message: '登录成功',
@@ -2355,7 +2518,7 @@ async function h5WechatLogin(data) {
 				authMode: 'wechat',
 				isNew: upsertRes.created,
 				needBindMobile: false,
-				needBind: !merchant.device_id,
+				needBind: !hasBound,
 				merchant: compactMerchantInfo(merchant)
 			}
 		};
@@ -2465,12 +2628,13 @@ async function h5BindMobileVerify(data) {
 		await mobileCodeCollection.doc(row._id).remove();
 
 		const latest = await getMerchantByIdOrUserId(merchant._id);
+		const hasBound = await merchantHasBoundMachine(latest);
 		return {
 			code: 0,
 			message: '绑定成功',
 			data: {
 				needBindMobile: needBindMobileFlag(latest),
-				needBind: !latest.device_id,
+				needBind: !hasBound,
 				merchant: compactMerchantInfo(latest)
 			}
 		};
@@ -2522,6 +2686,7 @@ async function h5AuthSync(data) {
 		}
 		const upsertRes = await upsertMerchantByAuth(profile);
 		const merchant = await getMerchantByIdOrUserId(upsertRes.id);
+		const hasBound = await merchantHasBoundMachine(merchant);
 		return {
 			code: 0,
 			message: '登录成功',
@@ -2529,7 +2694,7 @@ async function h5AuthSync(data) {
 				authMode: profile.authMode,
 				isNew: upsertRes.created,
 				needBindMobile: false,
-				needBind: !merchant.device_id,
+				needBind: !hasBound,
 				merchant: compactMerchantInfo(merchant)
 			}
 		};
@@ -2550,7 +2715,12 @@ async function h5BindMachine(data, event) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 
 		const oldDeviceId = safeText(merchant.device_id, 80);
-		if (oldDeviceId && oldDeviceId === deviceId) {
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		const alreadyBoundRes = await machineCollection
+			.where({ device_id: deviceId, is_deleted: false, is_bound: 1, bind_user_id: merchantUserId })
+			.limit(1)
+			.get();
+		if (alreadyBoundRes.data && alreadyBoundRes.data.length) {
 			const latest = await getMerchantByIdOrUserId(merchant._id);
 			return { code: 0, message: '已是当前绑定的码牌', data: { merchant: compactMerchantInfo(latest), unchanged: true } };
 		}
@@ -2566,25 +2736,6 @@ async function h5BindMachine(data, event) {
 
 		const now = nowTs();
 
-		if (oldDeviceId) {
-			const oldRes = await machineCollection.where({ device_id: oldDeviceId, is_deleted: false }).limit(1).get();
-			if (oldRes.data && oldRes.data.length) {
-				const oldM = oldRes.data[0];
-				if (oldM.bind_user_id && oldM.bind_user_id !== (merchant.user_id || merchant._id)) {
-					return { code: 400, message: '当前账号与已绑定机具不一致，请刷新后重试' };
-				}
-				await machineCollection.doc(oldM._id).update({
-					is_bound: 2,
-					bind_time: null,
-					unbind_time: now,
-					bind_user_id: '',
-					bind_user_name: '',
-					bind_user_mobile: '',
-					last_reset_reason: 'H5换绑码牌'
-				});
-			}
-		}
-
 		await merchantCollection.doc(merchant._id).update({
 			device_id: deviceId,
 			brand_name: machine.brand_name || '',
@@ -2594,7 +2745,7 @@ async function h5BindMachine(data, event) {
 		await machineCollection.doc(machine._id).update({
 			is_bound: 1,
 			bind_time: now,
-			bind_user_id: merchant.user_id || merchant._id,
+			bind_user_id: merchantUserId,
 			bind_user_name: merchant.wx_nickname || '',
 			bind_user_mobile: merchant.mobile || ''
 		});
@@ -2606,7 +2757,7 @@ async function h5BindMachine(data, event) {
 			module: 'merchant',
 			target_id: merchant._id,
 			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-			content: oldDeviceId ? `换绑码牌：${oldDeviceId} → ${deviceId}` : `绑定码牌：${deviceId}`,
+			content: oldDeviceId ? `新增绑定码牌：${deviceId}（主码牌：${oldDeviceId}）` : `绑定码牌：${deviceId}`,
 			operator_source: 'h5',
 			operator: getOperator(event),
 			ip: event?.context?.CLIENTIP || '',
@@ -2614,10 +2765,102 @@ async function h5BindMachine(data, event) {
 		});
 
 		const latest = await getMerchantByIdOrUserId(merchant._id);
-		return { code: 0, message: oldDeviceId ? '换绑成功' : '绑定成功', data: { merchant: compactMerchantInfo(latest) } };
+		return { code: 0, message: '绑定成功', data: { merchant: compactMerchantInfo(latest) } };
 	} catch (e) {
 		console.error('h5BindMachine failed', e);
 		return { code: 500, message: '绑定失败' };
+	}
+}
+
+async function h5MachineBindingList(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const rows = await listBoundMachinesByMerchant(merchant);
+		const primaryId = safeText(merchant.device_id, 80);
+		const list = rows
+			.slice()
+			.sort((a, b) => Number(b.bind_time || 0) - Number(a.bind_time || 0))
+			.map((m) => {
+				const deviceId = safeText(m.device_id, 80);
+				return {
+					id: String(m._id || ''),
+					deviceId,
+					brandName: safeText(m.brand_name || '', 80),
+					company: safeText(m.company || '', 80),
+					salesman: safeText(m.salesman || '', 80),
+					bindTime: Number(m.bind_time || 0),
+					bindTimeText: formatTime(m.bind_time),
+					isPrimary: deviceId && deviceId === primaryId
+				};
+			});
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				currentDeviceId: primaryId,
+				list,
+				total: list.length
+			}
+		};
+	} catch (e) {
+		console.error('h5MachineBindingList failed', e);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function h5UnbindMachine(data, event) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const deviceId = safeText(data?.deviceId, 80);
+		if (!deviceId) return { code: 400, message: '缺少机具号' };
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserIds = [String(merchant.user_id || '').trim(), String(merchant._id || '').trim()].filter(Boolean);
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		const r = await machineCollection
+			.where({
+				device_id: deviceId,
+				is_deleted: false,
+				is_bound: 1,
+				bind_user_id: merchantUserIds.length === 1 ? merchantUserIds[0] : db.command.in(merchantUserIds)
+			})
+			.limit(1)
+			.get();
+		if (!r.data || !r.data.length) return { code: 400, message: '该机具未绑定到当前账号' };
+		const row = r.data[0];
+		const now = nowTs();
+		await machineCollection.doc(row._id).update({
+			is_bound: 2,
+			bind_time: null,
+			unbind_time: now,
+			bind_user_id: '',
+			bind_user_name: '',
+			bind_user_mobile: ''
+		});
+		await machineTradeCollection.where({ device_id: deviceId, is_deleted: db.command.neq(true) }).update({
+			is_deleted: true,
+			delete_time: now
+		});
+		await refreshMerchantPrimaryMachine(merchant._id);
+		await operationLogCollection.add({
+			user_id: merchantUserId,
+			user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
+			action: 'h5_unbind_machine',
+			module: 'merchant',
+			target_id: merchant._id,
+			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+			content: `解绑码牌：${deviceId}`,
+			operator_source: 'h5',
+			operator: getOperator(event),
+			ip: event?.context?.CLIENTIP || '',
+			create_time: now
+		});
+		return { code: 0, message: '解绑成功' };
+	} catch (e) {
+		console.error('h5UnbindMachine failed', e);
+		return { code: 500, message: '解绑失败' };
 	}
 }
 
@@ -2635,7 +2878,7 @@ async function h5MachineBindLogList(data) {
 		const res = await operationLogCollection
 			.where({
 				user_id: merchantUserId,
-				action: db.command.in(['h5_bind_machine', 'unbind'])
+				action: db.command.in(['h5_bind_machine', 'h5_unbind_machine', 'unbind'])
 			})
 			.orderBy('create_time', 'desc')
 			.limit(500)
@@ -2646,8 +2889,8 @@ async function h5MachineBindLogList(data) {
 		const slice = all.slice(skip, skip + pageSize);
 		const list = slice.map((row) => ({
 			id: String(row._id),
-			action: row.action === 'unbind' ? 'unbind' : 'bind',
-			actionText: row.action === 'unbind' ? '解除绑定' : '绑定/换绑',
+			action: row.action === 'unbind' || row.action === 'h5_unbind_machine' ? 'unbind' : 'bind',
+			actionText: row.action === 'unbind' || row.action === 'h5_unbind_machine' ? '解除绑定' : '绑定',
 			content: safeText(row.content || '', 500),
 			time: row.create_time,
 			timeText: formatTime(row.create_time),
@@ -2908,7 +3151,14 @@ async function h5MineInfo(data) {
 		}
 		merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		const boundDeviceIds = [...new Set(boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean))];
+		const deviceDisplay = boundDeviceIds.length
+			? `${boundDeviceIds.length}个码牌：${boundDeviceIds.join('、')}`
+			: (safeText(merchant.device_id, 80) || '未绑定');
 		const biz = await getBizSettings();
+		const curAgreement = await getCurrentAgreement();
+		const agreementNeedSign = !isMerchantAgreementSatisfied(merchant, curAgreement);
 		const totalGrantedYuan = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
 		const withdrawnYuan = Number(merchant.withdrawn || 0);
 		const showAvailableReward = totalGrantedYuan > 0
@@ -2919,6 +3169,18 @@ async function h5MineInfo(data) {
 			message: 'ok',
 			data: {
 				merchant: compactMerchantInfo(merchant),
+				device: {
+					boundCount: boundDeviceIds.length,
+					deviceIds: boundDeviceIds,
+					display: deviceDisplay
+				},
+				agreement: {
+					needSign: agreementNeedSign,
+					currentVersion: safeText(curAgreement?.version || '', 40),
+					title: safeText(curAgreement?.title || '开户优惠活动计划书', 80),
+					pdfFileId: safeText(curAgreement?.pdf_file_id || '', 500),
+					notifyAllResign: !!curAgreement?.notify_all_resign
+				},
 				account: {
 					availableReward: showAvailableReward.toFixed(2),
 					estimatedFreeQuota: Number(merchant.estimated_free_quota || 0).toFixed(2),
@@ -2946,6 +3208,14 @@ const DEFAULT_RECHARGE_RULES = [
 const DEFAULT_BIZ_SETTINGS = {
 	rechargeRules: DEFAULT_RECHARGE_RULES,
 	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
+	withdrawMinByCount: {
+		memberFirst3: 10,
+		member4To6: 30,
+		member7Plus: 50,
+		nonMemberFirst3: 30,
+		nonMember4To6: 50,
+		nonMember7Plus: 100
+	},
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -2976,6 +3246,15 @@ function sanitizeBizSettings(raw = {}) {
 	};
 	if (withdrawRange.memberMin > withdrawRange.memberMax) withdrawRange.memberMax = withdrawRange.memberMin;
 	if (withdrawRange.nonMemberMin > withdrawRange.nonMemberMax) withdrawRange.nonMemberMax = withdrawRange.nonMemberMin;
+	const wm = raw.withdrawMinByCount || {};
+	const withdrawMinByCount = {
+		memberFirst3: Math.max(1, Number(wm.memberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.memberFirst3)),
+		member4To6: Math.max(1, Number(wm.member4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member4To6)),
+		member7Plus: Math.max(1, Number(wm.member7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member7Plus)),
+		nonMemberFirst3: Math.max(1, Number(wm.nonMemberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMemberFirst3)),
+		nonMember4To6: Math.max(1, Number(wm.nonMember4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember4To6)),
+		nonMember7Plus: Math.max(1, Number(wm.nonMember7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember7Plus))
+	};
 	const wa = raw.withdrawAudit || {};
 	const withdrawAudit = {
 		memberRequired: wa.memberRequired === true || wa.memberRequired === '1' || wa.memberRequired === 1,
@@ -3004,7 +3283,32 @@ function sanitizeBizSettings(raw = {}) {
 			.split(/[\n,，;\s]+/)
 			.filter(Boolean);
 	const testMerchantIds = [...new Set(rawTestMerchantIds.map((x) => safeText(x, 80)).filter(Boolean))];
-	return { rechargeRules: normRules, withdrawRange, withdrawAudit, optimizeConfig, refundCycle, riskRates, testMerchantIds };
+	return { rechargeRules: normRules, withdrawRange, withdrawMinByCount, withdrawAudit, optimizeConfig, refundCycle, riskRates, testMerchantIds };
+}
+
+function resolveWithdrawMinPoints(member, biz, historyCount) {
+	const wm = biz?.withdrawMinByCount || DEFAULT_BIZ_SETTINGS.withdrawMinByCount;
+	const nextNo = Math.max(1, Number(historyCount || 0) + 1);
+	if (member) {
+		if (nextNo <= 3) return Number(wm.memberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.memberFirst3);
+		if (nextNo <= 6) return Number(wm.member4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member4To6);
+		return Number(wm.member7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member7Plus);
+	}
+	if (nextNo <= 3) return Number(wm.nonMemberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMemberFirst3);
+	if (nextNo <= 6) return Number(wm.nonMember4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember4To6);
+	return Number(wm.nonMember7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember7Plus);
+}
+
+async function countMerchantWithdrawTimes(merchantUserId) {
+	const uid = safeText(merchantUserId, 80);
+	if (!uid) return 0;
+	try {
+		const cRes = await withdrawCollection.where({ merchant_user_id: uid, is_deleted: false }).count();
+		return Number(cRes?.total || 0);
+	} catch (e) {
+		console.error('countMerchantWithdrawTimes failed', e);
+		return 0;
+	}
 }
 
 function isTestMerchantByBiz(merchant, biz) {
@@ -3159,6 +3463,8 @@ function resolveRechargePriceForReward(merchant, rechargeRules = DEFAULT_RECHARG
 }
 
 function h5WithdrawQuotaTotalYuan(merchant, rechargeRules = DEFAULT_RECHARGE_RULES) {
+	const reward = Number(merchant?.recharge_package_reward || 0);
+	if (reward > 0) return reward;
 	const quota = Number(merchant?.estimated_free_quota || merchant?.recharge_package_quota || 0);
 	// H5 固定业务档位：100万=3800，150万=5700，200万=7600（不受后台误配置影响）
 	if (quota >= 2000000) return 7600;
@@ -3237,7 +3543,8 @@ async function h5WithdrawInfo(data) {
 		const ar = Number(merchant.available_reward || 0);
 		const ap = Number(merchant.account_points || 0);
 		const redeemable = Math.floor(Math.min(ar, ap));
-		const minPoints = testMerchant ? 1 : (member ? Number(biz.withdrawRange.memberMin || 10) : Number(biz.withdrawRange.nonMemberMin || 30));
+		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
+		const minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(member, biz, withdrawTimes);
 		const maxPoints = member ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
 		const mship = h5MembershipInfo(merchant);
 		return {
@@ -3248,6 +3555,7 @@ async function h5WithdrawInfo(data) {
 				redeemablePoints: redeemable,
 				isRechargeMember: member,
 				membershipName: mship.name,
+				withdrawTimes,
 				minPoints,
 				maxPoints,
 				feePerOrderYuan: H5_WITHDRAW_FEE_YUAN,
@@ -3287,7 +3595,8 @@ async function h5WithdrawApply(data) {
 		if (!testMerchant && !isH5WithdrawBusinessHours(now)) {
 			return { code: 400, message: h5WithdrawOutsideHoursMessage() };
 		}
-		const minP = testMerchant ? 1 : (member ? Number(biz.withdrawRange.memberMin || 10) : Number(biz.withdrawRange.nonMemberMin || 30));
+		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
+		const minP = testMerchant ? 1 : resolveWithdrawMinPoints(member, biz, withdrawTimes);
 		const maxP = member ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
 		if (points < minP) {
 			return { code: 400, message: testMerchant ? `单次兑换最低为 ${minP} 积分` : `单次兑换最低为 ${minP} 积分（${member ? '充值会员' : '非充值会员'}）` };
@@ -3310,14 +3619,11 @@ async function h5WithdrawApply(data) {
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		let company = '-';
 		let salesman = '-';
-		let machine = null;
-		if (merchant.device_id) {
-			const mRes = await machineCollection.where({ device_id: merchant.device_id, is_deleted: false }).limit(1).get();
-			machine = mRes.data && mRes.data[0];
-			if (machine) {
-				company = String(machine.company || '').trim() || '-';
-				salesman = String(machine.salesman || '').trim() || '-';
-			}
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		const machine = pickPrimaryBoundMachine(merchant, boundMachines);
+		if (machine) {
+			company = String(machine.company || '').trim() || '-';
+			salesman = String(machine.salesman || '').trim() || '-';
 		}
 
 		const withdrawNo = `H5${now}${randomStr(8)}`;
@@ -3326,7 +3632,7 @@ async function h5WithdrawApply(data) {
 			merchant_user_id: merchantUserId,
 			user_nickname: safeText(merchant.wx_nickname, 80),
 			user_mobile: safeText(merchant.mobile, 20),
-			device_id: safeText(merchant.device_id, 80),
+			device_id: safeText(machine?.device_id || merchant.device_id, 80),
 			company,
 			salesman,
 			amount: points,
@@ -3348,7 +3654,7 @@ async function h5WithdrawApply(data) {
 			withdrawNo,
 			merchantUserId,
 			openid,
-			deviceId: merchant.device_id,
+			deviceId: machine?.device_id || merchant.device_id,
 			outBillNo: withdrawNo,
 			transferState: needAudit ? 'PENDING_AUDIT' : 'CREATED',
 			message: needAudit ? '用户发起提现（需审核）' : '用户发起提现（自动打款）',
@@ -3372,6 +3678,7 @@ async function h5WithdrawApply(data) {
 						pending_amount: Number((machinePendingBefore + payable).toFixed(4))
 					});
 				}
+				await sendWecomRobotText(`商户${maybeMerchantDisplayName(merchant)}申请提现，请及时处理。`);
 				return {
 					code: 0,
 					message: '提交成功，待管理员审核后打款',
@@ -3402,7 +3709,7 @@ async function h5WithdrawApply(data) {
 					withdrawNo,
 					merchantUserId,
 					openid,
-					deviceId: merchant.device_id,
+					deviceId: machine?.device_id || merchant.device_id,
 					outBillNo: withdrawNo,
 					message: '自动提现发起微信商家转账',
 					payload: transferResp || {}
@@ -3412,6 +3719,9 @@ async function h5WithdrawApply(data) {
 					e && e.name === 'WxPayRequestError' && e.wxBody
 						? safeText(e.wxBody.message || e.wxBody.code || e.message, 180)
 						: safeText(e.message || '微信打款失败', 180);
+				if (isWxBalanceInsufficientError(e)) {
+					await sendWecomRobotText('商户号运营账户余额不足，请及时充值。');
+				}
 				await withdrawCollection.doc(newWithdrawId).update({
 					arrival_status: 'returned',
 					update_time: nowTs(),
@@ -3424,7 +3734,7 @@ async function h5WithdrawApply(data) {
 					withdrawNo,
 					merchantUserId,
 					openid,
-					deviceId: merchant.device_id,
+					deviceId: machine?.device_id || merchant.device_id,
 					outBillNo: withdrawNo,
 					transferState: 'FAILED',
 					message: msg
@@ -3448,7 +3758,7 @@ async function h5WithdrawApply(data) {
 						withdrawNo,
 						merchantUserId,
 						openid,
-						deviceId: merchant.device_id,
+						deviceId: machine?.device_id || merchant.device_id,
 						outBillNo: withdrawNo,
 						transferState,
 						message: '自动提现查询微信状态',
@@ -3563,6 +3873,11 @@ async function h5HomeDashboard(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		const boundDeviceIds = [...new Set(boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean))];
+		const deviceDisplay = boundDeviceIds.length
+			? `${boundDeviceIds.length}个码牌：${boundDeviceIds.join('、')}`
+			: (safeText(merchant.device_id, 80) || '未绑定');
 		const now = nowTs();
 		const biz = await getBizSettings();
 		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
@@ -3597,6 +3912,11 @@ async function h5HomeDashboard(data) {
 			data: {
 				serverTime: now,
 				merchant: compactMerchantInfo(merchant),
+				device: {
+					boundCount: boundDeviceIds.length,
+					deviceIds: boundDeviceIds,
+					display: deviceDisplay
+				},
 				membership,
 				withdraw: {
 					today: Number(daySum.totalWithdraw || 0).toFixed(2),
@@ -3633,10 +3953,11 @@ async function h5SignAgreement(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const signatureImage = String(data?.signatureImage || '').trim();
-		const agreementVersion = safeText(data?.agreementVersion || '2026-03-27-v1', 40);
 		if (!signatureImage) return { code: 400, message: '请先签名' };
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const curAgreement = await getCurrentAgreement();
+		const agreementVersion = safeText(data?.agreementVersion || curAgreement?.version || 'legacy', 40);
 		const now = nowTs();
 		await merchantCollection.doc(merchant._id).update({
 			agreement_img: signatureImage,
@@ -3696,6 +4017,68 @@ const H5_RECHARGE_PACKAGES = [
 		giftOptions: RECHARGE_GIFT_OPTIONS
 	}
 ];
+
+const DEFAULT_QUOTA_PACKAGES = [
+	{
+		package_id: 'pkg_600',
+		title: '600元套餐',
+		bonus_quota: '¥1000000.00',
+		real_quota: 3800,
+		price: 600,
+		description: '六百元限时享一百万奖励额度，提现额度高达3800'
+	},
+	{
+		package_id: 'pkg_800',
+		title: '800元套餐',
+		bonus_quota: '¥1500000.00',
+		real_quota: 5700,
+		price: 800,
+		description: '八百元限时享一百五十万奖励额度，提现额度高达5700'
+	},
+	{
+		package_id: 'pkg_1000',
+		title: '1000元套餐',
+		bonus_quota: '¥2000000.00',
+		real_quota: 7600,
+		price: 1000,
+		description: '一千元限时享两百万奖励额度，提现额度高达7600'
+	}
+];
+
+function parseBonusQuotaYuan(raw) {
+	const s = String(raw == null ? '' : raw);
+	const n = Number(s.replace(/[^\d.]/g, ''));
+	return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function ensureDefaultQuotaPackages() {
+	const now = nowTs();
+	for (const item of DEFAULT_QUOTA_PACKAGES) {
+		const ex = await quotaCollection.where({ package_id: item.package_id, is_deleted: false }).limit(1).get();
+		if (ex.data && ex.data.length) continue;
+		await quotaCollection.add({ ...item, create_time: now, update_time: now, is_deleted: false });
+	}
+}
+
+async function loadRechargePackagesFromQuota() {
+	await ensureDefaultQuotaPackages();
+	const res = await quotaCollection.where({ is_deleted: false }).orderBy('price', 'asc').limit(200).get();
+	const core = (res.data || [])
+		.map((x) => ({
+			id: safeText(x.package_id, 40),
+			title: safeText(x.title, 80) || `${Number(x.price || 0)}元套餐`,
+			price: Number(x.price || 0),
+			quota: parseBonusQuotaYuan(x.bonus_quota),
+			rewardYuan: Number(x.real_quota || 0),
+			benefitTip: safeText(x.description, 300),
+			giftChoiceRequired: Number(x.price || 0) === RECHARGE_GIFT_PRICE,
+			giftOptions: Number(x.price || 0) === RECHARGE_GIFT_PRICE ? RECHARGE_GIFT_OPTIONS : []
+		}))
+		.filter((x) => x.id && x.price > 0)
+		.sort((a, b) => a.price - b.price);
+	if (!core.length) return H5_RECHARGE_PACKAGES;
+	return [H5_RECHARGE_PKG_TEST_01, H5_RECHARGE_PKG_TEST_02, ...core];
+}
 
 function buildRechargePackagesFromRules(rechargeRules = DEFAULT_RECHARGE_RULES) {
 	const core = (Array.isArray(rechargeRules) ? rechargeRules : DEFAULT_RECHARGE_RULES)
@@ -3795,7 +4178,11 @@ function resolveMerchantRefundCycleDays(merchant, globalRefundCycle = DEFAULT_BI
 }
 
 function requireH5AgreementSigned(merchant) {
-	const ok = String(merchant?.agreement_img || '').trim();
+	// 协议管理可配置“是否通知所有商户重新签署”
+	// - 否：历史已签商户继续有效，新商户按新协议签署
+	// - 是：所有商户需签署当前版本
+	const curAgreement = merchant && merchant.__curAgreement ? merchant.__curAgreement : null;
+	const ok = isMerchantAgreementSatisfied(merchant, curAgreement);
 	if (ok) return null;
 	return { code: 403, message: '请先签署优惠活动计划书后再进行额度充值', needAgreement: true };
 }
@@ -3805,11 +4192,12 @@ async function h5RechargeOptions(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		merchant.__curAgreement = await getCurrentAgreement();
 		const needSign = requireH5AgreementSigned(merchant);
 		if (needSign) return needSign;
 		const biz = await getBizSettings();
 		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
-		const rechargePackages = buildRechargePackagesFromRules(biz.rechargeRules);
+		const rechargePackages = await loadRechargePackagesFromQuota();
 		const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs(), cycleCfg.cycleDays, cycleCfg.windowDays);
 		if (countdown.normalized && Number(merchant.recharge_cycle_start || 0) !== Number(countdown.start || 0)) {
 			await merchantCollection.doc(merchant._id).update({
@@ -3855,8 +4243,7 @@ async function h5RechargeCreate(data, event) {
 		if (!cfg.ok) return { code: 500, message: cfg.message };
 		const rc = wxRechargeCredentials();
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
-		const biz = await getBizSettings();
-		const rechargePackages = buildRechargePackagesFromRules(biz.rechargeRules);
+		const rechargePackages = await loadRechargePackagesFromQuota();
 		const pkg = pickRechargePackage(data?.packageId, rechargePackages);
 		if (!pkg) return { code: 400, message: '请选择有效充值套餐' };
 		const giftTypeRaw = safeText(data?.rechargeGiftType || data?.giftType, 20);
@@ -3932,7 +4319,9 @@ async function h5RechargeCreate(data, event) {
 				target_price: Number(pkg.price || 0),
 				before_price: Number(currentPrice || 0),
 				target_quota: Number(pkg.quota || 0),
+				target_reward: Number(pkg.rewardYuan || 0),
 				add_quota: Number(addQuota || 0),
+				before_reward: Number(currentPkg?.rewardYuan || 0),
 				paid_amount: Number(payAmount || 0),
 				wx_pay_profile: 'recharge',
 				wx_pay_mchid: rc.mchId,
@@ -4735,13 +5124,9 @@ async function h5PendingReturnPoints(data) {
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		const now = nowTs();
 		let bindTs = Number(merchant.bind_time || 0);
-		const deviceId = String(merchant.device_id || '').trim();
-		if (deviceId) {
-			const mRes = await machineCollection.where({ device_id: deviceId, is_deleted: false }).limit(1).get();
-			const mach = mRes.data && mRes.data[0];
-			if (mach && mach.bind_time) {
-				bindTs = Math.max(bindTs, Number(mach.bind_time || 0));
-			}
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		for (const mach of boundMachines) {
+			if (mach && mach.bind_time) bindTs = Math.max(bindTs, Number(mach.bind_time || 0));
 		}
 		const _ = db.command;
 		const tradeParts = [
@@ -5176,16 +5561,14 @@ async function claimPackets(merchant, packetIds) {
 			account_points: Number(merchant.account_points || 0) + claimedAmount
 		};
 		await merchantCollection.doc(merchant._id).update(merchantUpd);
-		if (merchant.device_id) {
-			const mRes = await machineCollection.where({ device_id: merchant.device_id, is_deleted: false }).limit(1).get();
-			const m = mRes.data && mRes.data[0];
-			if (m) {
-				const nextFrozen = Math.max(0, Number(Number(m.frozen_amount || 0) - claimedAmount).toFixed(4));
-				await machineCollection.doc(m._id).update({
-					frozen_amount: nextFrozen,
-					pending_amount: Number((Number(m.pending_amount || 0) + claimedAmount).toFixed(4))
-				});
-			}
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		const m = pickPrimaryBoundMachine(merchant, boundMachines);
+		if (m) {
+			const nextFrozen = Math.max(0, Number(Number(m.frozen_amount || 0) - claimedAmount).toFixed(4));
+			await machineCollection.doc(m._id).update({
+				frozen_amount: nextFrozen,
+				pending_amount: Number((Number(m.pending_amount || 0) + claimedAmount).toFixed(4))
+			});
 		}
 	}
 	return { claimedCount: claimedIds.length, claimedAmount };
@@ -5232,11 +5615,13 @@ async function h5Unbind(data, event) {
 		const reason = safeText(data?.reason || '用户主动解除绑定', 200);
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
-		if (!merchant.device_id) return { code: 400, message: '当前未绑定机具' };
-
-		const machineRes = await machineCollection.where({ device_id: merchant.device_id, is_deleted: false }).limit(1).get();
-		if (!machineRes.data || !machineRes.data.length) return { code: 404, message: '机具不存在' };
-		const machine = machineRes.data[0];
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		const machineRes = await machineCollection
+			.where({ is_deleted: false, is_bound: 1, bind_user_id: merchantUserId })
+			.limit(300)
+			.get();
+		const machines = machineRes.data || [];
+		if (!machines.length) return { code: 400, message: '当前未绑定机具' };
 		const now = nowTs();
 
 		await merchantCollection.doc(merchant._id).update({
@@ -5253,7 +5638,8 @@ async function h5Unbind(data, event) {
 			account_points: 0
 		});
 
-		await machineCollection.doc(machine._id).update({
+		const deviceIds = machines.map((x) => String(x.device_id || '')).filter(Boolean);
+		await machineCollection.where({ device_id: db.command.in(deviceIds), is_deleted: false }).update({
 			is_bound: 2,
 			bind_time: null,
 			unbind_time: now,
@@ -5271,7 +5657,7 @@ async function h5Unbind(data, event) {
 			last_reset_reason: reason
 		});
 
-		await machineTradeCollection.where({ device_id: machine.device_id, is_deleted: db.command.neq(true) }).update({
+		await machineTradeCollection.where({ device_id: db.command.in(deviceIds), is_deleted: db.command.neq(true) }).update({
 			is_deleted: true,
 			delete_time: now
 		});
@@ -5283,7 +5669,7 @@ async function h5Unbind(data, event) {
 			module: 'merchant',
 			target_id: merchant._id,
 			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-			content: `H5解除绑定: ${machine.device_id}`,
+			content: `H5解除绑定: ${deviceIds.join(',')}`,
 			operator_source: 'h5',
 			reason,
 			before_merchant_snapshot: {
@@ -5296,15 +5682,15 @@ async function h5Unbind(data, event) {
 				withdrawn: Number(merchant.withdrawn || 0),
 				frozen_amount: Number(merchant.frozen_amount || 0)
 			},
-			before_machine_snapshot: {
-				_id: machine._id,
-				device_id: machine.device_id || '',
-				brand_name: machine.brand_name || '',
-				total_transaction: Number(machine.total_transaction || 0),
-				pending_amount: Number(machine.pending_amount || 0),
-				withdrawn_amount: Number(machine.withdrawn_amount || 0),
-				frozen_amount: Number(machine.frozen_amount || 0)
-			},
+			before_machine_snapshot: machines.slice(0, 10).map((m) => ({
+				_id: m._id,
+				device_id: m.device_id || '',
+				brand_name: m.brand_name || '',
+				total_transaction: Number(m.total_transaction || 0),
+				pending_amount: Number(m.pending_amount || 0),
+				withdrawn_amount: Number(m.withdrawn_amount || 0),
+				frozen_amount: Number(m.frozen_amount || 0)
+			})),
 			ip: event?.context?.CLIENTIP || '',
 			create_time: now
 		});
@@ -5761,6 +6147,7 @@ async function couponDelete(data, event) {
 
 async function quotaList(data) {
 	try {
+		await ensureDefaultQuotaPackages();
 		const {
 			page = 1,
 			pageSize = 10,
@@ -5823,17 +6210,21 @@ async function quotaSave(data) {
 	try {
 		const now = nowTs();
 		const id = safeText(data?.id, 80);
+		const price = Number(data?.price || 0);
+		const packageId = `pkg_${String(price).replace('.', '_')}`;
+		const title = `${price}元套餐`;
+		const bonusQuotaRaw = Number(data?.bonusQuota || 0);
 		const payload = {
-			package_id: safeText(data?.packageId, 40),
-			title: safeText(data?.title, 80),
-			bonus_quota: safeText(data?.bonusQuota, 120),
+			package_id: safeText(packageId, 40),
+			title: safeText(title, 80),
+			bonus_quota: `¥${bonusQuotaRaw.toFixed(2)}`,
 			real_quota: Number(data?.realQuota || 0),
-			price: Number(data?.price || 0),
+			price,
 			description: safeText(data?.description, 300),
 			update_time: now
 		};
-		if (!payload.package_id) return { code: 400, message: '请输入套餐id' };
-		if (!payload.title) return { code: 400, message: '请输入标题' };
+		if (!Number.isFinite(payload.price) || payload.price <= 0) return { code: 400, message: '套餐价格需大于0' };
+		if (!Number.isFinite(bonusQuotaRaw) || bonusQuotaRaw < 0) return { code: 400, message: '免额度不能小于0' };
 		if (payload.real_quota < 0) return { code: 400, message: '实际额度不能小于0' };
 		if (payload.price < 0) return { code: 400, message: '套餐价格不能小于0' };
 		if (!payload.description) return { code: 400, message: '请输入套餐说明' };
@@ -5989,6 +6380,10 @@ exports.main = async (event, context) => {
 			return await h5SetMobileDirect(actualData);
 		case 'h5BindMachine':
 			return await h5BindMachine(actualData, event);
+		case 'h5MachineBindingList':
+			return await h5MachineBindingList(actualData);
+		case 'h5UnbindMachine':
+			return await h5UnbindMachine(actualData, event);
 		case 'h5MachineBindLogList':
 			return await h5MachineBindLogList(actualData);
 		case 'h5FinanceRecords':
