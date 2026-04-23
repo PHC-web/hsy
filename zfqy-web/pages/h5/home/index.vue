@@ -78,6 +78,28 @@
 					</view>
 					<text class="quota-bar-cap">剩余 {{ quotaBarPercent }}%</text>
 				</view>
+				<view class="glass prestore-card" @click="goPrestore">
+					<view class="prestore-main">
+						<text class="prestore-title">额度预存</text>
+						<text class="prestore-sub">快捷进入预存页面，升级档位与额度</text>
+						<view class="prestore-packages">
+							<view class="prestore-pkg-row">
+								<text class="prestore-pkg-tag">¥600档</text>
+								<text class="prestore-pkg-text">配置100万交易量，补贴市场价约3800元手续费</text>
+							</view>
+							<view class="prestore-pkg-row">
+								<text class="prestore-pkg-tag">¥800档</text>
+								<text class="prestore-pkg-text">配置150万交易量，补贴市场价约5700元手续费</text>
+							</view>
+							<view class="prestore-pkg-row">
+								<text class="prestore-pkg-tag">¥1000档</text>
+								<text class="prestore-pkg-text">配置200万交易量，补贴市场价约7600元手续费</text>
+							</view>
+							<text class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（¥1000档专享）</text>
+						</view>
+					</view>
+					<text class="prestore-arrow">›</text>
+				</view>
 
 				<view v-if="loading" class="loading-hint">
 					<text>加载中…</text>
@@ -90,6 +112,12 @@
 			<view class="tab active">首页</view>
 			<view class="tab" @click="goIncome">收益</view>
 			<view class="tab" @click="goMine">我的</view>
+		</view>
+		<view v-if="loading" class="loading-mask">
+			<view class="loading-card">
+				<view class="loading-spinner"></view>
+				<text class="loading-text">加载中...</text>
+			</view>
 		</view>
 	</view>
 </template>
@@ -154,6 +182,9 @@ export default {
 		},
 		goMine() {
 			uni.redirectTo({ url: '/pages/h5/mine/index' });
+		},
+		goPrestore() {
+			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		}
 	}
 };
@@ -450,12 +481,126 @@ export default {
 	color: rgba(148, 163, 184, 0.9);
 	text-align: right;
 }
+.prestore-card {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 16px;
+	margin-bottom: 12px;
+}
+.prestore-main {
+	flex: 1;
+	min-width: 0;
+}
+.prestore-title {
+	display: block;
+	font-size: 15px;
+	font-weight: 700;
+	color: #e2e8f0;
+}
+.prestore-sub {
+	display: block;
+	margin-top: 4px;
+	font-size: 12px;
+	color: rgba(148, 163, 184, 0.95);
+}
+.prestore-packages {
+	margin-top: 10px;
+	padding: 8px 10px;
+	border-radius: 12px;
+	background: rgba(15, 23, 42, 0.36);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+}
+.prestore-pkg-row {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	margin-top: 6px;
+}
+.prestore-pkg-row:first-child {
+	margin-top: 0;
+}
+.prestore-pkg-tag {
+	flex-shrink: 0;
+	margin-top: 1px;
+	padding: 1px 6px;
+	border-radius: 999px;
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1.4;
+	color: #fef3c7;
+	background: rgba(245, 158, 11, 0.24);
+	border: 1px solid rgba(251, 191, 36, 0.35);
+}
+.prestore-pkg-text {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	line-height: 1.5;
+	color: rgba(226, 232, 240, 0.95);
+}
+.prestore-gift {
+	display: block;
+	margin-top: 8px;
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 1.5;
+	color: #fbbf24;
+}
+.prestore-arrow {
+	font-size: 20px;
+	color: rgba(148, 163, 184, 0.95);
+}
 
 .loading-hint {
 	text-align: center;
 	padding: 8px;
 	font-size: 12px;
 	color: rgba(148, 163, 184, 0.8);
+}
+.loading-mask {
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(2, 6, 23, 0.45);
+	backdrop-filter: blur(2px);
+	-webkit-backdrop-filter: blur(2px);
+}
+.loading-card {
+	min-width: 120px;
+	padding: 16px 18px;
+	border-radius: 14px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	background: rgba(15, 23, 42, 0.86);
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+}
+.loading-spinner {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	border: 2px solid rgba(148, 163, 184, 0.35);
+	border-top-color: #a5b4fc;
+	animation: h5-spin 0.8s linear infinite;
+}
+.loading-text {
+	font-size: 12px;
+	color: rgba(226, 232, 240, 0.95);
+}
+@keyframes h5-spin {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
 }
 .bottom-spacer {
 	height: 12px;

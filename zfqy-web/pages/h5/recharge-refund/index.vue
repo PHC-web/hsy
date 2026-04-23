@@ -163,6 +163,8 @@ export default {
 				}
 			} catch (e) {}
 			if (err?.data?.message) return String(err.data.message);
+			const nestedReason = err?.data?.refundItems?.[0]?.error || err?.data?.transferError || '';
+			if (nestedReason) return String(nestedReason);
 			if (err?.message) return String(err.message);
 			return fallback;
 		},
@@ -227,27 +229,36 @@ export default {
 						if (res.code === 409) {
 							const outBillNo = res.data && res.data.outBillNo;
 							let latestState = res.data && (res.data.refundState || res.data.transferState || '');
+							let failReason = (res.data && res.data.refundItems && res.data.refundItems[0] && res.data.refundItems[0].error) || '';
 							if (outBillNo) {
 								try {
 									const s = await h5TransferStatus(outBillNo);
 									const sr = this.unwrapResult(s);
-									if (sr.code === 0 && sr.data) latestState = sr.data.state || latestState;
+									if (sr.code === 0 && sr.data) {
+										latestState = sr.data.state || latestState;
+										failReason = sr.data.transferError || failReason;
+									}
 								} catch (e) {}
 							}
 							uni.showModal({
 								title: '退款处理中',
-								content: `当前状态：${latestState || 'PROCESSING'}\n退款单号：${outBillNo || '-'}\n\n原路退款由微信支付异步处理，稍后可再次进入本页刷新状态。`,
+								content: `当前状态：${latestState || 'PROCESSING'}\n退款单号：${outBillNo || '-'}${failReason ? `\n失败原因：${failReason}` : ''}\n\n退款打款由微信异步处理，稍后可再次进入本页刷新状态。`,
 								showCancel: false
 							});
 							return;
 						}
 						if (res.code !== 0) {
-							uni.showToast({ title: this.extractErrorMessage(res, res.message || '操作失败'), icon: 'none' });
+							const reason = this.extractErrorMessage(res, res.message || '操作失败');
+							uni.showModal({
+								title: '退款失败',
+								content: `失败原因：${reason}`,
+								showCancel: false
+							});
 							return;
 						}
 						uni.showModal({
-							title: '原路退款已发起',
-							content: `退款批次号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计退款：¥${res.data.finalRefundAmount}\n\n款项将原路退回至用户支付账户，到账时间以微信支付处理结果为准。`,
+							title: '退款已发起',
+							content: `退款批次号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计退款：¥${res.data.finalRefundAmount}\n\n款项将通过商家转账退回，到账时间以微信处理结果为准。`,
 							showCancel: false
 						});
 						await this.load();

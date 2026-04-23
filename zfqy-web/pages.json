@@ -688,7 +688,16 @@
 				{
 					"path": "recharge/index",
 					"style": {
-						"navigationBarTitleText": "额度充值",
+						"navigationBarTitleText": "额度预存",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "recharge-success/index",
+					"style": {
+						"navigationBarTitleText": "充值成功",
+						"navigationStyle": "custom",
 						"topWindow": false,
 						"leftWindow": false
 					}

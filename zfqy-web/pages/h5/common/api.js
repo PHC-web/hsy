@@ -65,6 +65,10 @@ export function h5WithdrawApply(payload) {
 	return merchantCall('h5WithdrawApply', merchantIdentity(payload));
 }
 
+export function h5WithdrawConfirmPackage(withdrawNo) {
+	return merchantCall('h5WithdrawConfirmPackage', merchantIdentity({ withdrawNo }));
+}
+
 export function h5HomeDashboard() {
 	return merchantCall('h5HomeDashboard', merchantIdentity());
 }

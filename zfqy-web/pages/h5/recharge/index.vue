@@ -16,8 +16,8 @@
 				<block v-else>
 					<view class="hero h5-glass-panel">
 						<image class="h5-brand-logo h5-brand-logo--hero" :src="h5Logo" mode="aspectFit" />
-						<text class="title">额度充值</text>
-						<text class="sub">选择充值套餐，获取交易补贴额度</text>
+						<text class="title">额度预存</text>
+						<text class="sub">选择预存套餐，获取交易补贴额度</text>
 					</view>
 					<view class="card h5-glass-panel">
 						<view
@@ -109,12 +109,12 @@ export default {
 		},
 		payButtonText() {
 			const picked = this.packages.find((x) => x.id === this.selectedId);
-			if (!picked) return '立即充值';
+			if (!picked) return '立即预存';
 			if (this.currentPackage && Number(picked.price) > Number(this.currentPackage.price)) {
 				return `补差价升级（¥${Number(picked.price) - Number(this.currentPackage.price)}）`;
 			}
 			if (this.currentPackage && Number(picked.price) <= Number(this.currentPackage.price)) return '当前档位不可重复充值';
-			return `立即充值（¥${picked.price}）`;
+			return `立即预存（¥${picked.price}）`;
 		}
 	},
 	onShow() {
@@ -190,6 +190,7 @@ export default {
 				uni.showToast({ title: '请选择赠品（蓝牙音响或扫码POS机）', icon: 'none' });
 				return;
 			}
+			const pickedPackage = this.packages.find((x) => x.id === this.selectedId) || null;
 			this.loading = true;
 			uni.showLoading({ title: '处理中...', mask: true });
 			try {
@@ -210,12 +211,9 @@ export default {
 					uni.showToast({ title: confirmRes.message || '支付确认中，请稍后刷新', icon: 'none' });
 					return;
 				}
-				uni.showModal({
-					title: '充值成功',
-					content: `订单号：${res.data.orderNo}\n本次支付：¥${res.data.paidAmount}\n已增加额度：${res.data.quotaAdded}`,
-					showCancel: false
-				});
-				await this.loadOptions();
+				const tier = this.resolveTierByPrice(pickedPackage ? Number(pickedPackage.price || 0) : 0);
+				const successUrl = `/pages/h5/recharge-success/index?tier=${encodeURIComponent(tier.tier)}&tierName=${encodeURIComponent(tier.name)}&paid=${encodeURIComponent(String(res.data.paidAmount || '0'))}&quota=${encodeURIComponent(String(res.data.quotaAdded || '0'))}&orderNo=${encodeURIComponent(String(res.data.orderNo || ''))}`;
+				uni.redirectTo({ url: successUrl });
 			} finally {
 				this.loading = false;
 				uni.hideLoading();
@@ -247,6 +245,13 @@ export default {
 		},
 		openRefundWindow() {
 			uni.navigateTo({ url: '/pages/h5/recharge-refund/index' });
+		},
+		resolveTierByPrice(priceRaw) {
+			const price = Number(priceRaw || 0);
+			if (price >= 1000 || price === 0.2) return { tier: 'diamond', name: '钻石会员' };
+			if (price >= 800) return { tier: 'platinum', name: '铂金会员' };
+			if (price >= 600 || price === 0.1) return { tier: 'white_gold', name: '白金会员' };
+			return { tier: 'normal', name: '会员' };
 		}
 	}
 };

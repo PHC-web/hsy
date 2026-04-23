@@ -32,7 +32,13 @@
 		<scroll-view class="scroll" scroll-y :show-scrollbar="false" @scrolltolower="loadMore">
 			<view class="list-inner">
 				<view v-if="!list.length && !loading" class="empty">暂无记录</view>
-				<view v-for="item in list" :key="item.id" class="row h5-glass-panel">
+				<view
+					v-for="item in list"
+					:key="item.id"
+					class="row h5-glass-panel"
+					:class="{ 'row-clickable': canLaunchConfirm(item) }"
+					@click="onRowClick(item)"
+				>
 					<view class="row-head">
 						<text class="row-type" :class="'t-' + item.recordType">{{ typeShort(item.recordType) }}</text>
 						<text class="row-time">{{ item.timeText }}</text>
@@ -44,6 +50,7 @@
 						<text class="amt-val">¥{{ item.amount }}</text>
 					</view>
 					<text class="row-status">状态：{{ item.status }}</text>
+					<text v-if="canLaunchConfirm(item)" class="row-action-tip">点击此处可进行收款</text>
 					<text v-if="item.extra && item.extra.platformNo" class="row-extra">单号：{{ item.extra.platformNo }}</text>
 					<text v-if="item.extra && item.extra.withdrawNo" class="row-extra">提现单：{{ item.extra.withdrawNo }}</text>
 					<text v-if="item.extra && item.extra.refundNo" class="row-extra">退款单：{{ item.extra.refundNo }}</text>
@@ -56,7 +63,7 @@
 </template>
 
 <script>
-import { h5FinanceRecords } from '@/pages/h5/common/api';
+import { h5FinanceRecords, h5WithdrawConfirmPackage } from '@/pages/h5/common/api';
 
 const TYPES = [
 	{ value: 'all', label: '全部' },
@@ -101,8 +108,32 @@ export default {
 			page: 1,
 			total: 0,
 			loading: false,
-			hasMore: false
+			hasMore: false,
+			_onPageVisible: null,
+			_visRefreshTimer: null
 		};
+	},
+	onLoad() {
+		if (typeof document === 'undefined') return;
+		this._onPageVisible = () => {
+			if (document.visibilityState !== 'visible') return;
+			if (this._visRefreshTimer) clearTimeout(this._visRefreshTimer);
+			this._visRefreshTimer = setTimeout(() => {
+				this._visRefreshTimer = null;
+				this.query({ silent: true });
+			}, 300);
+		};
+		document.addEventListener('visibilitychange', this._onPageVisible);
+	},
+	onUnload() {
+		if (typeof document !== 'undefined' && this._onPageVisible) {
+			document.removeEventListener('visibilitychange', this._onPageVisible);
+			this._onPageVisible = null;
+		}
+		if (this._visRefreshTimer) {
+			clearTimeout(this._visRefreshTimer);
+			this._visRefreshTimer = null;
+		}
 	},
 	onShow() {
 		this.query();
@@ -126,24 +157,79 @@ export default {
 			if (t === 'withdraw') return '提现';
 			return '';
 		},
-		async query() {
+		canLaunchConfirm(item) {
+			return (
+				item &&
+				item.recordType === 'withdraw' &&
+				item.extra &&
+				String(item.extra.transferState || '') === 'WAIT_USER_CONFIRM'
+			);
+		},
+		async onRowClick(item) {
+			if (!this.canLaunchConfirm(item)) return;
+			if (typeof window === 'undefined' || !window.WeixinJSBridge || !window.WeixinJSBridge.invoke) {
+				uni.showToast({ title: '请在微信内打开后再确认收款', icon: 'none' });
+				return;
+			}
+			const withdrawNo = item?.extra?.withdrawNo || '';
+			if (!withdrawNo) {
+				uni.showToast({ title: '缺少提现单号', icon: 'none' });
+				return;
+			}
+			uni.showLoading({ title: '拉起中...', mask: true });
+			try {
+				const res = await h5WithdrawConfirmPackage(withdrawNo);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '获取确认参数失败', icon: 'none' });
+					return;
+				}
+				const data = res.data || {};
+				await new Promise((resolve) => {
+					window.WeixinJSBridge.invoke(
+						'requestMerchantTransfer',
+						{
+							mchId: String(data.mchId || ''),
+							appId: String(data.appId || ''),
+							package: String(data.package || '')
+						},
+						(r) => {
+							const msg = String((r && r.err_msg) || '');
+							if (msg.indexOf('ok') >= 0) {
+								uni.showToast({ title: '已拉起确认，请在微信完成收款', icon: 'none' });
+							} else if (msg.indexOf('cancel') >= 0) {
+								uni.showToast({ title: '你已取消确认收款', icon: 'none' });
+							} else {
+								uni.showToast({ title: msg || '拉起失败', icon: 'none' });
+							}
+							resolve();
+						}
+					);
+				});
+				await this.query();
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		async query(opts = {}) {
+			const silent = !!opts.silent;
 			this.page = 1;
 			this.list = [];
-			await this.fetch(true);
+			await this.fetch(true, { silent });
 		},
 		async loadMore() {
 			if (!this.hasMore || this.loading) return;
 			this.page += 1;
 			await this.fetch(false);
 		},
-		async fetch(reset) {
+		async fetch(reset, opts = {}) {
+			const silent = !!opts.silent;
 			const { startTs, endTs } = dayBoundsToTs(this.startDate, this.endDate);
 			if (startTs > endTs) {
 				uni.showToast({ title: '开始日期不能晚于结束日期', icon: 'none' });
 				return;
 			}
 			const recordType = TYPES[this.typeIndex].value;
-			this.loading = true;
+			if (!silent) this.loading = true;
 			try {
 				const res = await h5FinanceRecords({
 					recordType,
@@ -161,7 +247,7 @@ export default {
 				this.list = reset ? rows : this.list.concat(rows);
 				this.hasMore = this.list.length < this.total;
 			} finally {
-				this.loading = false;
+				if (!silent) this.loading = false;
 			}
 		}
 	}
@@ -268,6 +354,10 @@ export default {
 	margin-bottom: 10px;
 }
 
+.row-clickable {
+	border: 1px solid rgba(56, 189, 248, 0.45);
+}
+
 .row-head {
 	display: flex;
 	justify-content: space-between;
@@ -340,6 +430,13 @@ export default {
 	margin-top: 6px;
 	font-size: 12px;
 	color: rgba(226, 232, 240, 0.85);
+}
+
+.row-action-tip {
+	display: block;
+	margin-top: 4px;
+	font-size: 11px;
+	color: #7dd3fc;
 }
 
 .row-extra {

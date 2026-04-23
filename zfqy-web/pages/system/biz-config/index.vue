@@ -128,6 +128,18 @@
 					</view>
 				</view>
 			</view>
+
+			<view class="card">
+				<view class="card-title">6）测试商户白名单（无门槛积分兑换）</view>
+				<text class="card-tip">命中商户可不受最低兑换金额与提现时间限制。支持输入商户 user_id 或商户记录 _id，多个ID可用逗号或换行分隔。</text>
+				<uni-easyinput
+					v-model.trim="form.testMerchantIdsText"
+					type="textarea"
+					:inputBorder="true"
+					:autoHeight="true"
+					placeholder="示例：\n668f98c7ab1234567890abcd\nuid_merchant_test_001, uid_merchant_test_002"
+				/>
+			</view>
 		</view>
 	</view>
 </template>
@@ -138,7 +150,9 @@ const defaultForm = () => ({
 	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
-	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 }
+	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
+	testMerchantIds: [],
+	testMerchantIdsText: ''
 });
 
 export default {
@@ -160,7 +174,10 @@ export default {
 			try {
 				const res = await this.$request('bizConfigGet', {}, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '加载失败', icon: 'none' });
-				this.form = Object.assign(defaultForm(), res.data || {});
+				const merged = Object.assign(defaultForm(), res.data || {});
+				const ids = Array.isArray(merged.testMerchantIds) ? merged.testMerchantIds : [];
+				merged.testMerchantIdsText = ids.join('\n');
+				this.form = merged;
 			} finally {
 				this.loading = false;
 			}
@@ -178,6 +195,15 @@ export default {
 					}))
 					.filter((x) => x.price > 0 && x.rewardYuan >= 0)
 					.sort((a, b) => a.price - b.price);
+				payload.testMerchantIds = Array.from(
+					new Set(
+						String(payload.testMerchantIdsText || '')
+							.split(/[\n,，;\s]+/)
+							.map((x) => String(x || '').trim())
+							.filter(Boolean)
+					)
+				);
+				delete payload.testMerchantIdsText;
 				const res = await this.$request('bizConfigSave', payload, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '保存失败', icon: 'none' });
 				uni.showToast({ title: '保存成功', icon: 'success' });

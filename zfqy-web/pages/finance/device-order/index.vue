@@ -43,10 +43,12 @@
 							<uni-th align="center" width="90">应付金额</uni-th>
 							<uni-th align="center" width="90" filter-type="select" :filter-data="paidFilterData" @filter-change="headerFilterChange($event, 'isPaid')">支付状态</uni-th>
 							<uni-th align="center" width="130" filter-type="search" @filter-change="headerFilterChange($event, 'wxTradeNo')">微信单号</uni-th>
+							<uni-th align="center" width="180">失败原因</uni-th>
 							<uni-th align="center" width="90">实付金额</uni-th>
 							<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'deviceKeyword')">设备</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'payTime')">支付时间</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">申请时间</uni-th>
+							<uni-th align="center" width="160">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center"><checkbox :checked="selectedIds.includes(item.id)" @click="toggleRow(item.id)" /></uni-td>
@@ -64,10 +66,14 @@
 								<text :class="item.isPaid ? 'tag-ok' : 'tag-warn'">{{ item.isPaidText }}</text>
 							</uni-td>
 							<uni-td align="center">{{ item.wxTradeNo || '-' }}</uni-td>
+							<uni-td align="center" class="fail-reason">{{ item.transferError || '-' }}</uni-td>
 							<uni-td align="right" class="money">{{ item.realPayText }}</uni-td>
 							<uni-td align="center">{{ item.deviceLabel || '-' }}</uni-td>
 							<uni-td align="center">{{ item.payTime || '-' }}</uni-td>
 							<uni-td align="center">{{ item.createTime || '-' }}</uni-td>
+							<uni-td align="center">
+								<text>-</text>
+							</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
@@ -203,14 +209,16 @@ export default {
 				}
 				const rows = res.data?.list || [];
 				this.list = rows.map((item) => {
-					const payable = Number(item.payable || 0);
-					const feeTax = Number(item.feeTax || 0);
 					return {
 						...item,
 						userName: (item.userDisplay || '').split('\n')[0] || '-',
 						avatar: '',
-						wxTradeNo: '',
-						realPayText: (payable - feeTax).toFixed(4),
+						wxTradeNo: item.wxTradeNo || '-',
+						transferError: item.transferError || '',
+						auditRequired: !!item.auditRequired,
+						auditStatus: item.auditStatus || '',
+						auditStatusText: item.auditStatusText || '-',
+						realPayText: Number(item.payable || 0).toFixed(4),
 						deviceLabel: item.deviceId || '-',
 						createTime: item.createTime || ''
 					};
@@ -268,8 +276,9 @@ export default {
 				平台单号: item.withdrawNo || '',
 				应付金额: item.payableText || '',
 				支付状态: item.isPaidText || '',
-				微信单号: '',
-				实付金额: (Number(item.payable || 0) - Number(item.feeTax || 0)).toFixed(4),
+				微信单号: item.wxTradeNo || '',
+				失败原因: item.transferError || '',
+				实付金额: Number(item.payable || 0).toFixed(4),
 				设备: item.deviceId || '',
 				支付时间: item.payTime || '',
 				申请时间: item.createTime || ''
@@ -383,6 +392,7 @@ export default {
 .header-actions {
 	display: flex;
 	align-items: center;
+	flex-wrap: wrap;
 	gap: 8px;
 	margin-left: auto;
 }
@@ -438,6 +448,10 @@ export default {
 
 .tag-warn {
 	color: #e6a23c;
+}
+.fail-reason {
+	color: #f56c6c;
+	word-break: break-all;
 }
 
 .avatar {

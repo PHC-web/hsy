@@ -4,6 +4,16 @@
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
 				<view class="header-actions">
+					<view class="audit-switches">
+						<view class="audit-item">
+							<text class="audit-label">会员提现需审核</text>
+							<switch :checked="auditConfig.memberRequired" @change="onAuditSwitchChange('memberRequired', $event)" />
+						</view>
+						<view class="audit-item">
+							<text class="audit-label">非会员提现需审核</text>
+							<switch :checked="auditConfig.nonMemberRequired" @change="onAuditSwitchChange('nonMemberRequired', $event)" />
+						</view>
+					</view>
 					<button size="mini" @click="search">刷新</button>
 					<button size="mini" type="primary" @click="runSearchFromHeader">查询</button>
 					<view class="export-dropdown" @mouseleave="showExportMenu = false">
@@ -54,7 +64,9 @@
 							<uni-th align="center" width="100" filter-type="select" :filter-data="paidFilterData" @filter-change="headerFilterChange($event, 'isPaid')">是否打款</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'arrivalTime')">到账时间</uni-th>
 							<uni-th align="center" width="110" filter-type="select" :filter-data="arrivalFilterData" @filter-change="headerFilterChange($event, 'arrivalStatus')">是否到账</uni-th>
-							<uni-th align="center" width="100">管理员操作</uni-th>
+							<uni-th align="center" width="90">审核状态</uni-th>
+							<uni-th align="center" width="180">失败原因</uni-th>
+							<uni-th align="center" width="120">管理员操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="(item, idx) in list" :key="item.id || idx" v-if="item">
 							<uni-td class="cell-user">{{ item.userDisplay }}</uni-td>
@@ -73,20 +85,23 @@
 							<uni-td align="center">
 								<text :class="item.arrivalClassName">{{ item.arrivalStatusText }}</text>
 							</uni-td>
+							<uni-td align="center">{{ item.auditStatusText || '-' }}</uni-td>
+							<uni-td align="center" class="cell-fail-reason">{{ item.transferError || '-' }}</uni-td>
 							<uni-td align="center">
 								<view class="op-actions">
 									<button
-										v-if="!item.isPaid"
+										v-if="item.auditRequired && item.auditStatus === 'pending'"
 										size="mini"
 										type="primary"
-										@click="approve(item, 'pay')"
-									>打款</button>
-									<view v-else-if="item.arrivalStatus !== 'received'" class="op-inline">
-										<button size="mini" type="primary" @click="approve(item, 'arrival')">到账</button>
-										<button size="mini" type="warn" @click="approve(item, 'returned')">退回</button>
-										<button size="mini" @click="approve(item, 'expired')">过期</button>
-									</view>
-									<text v-else class="op-done">已完成</text>
+										@click="approve(item, 'approve')"
+									>同意提现</button>
+									<button
+										v-if="item.auditRequired && item.auditStatus === 'pending'"
+										size="mini"
+										type="warn"
+										@click="approve(item, 'reject')"
+									>不同意提现</button>
+									<text v-else class="op-done">{{ item.auditStatusText || '已处理' }}</text>
 								</view>
 							</uni-td>
 						</uni-tr>
@@ -159,6 +174,13 @@ export default {
 				pageSize: 10,
 				total: 0
 			},
+			auditConfig: {
+				memberRequired: false,
+				nonMemberRequired: false
+			},
+			bizConfigRaw: null,
+			pollTimer: null,
+			pollBusy: false,
 			showExportMenu: false,
 			exportTypeOptions: [
 				{ text: 'JSON', value: 'json' },
@@ -181,9 +203,82 @@ export default {
 		}
 	},
 	mounted() {
+		this.loadAuditConfig();
 		this.search();
+		this.startAutoPoll();
+	},
+	beforeDestroy() {
+		this.stopAutoPoll();
+	},
+	onHide() {
+		this.stopAutoPoll();
+	},
+	onShow() {
+		this.startAutoPoll();
+	},
+	onUnload() {
+		this.stopAutoPoll();
 	},
 	methods: {
+		startAutoPoll() {
+			this.stopAutoPoll();
+			this.pollTimer = setInterval(() => {
+				this.autoPollProcessing();
+			}, 20000);
+		},
+		stopAutoPoll() {
+			if (this.pollTimer) {
+				clearInterval(this.pollTimer);
+				this.pollTimer = null;
+			}
+		},
+		async autoPollProcessing() {
+			if (this.pollBusy || this.loading) return;
+			this.pollBusy = true;
+			try {
+				const res = await this.$request(
+					'withdrawSyncProcessing',
+					{ limit: 20 },
+					{ functionName: 'merchant' }
+				);
+				if (res.code === 0) {
+					const changed = Number(res?.data?.success || 0) + Number(res?.data?.failed || 0);
+					if (changed > 0) this.search();
+				}
+			} catch (e) {
+			} finally {
+				this.pollBusy = false;
+			}
+		},
+		async loadAuditConfig() {
+			try {
+				const res = await this.$request('bizConfigGet', {}, { functionName: 'merchant' });
+				if (res.code !== 0) return;
+				this.bizConfigRaw = res.data || {};
+				const wa = (res.data && res.data.withdrawAudit) || {};
+				this.auditConfig = {
+					memberRequired: !!wa.memberRequired,
+					nonMemberRequired: !!wa.nonMemberRequired
+				};
+			} catch (e) {}
+		},
+		async onAuditSwitchChange(field, e) {
+			const checked = !!(e && e.detail && e.detail.value);
+			this.auditConfig[field] = checked;
+			const payload = Object.assign({}, this.bizConfigRaw || {});
+			payload.withdrawAudit = Object.assign({}, payload.withdrawAudit || {}, {
+				memberRequired: !!this.auditConfig.memberRequired,
+				nonMemberRequired: !!this.auditConfig.nonMemberRequired
+			});
+			const res = await this.$request('bizConfigSave', payload, { functionName: 'merchant' });
+			if (res.code !== 0) {
+				uni.showToast({ title: res.message || '保存开关失败', icon: 'none' });
+				await this.loadAuditConfig();
+				return;
+			}
+			this.bizConfigRaw = payload;
+			uni.showToast({ title: '已更新', icon: 'success' });
+		},
 		parseTimestampRange(filter) {
 			if (!Array.isArray(filter) || filter.length < 2) {
 				return { start: '', end: '' };
@@ -243,7 +338,13 @@ export default {
 					if (res.code === 0) {
 						const raw = res.data.list || [];
 						this.list = raw.map((row) =>
-							Object.assign({}, row, { arrivalClassName: arrivalStatusTagClass(row.arrivalStatus) })
+							Object.assign({}, row, {
+								arrivalClassName: arrivalStatusTagClass(row.arrivalStatus),
+								auditRequired: !!row.auditRequired,
+								auditStatus: row.auditStatus || '',
+								auditStatusText: row.auditStatusText || '-',
+								transferError: row.transferError || ''
+							})
 						);
 						this.pageInfo.total = res.data.total || 0;
 						const su = res.data.summary;
@@ -370,7 +471,9 @@ export default {
 				打款时间: item.payTime || '',
 				是否打款: item.isPaidText || '',
 				到账时间: item.arrivalTime || '',
-				是否到账: item.arrivalStatusText || ''
+				是否到账: item.arrivalStatusText || '',
+				审核状态: item.auditStatusText || '',
+				失败原因: item.transferError || ''
 			}));
 		},
 		downloadFile(filename, content, mimeType) {
@@ -438,16 +541,18 @@ export default {
 		async approve(item, actionType) {
 			if (!item || !item.id) return;
 			const actionTextMap = {
-				pay: '打款',
-				arrival: '到账',
-				returned: '退回',
-				expired: '过期'
+				approve: '同意提现',
+				reject: '不同意提现'
+			};
+			const actionPromptMap = {
+				approve: '确认同意提现吗？确认后将立即向用户发起商家打款。',
+				reject: '确认不同意提现吗？确认后将退回本次冻结的积分与额度。'
 			};
 			const actionText = actionTextMap[actionType] || '审批';
 			const confirmRes = await new Promise((resolve) => {
 				uni.showModal({
 					title: '审批确认',
-					content: `确认将该记录标记为“${actionText}”吗？`,
+					content: actionPromptMap[actionType] || `确认将该记录标记为“${actionText}”吗？`,
 					success: (res) => resolve(res.confirm)
 				});
 			});
@@ -492,6 +597,24 @@ export default {
 	display: flex;
 	align-items: center;
 	gap: 8px;
+}
+
+.audit-switches {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-right: 8px;
+}
+
+.audit-item {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.audit-label {
+	font-size: 12px;
+	color: #606266;
 }
 
 .export-dropdown {
@@ -621,6 +744,12 @@ export default {
 	color: #606266;
 }
 
+.cell-fail-reason {
+	color: #f56c6c;
+	font-size: 12px;
+	word-break: break-all;
+}
+
 .tag-paid {
 	color: #18bc37;
 	font-weight: 600;
@@ -650,6 +779,8 @@ export default {
 .op-actions {
 	display: flex;
 	justify-content: center;
+	align-items: center;
+	gap: 6px;
 }
 
 .op-inline {

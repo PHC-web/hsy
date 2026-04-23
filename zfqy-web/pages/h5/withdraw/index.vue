@@ -24,11 +24,16 @@
 
 				<view class="card h5-glass-panel">
 					<text class="field-label">兑换积分（整数）</text>
-					<input
-						class="field-input input h5-glass-input"
-						v-model="pointsInput"
-						placeholder="请输入要兑换的积分"
-					/>
+					<view class="safe-input-wrap">
+						<input
+							v-model="pointsInput"
+							class="safe-input-native"
+							type="text"
+							inputmode="numeric"
+							placeholder="请输入要兑换的积分"
+							confirm-type="done"
+						/>
+					</view>
 					<text class="field-hint">本次范围：{{ info.minPoints }}～{{ info.maxPoints }} 分 / 笔</text>
 				</view>
 
@@ -151,9 +156,11 @@ export default {
 					title: '提交成功',
 					content: no ? `提现单号：${no}\n请留意财务管理中的进度。` : '请留意财务管理中的进度。',
 					showCancel: false,
-					success: () => {
+					success: (r) => {
 						this.pointsInput = '';
-						this.loadInfo();
+						if (r && r.confirm) {
+							uni.redirectTo({ url: '/pages/h5/finance/index' });
+						}
 					}
 				});
 			} finally {
@@ -254,20 +261,32 @@ export default {
 }
 .field-input {
 	width: 100%;
-	box-sizing: border-box;
-	padding: 12px 14px;
-	border-radius: 12px;
-	background: rgba(15, 23, 42, 0.45);
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	color: #f8fafc;
-	caret-color: #f8fafc;
-	-webkit-text-fill-color: #f8fafc;
-	font-size: 16px;
 }
-
-.field-input::placeholder {
-	color: rgba(148, 163, 184, 0.75);
-	-webkit-text-fill-color: rgba(148, 163, 184, 0.75);
+.safe-input-wrap {
+	width: 100%;
+	background: #ffffff;
+	border: 1px solid #cbd5e1;
+	border-radius: 10px;
+	padding: 0 12px;
+	box-sizing: border-box;
+	position: relative;
+	z-index: 5;
+}
+.safe-input-native {
+	width: 100%;
+	height: 42px;
+	line-height: 42px;
+	font-size: 16px;
+	color: #0f172a;
+	caret-color: #0f172a;
+	-webkit-text-fill-color: #0f172a;
+	background: transparent;
+	border: 0;
+	outline: none;
+}
+.safe-input-native::placeholder {
+	color: #94a3b8;
+	-webkit-text-fill-color: #94a3b8;
 }
 .field-hint {
 	display: block;

@@ -90,7 +90,7 @@
 						</view>
 					</view>
 					<view class="menu-item" @click="goRecharge">
-						<text class="menu-title">额度充值</text>
+						<text class="menu-title">额度预存</text>
 						<text class="menu-arrow">›</text>
 					</view>
 			<!-- 		<view class="menu-item" @click="goPayNotify">
@@ -112,6 +112,12 @@
 			<view class="tab" @click="goHome">首页</view>
 			<view class="tab" @click="goIncome">收益</view>
 			<view class="tab active">我的</view>
+		</view>
+		<view v-if="loading" class="loading-mask">
+			<view class="loading-card">
+				<view class="loading-spinner"></view>
+				<text class="loading-text">加载中...</text>
+			</view>
 		</view>
 
 		<uni-popup ref="agreementPopup" type="bottom">
@@ -157,6 +163,7 @@ export default {
 	components: { SignaturePad },
 	data() {
 		return {
+			loading: false,
 			mine: {},
 			account: {
 				availableReward: '0.00',
@@ -271,16 +278,21 @@ export default {
 	},
 	methods: {
 		async loadMine() {
-			const res = await h5MineInfo();
-			if (res.code !== 0) {
-				uni.showToast({ title: res.message || '获取失败', icon: 'none' });
-				return;
-			}
-			this.mine = (res.data && res.data.merchant) || {};
-			this.account = (res.data && res.data.account) || this.account;
-			const fb = await h5FeedbackSummary();
-			if (fb.code === 0 && fb.data) {
-				this.feedbackUnread = !!fb.data.unreadReply;
+			this.loading = true;
+			try {
+				const res = await h5MineInfo();
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '获取失败', icon: 'none' });
+					return;
+				}
+				this.mine = (res.data && res.data.merchant) || {};
+				this.account = (res.data && res.data.account) || this.account;
+				const fb = await h5FeedbackSummary();
+				if (fb.code === 0 && fb.data) {
+					this.feedbackUnread = !!fb.data.unreadReply;
+				}
+			} finally {
+				this.loading = false;
 			}
 		},
 		goDevice() {
@@ -779,6 +791,49 @@ export default {
 	text-align: center;
 	line-height: 56px;
 	font-size: 14px;
+}
+.loading-mask {
+	position: fixed;
+	inset: 0;
+	z-index: 100;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgba(2, 6, 23, 0.45);
+	backdrop-filter: blur(2px);
+	-webkit-backdrop-filter: blur(2px);
+}
+.loading-card {
+	min-width: 120px;
+	padding: 16px 18px;
+	border-radius: 14px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	background: rgba(15, 23, 42, 0.86);
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+}
+.loading-spinner {
+	width: 24px;
+	height: 24px;
+	border-radius: 50%;
+	border: 2px solid rgba(148, 163, 184, 0.35);
+	border-top-color: #a5b4fc;
+	animation: h5-spin 0.8s linear infinite;
+}
+.loading-text {
+	font-size: 12px;
+	color: rgba(226, 232, 240, 0.95);
+}
+@keyframes h5-spin {
+	from {
+		transform: rotate(0deg);
+	}
+	to {
+		transform: rotate(360deg);
+	}
 }
 
 .agreement-sheet {
