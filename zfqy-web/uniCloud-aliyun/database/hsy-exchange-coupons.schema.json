@@ -1,0 +1,26 @@
+{
+	"bsonType": "object",
+	"required": ["code", "generate_time", "valid_from", "valid_to", "member_days", "used", "is_deleted", "create_time", "update_time"],
+	"permission": {
+		"read": false,
+		"create": false,
+		"update": false,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"code": { "bsonType": "string", "description": "兑换码" },
+		"generate_time": { "bsonType": "int", "description": "生成时间" },
+		"valid_from": { "bsonType": "int", "description": "有效期开始" },
+		"valid_to": { "bsonType": "int", "description": "有效期结束" },
+		"member_days": { "bsonType": "int", "description": "白银会员时长(天)" },
+		"used": { "bsonType": "bool", "description": "是否兑换" },
+		"used_merchant_id": { "bsonType": "string", "description": "兑换商户ID" },
+		"used_merchant_name": { "bsonType": "string", "description": "兑换商户名称" },
+		"used_time": { "bsonType": "int", "description": "兑换时间" },
+		"generate_user": { "bsonType": "string", "description": "生成管理员" },
+		"is_deleted": { "bsonType": "bool", "description": "软删除" },
+		"create_time": { "bsonType": "int", "description": "创建时间" },
+		"update_time": { "bsonType": "int", "description": "更新时间" }
+	}
+}

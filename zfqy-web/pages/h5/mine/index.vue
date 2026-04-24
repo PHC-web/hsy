@@ -69,6 +69,10 @@
 						<text class="menu-title">优惠券</text>
 						<text class="menu-arrow">›</text>
 					</view>
+					<view class="menu-item" @click="goExchange">
+						<text class="menu-title">兑换码兑换</text>
+						<text class="menu-arrow">›</text>
+					</view>
 					<view class="menu-item" @click="goPendingReturn">
 						<text class="menu-title">待返积分</text>
 						<text class="menu-arrow">›</text>
@@ -322,6 +326,9 @@ export default {
 		},
 		goCoupons() {
 			uni.navigateTo({ url: '/pages/h5/coupons/index' });
+		},
+		goExchange() {
+			uni.navigateTo({ url: '/pages/h5/exchange/index' });
 		},
 		goPendingReturn() {
 			uni.navigateTo({ url: '/pages/h5/pending-return/index' });

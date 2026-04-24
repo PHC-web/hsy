@@ -648,6 +648,30 @@
 		"_id": "merchant_withdraw_list"
 	},
 	{
+		"menu_id": "merchant_refund_list",
+		"name": "退款列表",
+		"icon": "",
+		"url": "/pages/merchant/refund-list/index",
+		"sort": 1621,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_refund_list"
+	},
+	{
+		"menu_id": "merchant_exchange_coupon",
+		"name": "兑换券管理",
+		"icon": "",
+		"url": "/pages/merchant/exchange-coupon/index",
+		"sort": 1622,
+		"parent_id": "merchant_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "merchant_exchange_coupon"
+	},
+	{
 		"menu_id": "merchant_recharge_gift_shipment",
 		"name": "充值赠品发货",
 		"icon": "",

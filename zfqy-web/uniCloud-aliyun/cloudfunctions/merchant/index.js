@@ -18,6 +18,7 @@ const rechargeGiftShipmentCollection = db.collection('hsy-recharge-gift-shipment
 const systemSettingCollection = db.collection('hsy-system-settings');
 const agreementCollection = db.collection('hsy-agreements');
 const transferOrderCollection = db.collection('hsy-transfer-orders');
+const exchangeCouponCollection = db.collection('hsy-exchange-coupons');
 const transferLogCollection = db.collection('hsy-transfer-logs');
 const robotPushLogCollection = db.collection('hsy-robot-push-logs');
 const refundEntryTokenCollection = db.collection('hsy-refund-entry-tokens');
@@ -158,6 +159,7 @@ async function getAdminDisplayName(context = {}) {
 function formatTime(timestamp) {
 	if (!timestamp) return '';
 	try {
+		// hourCycle: 'h23' 避免部分 ICU 在 hour12:false 时输出 24:xx（应用为次日 0 点~0:59 的误显）
 		const parts = new Intl.DateTimeFormat('en-CA', {
 			timeZone: 'Asia/Shanghai',
 			year: 'numeric',
@@ -166,7 +168,8 @@ function formatTime(timestamp) {
 			hour: '2-digit',
 			minute: '2-digit',
 			second: '2-digit',
-			hour12: false
+			hour12: false,
+			hourCycle: 'h23'
 		}).formatToParts(new Date(Number(timestamp)));
 		const pick = (type) => (parts.find((x) => x.type === type) || {}).value || '';
 		return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`;
@@ -328,12 +331,28 @@ async function validateRefundEntryToken(merchantId, token) {
 		return { ok: false, code: 403, message: '退款入口已失效，请联系在线客服重新发送入口。' };
 	}
 	const now = nowTs();
-	const expireAt = Number(row.expire_time || 0);
-	if (!expireAt || now > expireAt) {
+	let needRefundAudit = false;
+	try {
+		const mRes = await merchantCollection.doc(mid).get();
+		const merchant = mRes.data && mRes.data[0];
+		if (merchant) {
+			const biz = await getBizSettings();
+			const rechargePackages = await loadRechargePackagesFromQuota();
+			const membership = h5MembershipInfo(merchant, rechargePackages);
+			const rtc = biz?.refundTransferAudit || {};
+			needRefundAudit = membership.tier !== 'normal' ? !!rtc.memberRequired : !!rtc.nonMemberRequired;
+		}
+	} catch (e) {}
+	// 新规则：仅当“退款需审核”开启时入口可进入；一旦关闭，历史入口立即全部失效
+	if (!needRefundAudit) {
 		try {
-			await refundEntryTokenCollection.doc(row._id).update({ status: 'expired', update_time: now });
+			await refundEntryTokenCollection.where({
+				merchant_id: mid,
+				status: 'active',
+				is_deleted: false
+			}).update({ status: 'expired', update_time: now });
 		} catch (e) {}
-		return { ok: false, code: 403, message: '退款入口已过期，请联系在线客服重新发送入口。' };
+		return { ok: false, code: 403, message: '当前未开启退款审核，请联系在线客服。' };
 	}
 	try {
 		await refundEntryTokenCollection.doc(row._id).update({ last_access_time: now, update_time: now });
@@ -466,6 +485,218 @@ async function updateSwitch(data) {
 	} catch (error) {
 		console.error('更新商户开关失败:', error);
 		return { code: 500, message: '更新失败' };
+	}
+}
+
+async function merchantPointsMonthlyInsight(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const uid = String(merchant.user_id || merchant._id || '');
+		if (!uid) return { code: 400, message: '商户标识无效' };
+		const now = nowTs();
+		const curYm = subsidyEngine.monthNoFromTs(now);
+		const tRes = await machineTradeCollection
+			.where({ user_id: uid, trade_type: 'real', amount: db.command.gt(0) })
+			.field({ amount: true, cashback: true, release_amount: true, create_time: true })
+			.orderBy('create_time', 'asc')
+			.limit(20000)
+			.get();
+		const trades = tRes.data || [];
+		const genByYm = {};
+		const flowByYm = {};
+		const tradesByYm = {};
+		for (const t of trades) {
+			const amount = Number(t.amount || 0);
+			if (!(amount > 0)) continue;
+			const tradeYm = subsidyEngine.monthNoFromTs(Number(t.create_time || now));
+			const total = Number((amount * 0.0038).toFixed(4));
+			const first = Number(t.release_amount != null ? t.release_amount : total);
+			genByYm[tradeYm] = Number(((genByYm[tradeYm] || 0) + total).toFixed(4));
+			flowByYm[tradeYm] = Number(((flowByYm[tradeYm] || 0) + amount).toFixed(2));
+			if (!tradesByYm[tradeYm]) tradesByYm[tradeYm] = [];
+			tradesByYm[tradeYm].push(t);
+		}
+		const sourceSlicesByYm = {};
+		Object.keys(tradesByYm).forEach((ym) => {
+			const rows = tradesByYm[ym];
+			let curFlow = 0;
+			let curDeferred = 0;
+			const slices = [];
+			for (const t of rows) {
+				const amount = Number(t.amount || 0);
+				if (!(amount > 0)) continue;
+				const total = Number((amount * 0.0038).toFixed(4));
+				const first = Number(t.release_amount != null ? t.release_amount : total);
+				const monthlyDeferred = Number((total - first).toFixed(4));
+				if (curFlow > 0 && curFlow + amount > 10000) {
+					slices.push(Number(curDeferred.toFixed(4)));
+					curFlow = 0;
+					curDeferred = 0;
+				}
+				curFlow += amount;
+				curDeferred += monthlyDeferred;
+			}
+			if (curFlow > 0 || slices.length) slices.push(Number(curDeferred.toFixed(4)));
+			sourceSlicesByYm[ym] = slices;
+		});
+		const dueSlicesByTargetSource = {};
+		Object.keys(sourceSlicesByYm).forEach((srcYm) => {
+			const slices = sourceSlicesByYm[srcYm] || [];
+			for (let k = 1; k <= 4; k += 1) {
+				const targetYm = addCalendarMonthsYm(srcYm, k);
+				if (!dueSlicesByTargetSource[targetYm]) dueSlicesByTargetSource[targetYm] = {};
+				dueSlicesByTargetSource[targetYm][srcYm] = slices.slice();
+			}
+		});
+		// 按规则模拟“档位释放分片”（0分片也会占档位）
+		const releasedSlotsByTargetSource = {};
+		const releasedPointsByTargetSource = {};
+		Object.keys(flowByYm)
+			.sort((a, b) => String(a).localeCompare(String(b)))
+			.forEach((targetYm) => {
+				const tiers = Math.floor(Number(flowByYm[targetYm] || 0) / 10000);
+				if (tiers <= 0) return;
+				const srcMap = dueSlicesByTargetSource[targetYm] || {};
+				const srcMonths = Object.keys(srcMap).sort((a, b) => String(a).localeCompare(String(b)));
+				let granted = 0;
+				for (const srcYm of srcMonths) {
+					if (granted >= tiers) break;
+					const slices = Array.isArray(srcMap[srcYm]) ? srcMap[srcYm] : [];
+					const canGrant = Math.min(slices.length, tiers - granted);
+					if (canGrant <= 0) continue;
+					if (!releasedSlotsByTargetSource[targetYm]) releasedSlotsByTargetSource[targetYm] = {};
+					if (!releasedPointsByTargetSource[targetYm]) releasedPointsByTargetSource[targetYm] = {};
+					releasedSlotsByTargetSource[targetYm][srcYm] = Number(
+						(releasedSlotsByTargetSource[targetYm][srcYm] || 0) + canGrant
+					);
+					let pts = 0;
+					for (let i = 0; i < canGrant; i += 1) pts += Number(slices[i] || 0);
+					releasedPointsByTargetSource[targetYm][srcYm] = Number(
+						((releasedPointsByTargetSource[targetYm][srcYm] || 0) + pts).toFixed(4)
+					);
+					granted += canGrant;
+				}
+			});
+		const packetRes = await incomePacketCollection
+			.where({ merchant_user_id: uid, is_deleted: false })
+			.field({ month_no: true, subsidy_flow_month: true, subsidy_kind: true, amount: true, status: true, expire_time: true })
+			.limit(20000)
+			.get();
+		const packets = packetRes.data || [];
+		const pendingByTargetSource = {};
+		for (const p of packets) {
+			const targetYm = String(p.month_no || '');
+			const sourceYm = String(p.subsidy_flow_month || targetYm || '');
+			if (!targetYm) continue;
+			if (String(p.status || '') === 'pending') {
+				if (!pendingByTargetSource[targetYm]) pendingByTargetSource[targetYm] = {};
+				pendingByTargetSource[targetYm][sourceYm] = Number(
+					((pendingByTargetSource[targetYm][sourceYm] || 0) + Number(p.amount || 0)).toFixed(4)
+				);
+			}
+		}
+		const historyYmSet = new Set([...Object.keys(genByYm), ...Object.keys(dueSlicesByTargetSource), ...Object.keys(releasedSlotsByTargetSource)]);
+		const history = [...historyYmSet]
+			.sort((a, b) => String(a).localeCompare(String(b)))
+			.map((ym) => {
+				const flow = Number(flowByYm[ym] || 0);
+				const tiers = Math.floor(flow / 10000);
+				const dueMap = dueSlicesByTargetSource[ym] || {};
+				const relMap = releasedSlotsByTargetSource[ym] || {};
+				const relPtsMap = releasedPointsByTargetSource[ym] || {};
+				const monthEnded = String(ym).localeCompare(String(curYm)) < 0;
+				const sourceBreakdown = Object.keys(dueMap)
+					.sort((a, b) => String(a).localeCompare(String(b)))
+					.map((sourceYm) => {
+						const slices = Array.isArray(dueMap[sourceYm]) ? dueMap[sourceYm] : [];
+						const duePoints = Number(slices.reduce((s, x) => s + Number(x || 0), 0).toFixed(4));
+						const dueBlocks = slices.length;
+						const releasedBlocks = Number(relMap[sourceYm] || 0);
+						const releasedPoints = Number(Number(relPtsMap[sourceYm] || 0).toFixed(4));
+						// 仅已过去月份才允许统计“流失”；当前月和未来月只能是“未到期/待释放”
+						const lostBlocks = monthEnded ? Math.max(0, dueBlocks - releasedBlocks) : 0;
+						const lostPoints = monthEnded ? Number(Math.max(0, duePoints - releasedPoints).toFixed(4)) : 0;
+						return {
+							sourceYm,
+							duePoints: Number(duePoints.toFixed(4)),
+							dueBlocks,
+							releasedBlocks,
+							releasedPoints,
+							lostBlocks,
+							lostPoints
+						};
+					});
+				const duePointsTotal = sourceBreakdown.reduce((s, x) => s + Number(x.duePoints || 0), 0);
+				const dueBlocksTotal = sourceBreakdown.reduce((s, x) => s + Number(x.dueBlocks || 0), 0);
+				const releasedBlocksTotal = sourceBreakdown.reduce((s, x) => s + Number(x.releasedBlocks || 0), 0);
+				const releasedPointsTotal = sourceBreakdown.reduce((s, x) => s + Number(x.releasedPoints || 0), 0);
+				const lostBlocksTotal = sourceBreakdown.reduce((s, x) => s + Number(x.lostBlocks || 0), 0);
+				const lostPointsTotal = sourceBreakdown.reduce((s, x) => s + Number(x.lostPoints || 0), 0);
+				return {
+					ym,
+					flowYuan: Number(flow.toFixed(2)),
+					generatedPoints: Number(Number(genByYm[ym] || 0).toFixed(4)),
+					flowTiers: tiers,
+					monthEnded,
+					duePointsTotal: Number(duePointsTotal.toFixed(4)),
+					dueBlocksTotal,
+					releasedPointsTotal: Number(releasedPointsTotal.toFixed(4)),
+					releasedBlocksTotal,
+					lostBlocksTotal,
+					lostPoints: Number(lostPointsTotal.toFixed(4)),
+					sourceBreakdown
+				};
+			});
+		const futureYmSet = new Set([
+			...Object.keys(dueSlicesByTargetSource).filter((ym) => String(ym).localeCompare(String(curYm)) >= 0),
+			...Object.keys(pendingByTargetSource).filter((ym) => String(ym).localeCompare(String(curYm)) >= 0)
+		]);
+		const future = [...futureYmSet]
+			.sort((a, b) => String(a).localeCompare(String(b)))
+			.map((ym) => {
+				const dueSrc = dueSlicesByTargetSource[ym] || {};
+				const pendingSrc = pendingByTargetSource[ym] || {};
+				const srcYmSet = new Set([...Object.keys(dueSrc), ...Object.keys(pendingSrc)]);
+				const sourceBreakdown = [...srcYmSet]
+					.sort((a, b) => String(a).localeCompare(String(b)))
+					.map((sourceYm) => {
+						const slices = Array.isArray(dueSrc[sourceYm]) ? dueSrc[sourceYm] : [];
+						const duePoints = Number(slices.reduce((s, x) => s + Number(x || 0), 0).toFixed(4));
+						return {
+							sourceYm,
+							duePoints,
+							dueBlocks: slices.length,
+							packetPendingPoints: Number(Number(pendingSrc[sourceYm] || 0).toFixed(4))
+						};
+					});
+				const duePointsTotal = sourceBreakdown.reduce((s, x) => s + Number(x.duePoints || 0), 0);
+				const packetPendingPointsTotal = sourceBreakdown.reduce((s, x) => s + Number(x.packetPendingPoints || 0), 0);
+				return {
+					ym,
+					duePointsTotal: Number(duePointsTotal.toFixed(4)),
+					packetPendingPointsTotal: Number(packetPendingPointsTotal.toFixed(4)),
+					sourceBreakdown
+				};
+			});
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				merchant: {
+					id: merchant._id,
+					userId: uid,
+					name: String(merchant.wx_nickname || merchant.mobile || uid)
+				},
+				currentYm: curYm,
+				history,
+				future
+			}
+		};
+	} catch (e) {
+		console.error('merchantPointsMonthlyInsight failed', e);
+		return { code: 500, message: '获取积分月度分析失败' };
 	}
 }
 
@@ -1093,6 +1324,7 @@ async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState 
 	if (!withdrawRow) return;
 	if (withdrawRow.is_paid || safeText(withdrawRow.arrival_status, 20) === 'received') return;
 	const settleAmt = Number(withdrawRow.payable != null ? withdrawRow.payable : withdrawRow.amount || 0);
+	const amountPoints = Number(withdrawRow.amount || 0);
 	const merchantUserId = safeText(withdrawRow.merchant_user_id, 80);
 	const merchantRes = merchantUserId
 		? await merchantCollection.where({ user_id: merchantUserId }).limit(1).get()
@@ -1114,11 +1346,17 @@ async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState 
 		update_time: nowTs()
 	});
 	if (merchant) {
-		await merchantCollection.doc(merchant._id).update({
+		const merchantUpdate = {
 			pending_withdraw: Number(Math.max(0, Number(merchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
 			withdrawn: Number((Number(merchant.withdrawn || 0) + settleAmt).toFixed(4)),
 			update_time: nowTs()
-		});
+		};
+		// 非审核提现在申请时未冻结积分，这里补扣，确保与“需审核”路径口径一致
+		if (!withdrawRow.audit_required) {
+			merchantUpdate.available_reward = Number(Math.max(0, Number(merchant.available_reward || 0) - amountPoints).toFixed(4));
+			merchantUpdate.account_points = Number(Math.max(0, Number(merchant.account_points || 0) - amountPoints).toFixed(4));
+		}
+		await merchantCollection.doc(merchant._id).update(merchantUpdate);
 	}
 	if (machine) {
 		await machineCollection.doc(machine._id).update({
@@ -3249,10 +3487,11 @@ async function h5MineInfo(data) {
 			: (safeText(merchant.device_id, 80) || '未绑定');
 		const agreementNeedSign = !isMerchantAgreementSatisfied(merchant, curAgreement);
 		const totalGrantedYuan = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
-		const withdrawnYuan = Number(merchant.withdrawn || 0);
-		const showAvailableReward = totalGrantedYuan > 0
-			? Math.max(0, Number((totalGrantedYuan - withdrawnYuan).toFixed(2)))
-			: 0;
+		// 可用奖励口径：按提现申请积分总额扣减（与税费/到账净额无关）
+		const showAvailableReward = Math.max(0, Number(Number(merchant.available_reward || 0).toFixed(2)));
+		const now = nowTs();
+		const silverEndAt = Number(merchant.silver_member_end_at || 0);
+		const silverActive = isH5SilverMemberForWithdraw(merchant) && silverEndAt > now;
 		return {
 			code: 0,
 			message: 'ok',
@@ -3273,6 +3512,11 @@ async function h5MineInfo(data) {
 					availableReward: showAvailableReward.toFixed(2),
 					estimatedFreeQuota: Number(merchant.estimated_free_quota || 0).toFixed(2),
 					accountPoints: Number(merchant.account_points || 0).toFixed(2)
+				},
+				silver: {
+					active: silverActive,
+					expireAt: silverEndAt,
+					remainingSec: silverActive ? Math.max(0, Math.floor((silverEndAt - now) / 1000)) : 0
 				},
 				feedback: {
 					unreadReply: openTicket ? !!openTicket.user_unread_reply : false
@@ -3308,6 +3552,8 @@ const DEFAULT_BIZ_SETTINGS = {
 		nonMember7Plus: 100
 	},
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
+	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
+	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
@@ -3351,6 +3597,11 @@ function sanitizeBizSettings(raw = {}) {
 		memberRequired: wa.memberRequired === true || wa.memberRequired === '1' || wa.memberRequired === 1,
 		nonMemberRequired: wa.nonMemberRequired === true || wa.nonMemberRequired === '1' || wa.nonMemberRequired === 1
 	};
+	const rta = raw.refundTransferAudit || {};
+	const refundTransferAudit = {
+		memberRequired: rta.memberRequired === true || rta.memberRequired === '1' || rta.memberRequired === 1,
+		nonMemberRequired: rta.nonMemberRequired === true || rta.nonMemberRequired === '1' || rta.nonMemberRequired === 1
+	};
 	const oc = raw.optimizeConfig || {};
 	const optimizeConfig = {
 		enabled: oc.enabled !== false,
@@ -3374,7 +3625,17 @@ function sanitizeBizSettings(raw = {}) {
 			.split(/[\n,，;\s]+/)
 			.filter(Boolean);
 	const testMerchantIds = [...new Set(rawTestMerchantIds.map((x) => safeText(x, 80)).filter(Boolean))];
-	return { rechargeRules: normRules, withdrawRange, withdrawMinByCount, withdrawAudit, optimizeConfig, refundCycle, riskRates, testMerchantIds };
+	return {
+		rechargeRules: normRules,
+		withdrawRange,
+		withdrawMinByCount,
+		withdrawAudit,
+		refundTransferAudit,
+		optimizeConfig,
+		refundCycle,
+		riskRates,
+		testMerchantIds
+	};
 }
 
 function resolveWithdrawMinPoints(member, biz, historyCount) {
@@ -3605,9 +3866,66 @@ function h5MembershipInfo(merchant, packages = null) {
 const H5_WITHDRAW_FEE_YUAN = 3;
 const H5_WITHDRAW_TAX_RATE = 0.08;
 const H5_WITHDRAW_MAX_POINTS = 200;
+const H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN = 50000;
 
 function isH5RechargeMemberForWithdraw(merchant) {
 	return h5MembershipInfo(merchant).tier !== 'normal';
+}
+
+function isH5SilverMemberForWithdraw(merchant) {
+	if (!merchant) return false;
+	const now = nowTs();
+	const endAt = Number(merchant.silver_member_end_at || 0);
+	if (merchant.silver_member === true && endAt > now) return true;
+	const tag = String(merchant.member_tier || merchant.membership_tier || merchant.h5_member_tier || '').toLowerCase();
+	if (tag === 'silver' || tag === 'white_silver' || tag === 'silver_member') return true;
+	if (merchant.silver_member === true && !endAt) return true;
+	if (merchant.redeem_code_claimed === true || merchant.exchange_code_claimed === true) return true;
+	const name = String(merchant.membership_name || '').trim();
+	if (name.includes('白银')) return true;
+	return false;
+}
+
+function resolveH5WithdrawRole(merchant) {
+	if (isH5RechargeMemberForWithdraw(merchant)) return 'recharge_member';
+	if (isH5SilverMemberForWithdraw(merchant)) return 'silver_member';
+	return 'normal_member';
+}
+
+async function getH5CurrentMonthTradeYuan(merchant, now = nowTs()) {
+	try {
+		if (!merchant) return 0;
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		if (!merchantUserId) return 0;
+		let bindTs = Number(merchant.bind_time || 0);
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		for (const mach of boundMachines) {
+			if (mach && mach.bind_time) bindTs = Math.max(bindTs, Number(mach.bind_time || 0));
+		}
+		const monthR = chinaRangeMs('month', now);
+		const _ = db.command;
+		const tradeParts = [
+			{ user_id: merchantUserId },
+			{ trade_type: 'real' },
+			{ stats_eligible: _.neq(false) },
+			{ amount: _.gt(0) },
+			{ is_deleted: _.neq(true) },
+			_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+			{ create_time: _.gte(Math.max(monthR.start, bindTs || 0)) },
+			{ create_time: _.lte(monthR.end) }
+		];
+		const tRes = await machineTradeCollection
+			.where(_.and(tradeParts))
+			.field({ amount: true })
+			.limit(20000)
+			.get();
+		let sum = 0;
+		for (const row of tRes.data || []) sum += Number(row.amount || 0);
+		return Number(sum.toFixed(2));
+	} catch (e) {
+		console.error('getH5CurrentMonthTradeYuan failed', e);
+		return 0;
+	}
 }
 
 function shanghaiWeekdayAndMinuteOfDay(ts) {
@@ -3646,18 +3964,28 @@ async function h5WithdrawInfo(data) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
-		const member = isH5RechargeMemberForWithdraw(merchant);
+		const withdrawRole = resolveH5WithdrawRole(merchant);
+		const isRechargeMember = withdrawRole === 'recharge_member';
+		const monthTradeYuan = withdrawRole === 'silver_member' ? await getH5CurrentMonthTradeYuan(merchant, now) : 0;
+		const silverCanWithdraw = monthTradeYuan >= H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN;
+		const canWithdraw = withdrawRole === 'recharge_member' || (withdrawRole === 'silver_member' && silverCanWithdraw);
+		let withdrawHint = '';
+		if (withdrawRole === 'normal_member') {
+			withdrawHint = '当前账号仅可领取积分，暂不支持提现。请联系在线客服领取兑换码后升级白银会员。';
+		} else if (withdrawRole === 'silver_member' && !silverCanWithdraw) {
+			withdrawHint = `白银会员需当月流水达到${H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN}元后可提现，当前为${monthTradeYuan.toFixed(2)}元。`;
+		}
 		const biz = await getBizSettings();
 		const auditCfg = biz.withdrawAudit || {};
 		const testMerchant = isTestMerchantByBiz(merchant, biz);
 		// 测试商户仅豁免提现门槛与时间限制，不豁免审核开关
-		const needAudit = member ? !!auditCfg.memberRequired : !!auditCfg.nonMemberRequired;
+		const needAudit = isRechargeMember ? !!auditCfg.memberRequired : !!auditCfg.nonMemberRequired;
 		const ar = Number(merchant.available_reward || 0);
 		const ap = Number(merchant.account_points || 0);
 		const redeemable = Math.floor(Math.min(ar, ap));
 		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
-		const minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(member, biz, withdrawTimes);
-		const maxPoints = member ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
+		const minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(isRechargeMember, biz, withdrawTimes);
+		const maxPoints = isRechargeMember ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
 		const rechargePackages = await loadRechargePackagesFromQuota();
 		const mship = h5MembershipInfo(merchant, rechargePackages);
 		return {
@@ -3666,7 +3994,12 @@ async function h5WithdrawInfo(data) {
 			data: {
 				serverTime: now,
 				redeemablePoints: redeemable,
-				isRechargeMember: member,
+				isRechargeMember,
+				withdrawRole,
+				canWithdraw,
+				withdrawHint,
+				silverMonthTradeYuan: Number(monthTradeYuan.toFixed(2)),
+				silverMonthTradeNeedYuan: H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN,
 				membershipName: mship.name,
 				withdrawTimes,
 				minPoints,
@@ -3699,20 +4032,33 @@ async function h5WithdrawApply(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const openid = safeText(merchant.wx_openid, 100);
 		if (!openid) return { code: 400, message: '当前账号缺少微信openid，请重新登录后再试' };
-		const member = isH5RechargeMemberForWithdraw(merchant);
+		const withdrawRole = resolveH5WithdrawRole(merchant);
+		const isRechargeMember = withdrawRole === 'recharge_member';
 		const biz = await getBizSettings();
 		const auditCfg = biz.withdrawAudit || {};
 		const testMerchant = isTestMerchantByBiz(merchant, biz);
 		// 测试商户仅豁免提现门槛与时间限制，不豁免审核开关
-		const needAudit = member ? !!auditCfg.memberRequired : !!auditCfg.nonMemberRequired;
+		const needAudit = isRechargeMember ? !!auditCfg.memberRequired : !!auditCfg.nonMemberRequired;
+		if (withdrawRole === 'normal_member') {
+			return { code: 400, message: '当前账号暂不支持提现，请联系在线客服领取兑换码后升级白银会员。' };
+		}
+		if (withdrawRole === 'silver_member') {
+			const monthTradeYuan = await getH5CurrentMonthTradeYuan(merchant, now);
+			if (monthTradeYuan < H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN) {
+				return {
+					code: 400,
+					message: `白银会员需当月流水达到${H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN}元后可提现，当前为${monthTradeYuan.toFixed(2)}元。`
+				};
+			}
+		}
 		if (!testMerchant && !isH5WithdrawBusinessHours(now)) {
 			return { code: 400, message: h5WithdrawOutsideHoursMessage() };
 		}
 		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
-		const minP = testMerchant ? 1 : resolveWithdrawMinPoints(member, biz, withdrawTimes);
-		const maxP = member ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
+		const minP = testMerchant ? 1 : resolveWithdrawMinPoints(isRechargeMember, biz, withdrawTimes);
+		const maxP = isRechargeMember ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
 		if (points < minP) {
-			return { code: 400, message: testMerchant ? `单次兑换最低为 ${minP} 积分` : `单次兑换最低为 ${minP} 积分（${member ? '充值会员' : '非充值会员'}）` };
+			return { code: 400, message: testMerchant ? `单次兑换最低为 ${minP} 积分` : `单次兑换最低为 ${minP} 积分（${isRechargeMember ? '充值会员' : '非充值会员'}）` };
 		}
 		if (points > maxP) {
 			return { code: 400, message: `单次兑换最高为 ${maxP} 积分` };
@@ -4012,16 +4358,13 @@ async function h5HomeDashboard(data) {
 		}
 		const membership = h5MembershipInfo(merchant, rechargePackages);
 		const withdrawQuotaTotalYuan = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
-		// 统一展示：剩余提现额度/可用奖励 = 充值档位总额度 - 历史已提现金额
-		const withdrawnYuan = Number(merchant.withdrawn || 0);
-		const availableRewardYuan = withdrawQuotaTotalYuan > 0
-			? Math.max(0, Number((withdrawQuotaTotalYuan - withdrawnYuan).toFixed(2)))
-			: 0;
+		// 统一展示：剩余提现额度/可用奖励按“提现申请积分总额”扣减，不受税费/到账净额影响
+		const availableRewardYuan = Math.max(0, Number(Number(merchant.available_reward || 0).toFixed(2)));
 		// 与 H5「账号积分」、后台「待提现」同一口径：已领取（入账）且尚未通过提现申请扣减的积分余额，1 积分=1 元，随账号
 		const accountPointsYuan = Number(merchant.account_points || 0);
 		const usedQuotaYuan =
 			withdrawQuotaTotalYuan > 0
-				? Math.max(0, Number(withdrawnYuan.toFixed(2)))
+				? Math.max(0, Number((withdrawQuotaTotalYuan - availableRewardYuan).toFixed(2)))
 				: 0;
 		return {
 			code: 0,
@@ -4700,88 +5043,37 @@ async function h5WxTransferNotify(data) {
 	}
 }
 
-async function h5RefundReset(data, event) {
+/**
+ * H5 充值退款：执行商家转账 + 更新 hsy-transfer-orders；成功则 finalize（记流水、清商户充值权益）
+ */
+async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, event, opts = {}) {
+	const wc = opts.wc;
+	const openid = safeText(opts.openid, 100);
+	const reason = safeText(opts.reason || '用户申请退款', 80);
+	const countdownPhase = opts.countdownPhase != null ? String(opts.countdownPhase) : '';
 	try {
-		const cfgW = ensureWxWithdrawPayConfig();
-		if (!cfgW.ok) return { code: 500, message: cfgW.message };
-		const wc = cfgW.creds;
-
-		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
-		if (!merchant) return { code: 404, message: '商户不存在' };
-		const tokenCheck = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
-		if (!tokenCheck.ok) return { code: tokenCheck.code || 403, message: tokenCheck.message || '退款入口无效' };
-		const openid = safeText(merchant.wx_openid, 100);
-		if (!openid) return { code: 400, message: '当前账号缺少微信openid，请重新登录后再试' };
-		const biz = await getBizSettings();
-		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
-		const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs(), cycleCfg.cycleDays, cycleCfg.windowDays);
-		const merchantUserId = merchant.user_id || merchant._id;
-		const logs = await operationLogCollection.where({ user_id: merchantUserId, action: 'h5_quota_recharge', refunded: false }).limit(1000).get();
-		const rows = logs.data || [];
-		const now = nowTs();
-		let refundAmount = Number(Number(merchant.recharge_total_yuan || 0).toFixed(2));
-		if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
-			refundAmount = 0;
-			rows.forEach((x) => {
-				refundAmount += Number(x.package_price || 0);
-			});
-			refundAmount = Number(refundAmount.toFixed(2));
+		const oid = safeText(transferOrderIn && transferOrderIn._id, 80);
+		if (!oid || !wc || !openid) return { code: 500, message: '退款打款参数不完整' };
+		const freshRes = await transferOrderCollection.doc(oid).get();
+		let transferOrder = freshRes.data && freshRes.data[0];
+		if (!transferOrder) return { code: 404, message: '退款单不存在' };
+		if (transferOrder.applied && safeText(transferOrder.state) === 'SUCCESS') {
+			return {
+				code: 0,
+				message: '退款已完成',
+				data: {
+					refundNo: transferOrder.refund_no,
+					refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
+					penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
+					finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
+					phase: countdownPhase,
+					outBillNo: transferOrder.refund_no,
+					refundState: 'SUCCESS',
+					refundItems: []
+				}
+			};
 		}
-		if (refundAmount <= 0) {
-			return { code: 400, message: '暂无可退款充值金额' };
-		}
-		let penaltyAmount = 0;
-		if (countdown.phase === 'lock') {
-			penaltyAmount = Number((refundAmount * 0.5).toFixed(2));
-		}
-		const finalRefundAmount = Number((refundAmount - penaltyAmount).toFixed(2));
-		const targetRefundFen = Math.round(finalRefundAmount * 100);
-		if (targetRefundFen < 1) {
-			return { code: 400, message: '计算应退金额过小，无法发起商家转账' };
-		}
-		const reason = safeText(data?.reason || '用户申请退款', 80);
-		const bizKey = `${merchant._id}_${targetRefundFen}_${countdown.phase}_${Number(merchant.recharge_cycle_start || 0)}_${refundAmount.toFixed(2)}_${rows
-			.map((x) => x._id)
-			.sort()
-			.join('_')}`;
-		const existRes = await transferOrderCollection.where({ biz_key: bizKey, is_deleted: false }).limit(1).get();
-		let transferOrder = existRes.data && existRes.data[0];
-		if (!transferOrder) {
-			const refundNo = `H5F${now}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-			const addRes = await transferOrderCollection.add({
-				biz_key: bizKey,
-				merchant_id: merchant._id,
-				merchant_user_id: merchant.user_id || merchant._id,
-				recharge_log_ids: rows.map((x) => x._id).filter(Boolean),
-				refund_no: refundNo,
-				out_bill_no: refundNo,
-				transfer_mch_id: wc.mchId,
-				refund_mode: 'merchant_transfer',
-				transfer_items: [
-					{
-						out_bill_no: refundNo,
-						transfer_amount_fen: targetRefundFen,
-						state: 'INIT',
-						transfer_bill_no: '',
-						last_error: ''
-					}
-				],
-				refund_amount: Number(refundAmount || 0),
-				penalty_amount: Number(penaltyAmount || 0),
-				final_refund_amount: Number(finalRefundAmount || 0),
-				final_refund_fen: targetRefundFen,
-				reason,
-				state: 'INIT',
-				applied: false,
-				is_deleted: false,
-				create_time: now,
-				update_time: now
-			});
-			const ordRes = await transferOrderCollection.doc(addRes.id).get();
-			transferOrder = ordRes.data && ordRes.data[0];
-		}
-		let items = Array.isArray(transferOrder.transfer_items) ? transferOrder.transfer_items : [];
+		let items = Array.isArray(transferOrder.transfer_items) ? transferOrder.transfer_items.map((x) => ({ ...x })) : [];
 		if (!items.length) {
 			items = [
 				{
@@ -4851,12 +5143,14 @@ async function h5RefundReset(data, event) {
 		});
 		transferOrder.state = batchState;
 		transferOrder.transfer_items = items;
-		const itemResults = [{
-			outBillNo,
-			state: first.state,
-			transferBillNo: transferBillNo || '',
-			error: first.last_error || ''
-		}];
+		const itemResults = [
+			{
+				outBillNo,
+				state: first.state,
+				transferBillNo: transferBillNo || '',
+				error: first.last_error || ''
+			}
+		];
 
 		if (batchState === 'SUCCESS') {
 			await finalizeTransferSuccessIfNeeded(transferOrder, event);
@@ -4868,7 +5162,7 @@ async function h5RefundReset(data, event) {
 					refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
 					penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
 					finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
-					phase: countdown.phase,
+					phase: countdownPhase,
 					outBillNo: transferOrder.refund_no,
 					refundState: batchState,
 					refundItems: itemResults
@@ -4898,6 +5192,676 @@ async function h5RefundReset(data, event) {
 			}
 		};
 	} catch (e) {
+		console.error('runRefundMerchantTransferPipeline failed', e);
+		return { code: 500, message: safeText(e.message || '退款打款异常', 200) };
+	}
+}
+
+function buildRefundTransferWhere(data) {
+	const {
+		userKeyword = '',
+		refundNo = '',
+		state = '',
+		stateList,
+		createTimeStart = '',
+		createTimeEnd = ''
+	} = data || {};
+	const parts = [{ is_deleted: false, refund_mode: 'merchant_transfer' }];
+	if (refundNo) {
+		const r = new RegExp(escapeReg(refundNo), 'i');
+		parts.push(db.command.or([{ refund_no: r }, { out_bill_no: r }]));
+	}
+	if (userKeyword) {
+		const rk = new RegExp(escapeReg(userKeyword), 'i');
+		parts.push(
+			db.command.or([
+				{ merchant_user_id: rk },
+				{ merchant_id: rk }
+			])
+		);
+	}
+	const stArr = Array.isArray(stateList) ? [...new Set(stateList.map(String))] : [];
+	if (stArr.length === 1) {
+		parts.push({ state: stArr[0] });
+	} else if (stArr.length > 1) {
+		parts.push({ state: db.command.in(stArr) });
+	} else if (state) {
+		parts.push({ state: String(state) });
+	}
+	if (createTimeStart && createTimeEnd) {
+		parts.push(
+			db.command.and([
+				{ create_time: db.command.gte(Number(createTimeStart)) },
+				{ create_time: db.command.lte(Number(createTimeEnd)) }
+			])
+		);
+	} else if (createTimeStart) {
+		parts.push({ create_time: db.command.gte(Number(createTimeStart)) });
+	} else if (createTimeEnd) {
+		parts.push({ create_time: db.command.lte(Number(createTimeEnd)) });
+	}
+	return parts.length === 1 ? parts[0] : db.command.and(parts);
+}
+
+function refundTransferStateText(s) {
+	const x = String(s || '');
+	if (x === 'SUCCESS') return '已成功';
+	if (x === 'FAILED') return '失败';
+	if (x === 'PROCESSING') return '处理中';
+	if (x === 'PENDING_AUDIT') return '待审核';
+	if (x === 'REJECTED') return '已拒绝';
+	return x || '-';
+}
+
+function mapRefundTransferItem(row, merchantMap = {}) {
+	const auditStatus = safeText(row.audit_status || '', 24) || (row.audit_required ? 'pending' : 'none');
+	const auditMap = { pending: '待审核', approved: '已同意', rejected: '已拒绝', failed: '失败', none: '-' };
+	const items = Array.isArray(row.transfer_items) ? row.transfer_items : [];
+	const first = items[0] || {};
+	const transferErr = safeText(first.last_error || '', 200);
+	const m = merchantMap[row.merchant_id] || {};
+	const userDisplay = [m.wx_nickname || '', m.mobile || ''].filter(Boolean).join('\n') || row.merchant_user_id || '-';
+	return {
+		id: row._id,
+		refundNo: row.refund_no || row.out_bill_no || '',
+		merchantUserId: row.merchant_user_id || '',
+		userDisplay,
+		refundAmount: Number(row.refund_amount || 0),
+		refundAmountText: Number(row.refund_amount || 0).toFixed(2),
+		penaltyAmountText: Number(row.penalty_amount || 0).toFixed(2),
+		finalRefundAmountText: Number(row.final_refund_amount || 0).toFixed(2),
+		batchState: row.state || '',
+		batchStateText: refundTransferStateText(row.state),
+		auditRequired: !!row.audit_required,
+		auditStatus,
+		auditStatusText: auditMap[auditStatus] || auditStatus || '-',
+		transferError: transferErr,
+		reason: safeText(row.reason || '', 120),
+		applied: !!row.applied,
+		createTime: formatTime(row.create_time),
+		updateTime: formatTime(row.update_time)
+	};
+}
+
+async function refundTransferSummary(whereExpr) {
+	try {
+		const $ = db.command.aggregate;
+		// 仅统计已完成的退款（处理中/待审核等不计入顶部合计）
+		const matchExpr = db.command.and([whereExpr, { state: 'SUCCESS', applied: true }]);
+		const res = await transferOrderCollection
+			.aggregate()
+			.match(matchExpr)
+			.group({
+				_id: null,
+				totalRefund: $.sum('$refund_amount'),
+				totalPenalty: $.sum('$penalty_amount'),
+				totalFinal: $.sum('$final_refund_amount')
+			})
+			.end();
+		const row = res.data && res.data[0];
+		return {
+			totalRefund: Number(row && row.totalRefund) || 0,
+			totalPenalty: Number(row && row.totalPenalty) || 0,
+			totalFinal: Number(row && row.totalFinal) || 0
+		};
+	} catch (e) {
+		console.error('refundTransferSummary failed', e);
+		return { totalRefund: 0, totalPenalty: 0, totalFinal: 0 };
+	}
+}
+
+async function getRefundTransferList(data) {
+	try {
+		const { page = 1, pageSize = 10 } = data || {};
+		const whereExpr = buildRefundTransferWhere(data);
+		const countRes = await transferOrderCollection.where(whereExpr).count();
+		const total = countRes.total;
+		const res = await transferOrderCollection
+			.where(whereExpr)
+			.orderBy('create_time', 'desc')
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.get();
+		const rows = res.data || [];
+		const mids = [...new Set(rows.map((r) => r.merchant_id).filter(Boolean))];
+		const merchantMap = {};
+		if (mids.length) {
+			const mres = await merchantCollection
+				.where({ _id: db.command.in(mids.slice(0, 200)) })
+				.field({ wx_nickname: true, mobile: true })
+				.limit(200)
+				.get();
+			for (const m of mres.data || []) {
+				merchantMap[m._id] = m;
+			}
+		}
+		const list = rows.map((row) => mapRefundTransferItem(row, merchantMap));
+		const summary = await refundTransferSummary(whereExpr);
+		return {
+			code: 0,
+			message: '获取成功',
+			data: { list, total, page, pageSize, summary }
+		};
+	} catch (e) {
+		console.error('getRefundTransferList failed', e);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function refundTransferSyncProcessing(data = {}) {
+	const limit = Math.min(Math.max(Number(data?.limit || 20), 1), 100);
+	const now = nowTs();
+	try {
+		const processingStates = ['PROCESSING', 'ACCEPTED', 'WAIT_USER_CONFIRM', 'UNKNOWN'];
+		const res = await transferOrderCollection
+			.where({
+				is_deleted: false,
+				refund_mode: 'merchant_transfer',
+				audit_required: true,
+				audit_status: 'pending',
+				state: db.command.in(processingStates)
+			})
+			.orderBy('update_time', 'asc')
+			.limit(limit)
+			.get();
+		const rows = res.data || [];
+		let success = 0;
+		let failed = 0;
+		let processing = 0;
+		const cfg = ensureWxWithdrawPayConfig();
+		if (!cfg.ok) throw new Error(cfg.message);
+		const wc = cfg.creds;
+		for (const row of rows) {
+			const merchant = await getMerchantByIdOrUserId(row.merchant_id);
+			if (!merchant) continue;
+			const openid = safeText(merchant.wx_openid, 100);
+			if (!openid) continue;
+			const reason = safeText(row.reason || '用户申请退款', 80);
+			try {
+				const q = await wxPayQueryMerchantTransfer(wc, safeText(row.out_bill_no || row.refund_no, 64));
+				const state = normalizeTransferState(q?.state || q?.status || '');
+				const billNo = safeText(q?.transfer_bill_no || '', 80);
+				await writeTransferLog({
+					stage: 'refund_auto_poll_query',
+					withdrawNo: row.refund_no,
+					merchantUserId: row.merchant_user_id,
+					outBillNo: row.out_bill_no,
+					transferState: state,
+					message: '自动轮询 H5 退款商家转账',
+					payload: q || {}
+				});
+				if (state === 'SUCCESS') {
+					const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
+					const first = { ...(items[0] || {}) };
+					first.state = 'SUCCESS';
+					first.transfer_bill_no = billNo;
+					first.query_resp = q || {};
+					first.transfer_time = nowTs();
+					await transferOrderCollection.doc(row._id).update({
+						state: 'SUCCESS',
+						transfer_items: [first],
+						update_time: nowTs()
+					});
+					const merged = { ...row, state: 'SUCCESS', transfer_items: [first] };
+					await finalizeTransferSuccessIfNeeded(merged, {});
+					success += 1;
+					continue;
+				}
+				if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
+					const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
+					const first = { ...(items[0] || {}) };
+					first.state = state;
+					first.last_error = safeText(q?.fail_reason || q?.message || state, 200);
+					await transferOrderCollection.doc(row._id).update({
+						state: 'FAILED',
+						transfer_items: [first],
+						update_time: nowTs()
+					});
+					failed += 1;
+					continue;
+				}
+				const polledPkg = pickTransferPackageInfo(q);
+				const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
+				const first = { ...(items[0] || {}) };
+				first.state = state || 'PROCESSING';
+				first.transfer_bill_no = billNo;
+				if (polledPkg) first.query_resp = q || {};
+				await transferOrderCollection.doc(row._id).update({
+					state: 'PROCESSING',
+					transfer_items: [first],
+					...(polledPkg ? { package_info: safeText(polledPkg, 1200) } : {}),
+					update_time: nowTs()
+				});
+				processing += 1;
+			} catch (e) {
+				await writeTransferLog({
+					stage: 'refund_auto_poll_error',
+					level: 'error',
+					withdrawNo: row.refund_no,
+					message: safeText(e?.message || '退款轮询失败', 180)
+				});
+			}
+		}
+		return { code: 0, message: 'ok', data: { total: rows.length, success, failed, processing, at: now } };
+	} catch (e) {
+		console.error('refundTransferSyncProcessing failed', e);
+		return { code: 500, message: safeText(e?.message || '自动轮询失败', 160) };
+	}
+}
+
+async function refundTransferApprove(data, event) {
+	try {
+		const id = safeText(data?.id, 80);
+		const actionType = safeText(data?.actionType, 20);
+		if (!id) return { code: 400, message: '缺少退款单ID' };
+		if (!['approve', 'reject'].includes(actionType)) return { code: 400, message: '审批动作无效' };
+		const oldRes = await transferOrderCollection.doc(id).get();
+		const row = oldRes.data && oldRes.data[0];
+		if (!row || row.is_deleted) return { code: 404, message: '退款单不存在' };
+		if (safeText(row.refund_mode, 40) !== 'merchant_transfer') {
+			return { code: 400, message: '非 H5 商家转账退款单' };
+		}
+		const now = nowTs();
+		if (actionType === 'reject') {
+			if (!row.audit_required) return { code: 400, message: '该记录无需审核' };
+			if (safeText(row.audit_status, 20) !== 'pending') return { code: 400, message: '该记录不是待审核状态' };
+			const rowSt = safeText(row.state, 24);
+			if (rowSt === 'SUCCESS' || rowSt === 'PROCESSING') {
+				return { code: 400, message: '打款处理中或已成功，请稍后再试或联系技术' };
+			}
+			await transferOrderCollection.doc(id).update({
+				audit_status: 'rejected',
+				audit_time: now,
+				state: 'REJECTED',
+				is_deleted: true,
+				update_time: now
+			});
+			return { code: 0, message: '已拒绝该退款申请，用户可重新发起' };
+		}
+		if (!row.audit_required) return { code: 400, message: '该记录无需审核' };
+		if (safeText(row.audit_status, 20) !== 'pending') return { code: 400, message: '该记录不是待审核状态' };
+		if (row.applied) return { code: 400, message: '该退款已完成入账' };
+		const rowSt0 = safeText(row.state, 24);
+		if (rowSt0 === 'SUCCESS') return { code: 400, message: '该退款已成功' };
+		const merchant = await getMerchantByIdOrUserId(row.merchant_id);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const openid = safeText(merchant.wx_openid, 100);
+		if (!openid) return { code: 400, message: '商户缺少 openid，无法打款' };
+		const cfg = ensureWxWithdrawPayConfig();
+		if (!cfg.ok) return { code: 500, message: cfg.message };
+		const wc = cfg.creds;
+		const reason = safeText(row.reason || '用户申请退款', 80);
+		await writeTransferLog({
+			stage: 'refund_admin_approve',
+			withdrawNo: row.refund_no,
+			merchantUserId: row.merchant_user_id,
+			outBillNo: row.out_bill_no,
+			message: '管理员同意 H5 充值退款并发起商家转账',
+			payload: { id, actionType }
+		});
+		const pipe = await runRefundMerchantTransferPipeline(row, merchant, event, {
+			wc,
+			openid,
+			reason,
+			countdownPhase: ''
+		});
+		if (pipe.code === 0) {
+			await transferOrderCollection.doc(id).update({
+				audit_status: 'approved',
+				audit_time: now,
+				update_time: nowTs()
+			});
+			return pipe;
+		}
+		if (pipe.code === 409) {
+			return pipe;
+		}
+		return pipe;
+	} catch (e) {
+		console.error('refundTransferApprove failed', e);
+		return { code: 500, message: safeText(e?.message || '审批失败', 200) };
+	}
+}
+
+/**
+ * 解析当前商户在「退款与周期」场景下的 bizKey、是否需审核、已存在的转账单等，供 H5 退款页与 h5RefundReset 共用。
+ */
+async function resolveH5RefundOrderContext(merchant, event) {
+	const cfgW = ensureWxWithdrawPayConfig();
+	if (!cfgW.ok) return { ok: false, code: 500, message: cfgW.message };
+	const wc = cfgW.creds;
+	const openid = safeText(merchant.wx_openid, 100);
+	if (!openid) return { ok: false, code: 400, message: '当前账号缺少微信openid，请重新登录后再试' };
+	const biz = await getBizSettings();
+	const member = isH5RechargeMemberForWithdraw(merchant);
+	const rtc = biz.refundTransferAudit || {};
+	const needRefundAudit = member ? !!rtc.memberRequired : !!rtc.nonMemberRequired;
+	const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
+	const countdown = computeRechargeCountdown(merchant.recharge_cycle_start, nowTs(), cycleCfg.cycleDays, cycleCfg.windowDays);
+	const merchantUserId = merchant.user_id || merchant._id;
+	const logs = await operationLogCollection.where({ user_id: merchantUserId, action: 'h5_quota_recharge', refunded: false }).limit(1000).get();
+	const rows = logs.data || [];
+	const now = nowTs();
+	let refundAmount = Number(Number(merchant.recharge_total_yuan || 0).toFixed(2));
+	if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+		refundAmount = 0;
+		rows.forEach((x) => {
+			refundAmount += Number(x.package_price || 0);
+		});
+		refundAmount = Number(refundAmount.toFixed(2));
+	}
+	if (refundAmount <= 0) {
+		return {
+			ok: true,
+			refundable: false,
+			wc,
+			biz,
+			needRefundAudit,
+			countdown,
+			merchantUserId,
+			rows,
+			refundAmount: 0,
+			penaltyAmount: 0,
+			finalRefundAmount: 0,
+			targetRefundFen: 0,
+			bizKey: '',
+			transferOrder: null,
+			now
+		};
+	}
+	let penaltyAmount = 0;
+	if (countdown.phase === 'lock') {
+		penaltyAmount = Number((refundAmount * 0.5).toFixed(2));
+	}
+	const finalRefundAmount = Number((refundAmount - penaltyAmount).toFixed(2));
+	const targetRefundFen = Math.round(finalRefundAmount * 100);
+	if (targetRefundFen < 1) {
+		return {
+			ok: true,
+			refundable: false,
+			wc,
+			biz,
+			needRefundAudit,
+			countdown,
+			merchantUserId,
+			rows,
+			refundAmount,
+			penaltyAmount,
+			finalRefundAmount,
+			targetRefundFen: 0,
+			bizKey: '',
+			transferOrder: null,
+			now
+		};
+	}
+	const bizKey = `${merchant._id}_${targetRefundFen}_${countdown.phase}_${Number(merchant.recharge_cycle_start || 0)}_${refundAmount.toFixed(2)}_${rows
+		.map((x) => x._id)
+		.sort()
+		.join('_')}`;
+	const existRes = await transferOrderCollection.where({ biz_key: bizKey, is_deleted: false }).limit(1).get();
+	const transferOrder = existRes.data && existRes.data[0];
+	return {
+		ok: true,
+		refundable: true,
+		wc,
+		biz,
+		needRefundAudit,
+		countdown,
+		merchantUserId,
+		rows,
+		refundAmount,
+		penaltyAmount,
+		finalRefundAmount,
+		targetRefundFen,
+		bizKey,
+		transferOrder,
+		now,
+		openid
+	};
+}
+
+function buildH5RefundUiFromContext(ctx) {
+	const d = {
+		phase: 'idle',
+		outBillNo: '',
+		refundNo: '',
+		wxItemState: '',
+		batchState: '',
+		needRefundAudit: !!ctx.needRefundAudit,
+		refundable: ctx.refundable !== false,
+		refundAmount: Number(ctx.refundAmount || 0).toFixed(2),
+		penaltyAmount: Number(ctx.penaltyAmount || 0).toFixed(2),
+		finalRefundAmount: Number(ctx.finalRefundAmount || 0).toFixed(2)
+	};
+	if (!ctx.ok || !ctx.refundable) return d;
+	const ord = ctx.transferOrder;
+	if (!ord) return d;
+	const outBillNo = safeText(ord.out_bill_no || ord.refund_no, 64);
+	d.outBillNo = outBillNo;
+	d.refundNo = safeText(ord.refund_no, 64);
+	d.batchState = safeText(ord.state, 24);
+	const items = Array.isArray(ord.transfer_items) ? ord.transfer_items : [];
+	const first = items[0] || {};
+	d.wxItemState = normalizeTransferState(first.state || '');
+	if (ord.audit_required && safeText(ord.audit_status, 20) === 'pending' && d.batchState === 'PENDING_AUDIT') {
+		d.phase = 'auditing';
+		return d;
+	}
+	if (ord.applied && d.batchState === 'SUCCESS') {
+		d.phase = 'done';
+		return d;
+	}
+	if (d.batchState === 'FAILED') {
+		// 与未申请时一致：允许用户再次点击「申请退款」重试
+		d.phase = 'idle';
+		return d;
+	}
+	if (d.wxItemState === 'WAIT_USER_CONFIRM') {
+		d.phase = 'confirm_transfer';
+		return d;
+	}
+	if (d.batchState === 'PROCESSING' || d.batchState === 'INIT' || d.batchState === 'PENDING_AUDIT') {
+		d.phase = 'processing';
+		return d;
+	}
+	if (d.batchState === 'SUCCESS' && !ord.applied) {
+		d.phase = 'processing';
+		return d;
+	}
+	d.phase = 'processing';
+	return d;
+}
+
+async function h5RefundConfirmPackage(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		if (isH5SilverMemberForWithdraw(merchant)) {
+			return { code: 400, message: '白银会员不可申请退款' };
+		}
+		const tokenCheck = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
+		if (!tokenCheck.ok) return { code: tokenCheck.code || 403, message: tokenCheck.message || '退款入口无效' };
+		const refundNo = safeText(data?.refundNo || data?.outBillNo, 64);
+		if (!refundNo) return { code: 400, message: '缺少退款单号' };
+		const ordRes = await transferOrderCollection
+			.where({ merchant_id: merchant._id, out_bill_no: refundNo, is_deleted: false, refund_mode: 'merchant_transfer' })
+			.limit(1)
+			.get();
+		const row = ordRes.data && ordRes.data[0];
+		if (!row) return { code: 404, message: '退款单不存在' };
+		const cfg = ensureWxWithdrawPayConfig();
+		if (!cfg.ok) return { code: 500, message: cfg.message };
+		const wc = cfg.creds;
+		let q = null;
+		const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
+		let first = { ...(items[0] || { out_bill_no: refundNo, state: 'INIT' }) };
+		let state = normalizeTransferState(first.state || row.state || '');
+		try {
+			q = await wxPayQueryMerchantTransfer(wc, refundNo);
+			state = normalizeTransferState(q?.state || q?.status || state);
+			const qPkgEarly = pickTransferPackageInfo(q);
+			first.state = state;
+			first.transfer_bill_no = safeText(q?.transfer_bill_no || first.transfer_bill_no || '', 80);
+			first.query_resp = q || {};
+			await transferOrderCollection.doc(row._id).update({
+				state: state === 'SUCCESS' ? 'SUCCESS' : state === 'WAIT_USER_CONFIRM' ? 'PROCESSING' : row.state,
+				transfer_items: [first],
+				...(qPkgEarly ? { package_info: safeText(qPkgEarly, 1200) } : {}),
+				update_time: nowTs()
+			});
+		} catch (e) {
+			await writeTransferLog({
+				stage: 'h5_refund_confirm_query_error',
+				level: 'error',
+				withdrawNo: refundNo,
+				merchantUserId: merchant.user_id || merchant._id,
+				outBillNo: refundNo,
+				message: safeText(e?.message || '查询退款转账状态失败', 180)
+			});
+		}
+		if (state === 'SUCCESS') {
+			const merged = { ...row, state: 'SUCCESS', transfer_items: [first] };
+			await finalizeTransferSuccessIfNeeded(merged, {});
+			return { code: 400, message: '该笔退款已到账，无需再次确认' };
+		}
+		if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
+			return { code: 400, message: `当前状态为${state}，请联系管理员或稍后重试` };
+		}
+		const packageInfo = safeText(
+			pickTransferPackageInfo(q) || pickTransferPackageInfo(row) || row.package_info || '',
+			1200
+		);
+		if (state !== 'WAIT_USER_CONFIRM' || !packageInfo) {
+			return { code: 400, message: '当前暂无可拉起的确认收款，请稍后再试' };
+		}
+		await transferOrderCollection.doc(row._id).update({
+			package_info: packageInfo,
+			transfer_items: [first],
+			state: 'PROCESSING',
+			update_time: nowTs()
+		});
+		await writeTransferLog({
+			stage: 'h5_refund_confirm_package_ready',
+			withdrawNo: refundNo,
+			merchantUserId: merchant.user_id || merchant._id,
+			outBillNo: refundNo,
+			transferState: state,
+			message: 'H5 退款返回用户确认收款拉起参数',
+			payload: { hasPackage: true }
+		});
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				mchId: wc.mchId,
+				appId: wc.appId,
+				package: packageInfo,
+				withdrawNo: refundNo,
+				refundNo,
+				state
+			}
+		};
+	} catch (e) {
+		console.error('h5RefundConfirmPackage failed', e);
+		return { code: 500, message: '获取确认收款参数失败' };
+	}
+}
+
+async function h5RefundReset(data, event) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const tokenCheck = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
+		if (!tokenCheck.ok) return { code: tokenCheck.code || 403, message: tokenCheck.message || '退款入口无效' };
+		const ctx = await resolveH5RefundOrderContext(merchant, event);
+		if (!ctx.ok) return { code: ctx.code, message: ctx.message };
+		if (!ctx.refundable) {
+			return { code: 400, message: '暂无可退款充值金额' };
+		}
+		const { wc, needRefundAudit, countdown, rows, refundAmount, penaltyAmount, finalRefundAmount, targetRefundFen, now } = ctx;
+		let transferOrder = ctx.transferOrder;
+		const openid = ctx.openid;
+		const reason = safeText(data?.reason || '用户申请退款', 80);
+		if (
+			transferOrder &&
+			transferOrder.audit_required &&
+			safeText(transferOrder.audit_status, 20) === 'pending' &&
+			safeText(transferOrder.state, 24) === 'PENDING_AUDIT'
+		) {
+			return {
+				code: 409,
+				message: '退款申请已提交，待管理员审核后打款',
+				data: {
+					refundNo: transferOrder.refund_no,
+					outBillNo: transferOrder.refund_no,
+					refundState: 'PENDING_AUDIT',
+					refundItems: []
+				}
+			};
+		}
+		if (!transferOrder) {
+			const refundNo = `H5F${now}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+			const initialState = needRefundAudit ? 'PENDING_AUDIT' : 'INIT';
+			const addRes = await transferOrderCollection.add({
+				biz_key: ctx.bizKey,
+				merchant_id: merchant._id,
+				merchant_user_id: merchant.user_id || merchant._id,
+				recharge_log_ids: rows.map((x) => x._id).filter(Boolean),
+				refund_no: refundNo,
+				out_bill_no: refundNo,
+				transfer_mch_id: wc.mchId,
+				refund_mode: 'merchant_transfer',
+				transfer_items: [
+					{
+						out_bill_no: refundNo,
+						transfer_amount_fen: targetRefundFen,
+						state: 'INIT',
+						transfer_bill_no: '',
+						last_error: ''
+					}
+				],
+				refund_amount: Number(refundAmount || 0),
+				penalty_amount: Number(penaltyAmount || 0),
+				final_refund_amount: Number(finalRefundAmount || 0),
+				final_refund_fen: targetRefundFen,
+				reason,
+				audit_required: !!needRefundAudit,
+				audit_status: needRefundAudit ? 'pending' : 'none',
+				state: initialState,
+				applied: false,
+				is_deleted: false,
+				create_time: now,
+				update_time: now
+			});
+			const ordRes = await transferOrderCollection.doc(addRes.id).get();
+			transferOrder = ordRes.data && ordRes.data[0];
+			if (needRefundAudit) {
+				await sendWecomRobotText(`商户${maybeMerchantDisplayName(merchant)}申请H5充值退款，请及时处理。`);
+				return {
+					code: 0,
+					message: '已提交，待管理员审核后打款',
+					data: {
+						refundNo: transferOrder.refund_no,
+						refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
+						penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
+						finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
+						phase: countdown.phase,
+						outBillNo: transferOrder.refund_no,
+						refundState: 'PENDING_AUDIT',
+						refundItems: []
+					}
+				};
+			}
+		}
+		return await runRefundMerchantTransferPipeline(transferOrder, merchant, event, {
+			wc,
+			openid,
+			reason,
+			countdownPhase: countdown.phase
+		});
+	} catch (e) {
 		console.error('h5RefundReset failed', e);
 		return { code: 500, message: safeText(e.message || '退款重置失败', 200) };
 	}
@@ -4911,12 +5875,18 @@ async function h5RefundEntryValidate(data) {
 		const chk = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
 		if (!chk.ok) return { code: chk.code || 403, message: chk.message || '退款入口无效' };
 		const exp = Number(chk.row?.expire_time || 0);
+		const ctx = await resolveH5RefundOrderContext(merchant, {});
+		if (!ctx.ok) {
+			return { code: ctx.code || 500, message: ctx.message || '校验失败' };
+		}
+		const refundUi = buildH5RefundUiFromContext(ctx);
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
 				expireAt: exp,
-				remainingSec: Math.max(0, Math.floor((exp - nowTs()) / 1000))
+				remainingSec: Math.max(0, Math.floor((exp - nowTs()) / 1000)),
+				refundUi
 			}
 		};
 	} catch (e) {
@@ -4995,6 +5965,7 @@ async function h5TransferStatus(data, event) {
 					state: ord.state,
 					refundNo: ord.refund_no,
 					refundState: ord.state,
+					wxItemState: st,
 					transferMchId: ord.transfer_mch_id,
 					transferError: safeText(first.last_error || '', 200),
 					transferBillNo: safeText(first.transfer_bill_no || '', 80)
@@ -5611,13 +6582,13 @@ async function h5IncomeList(data) {
 		}));
 		let subsidyTicker = [];
 		try {
-			const recentReceived = await withdrawCollection
-				.where({ is_deleted: false, arrival_status: 'received' })
-				.field({ merchant_user_id: true, amount: true, arrival_time: true })
-				.orderBy('arrival_time', 'desc')
-				.limit(30)
+			const recentClaimed = await incomePacketCollection
+				.where({ is_deleted: false, status: 'claimed' })
+				.field({ merchant_user_id: true, amount: true, claimed_time: true, update_time: true })
+				.orderBy('claimed_time', 'desc')
+				.limit(40)
 				.get();
-			const recentRows = (recentReceived.data || []).filter((x) => Number(x.amount || 0) > 0);
+			const recentRows = (recentClaimed.data || []).filter((x) => Number(x.amount || 0) > 0);
 			const userIds = [...new Set(recentRows.map((x) => String(x.merchant_user_id || '')).filter(Boolean))];
 			const merchantMap = new Map();
 			if (userIds.length) {
@@ -5636,11 +6607,11 @@ async function h5IncomeList(data) {
 				if (m) return m;
 				return '商户用户';
 			};
-			subsidyTicker = recentRows.slice(0, 10).map((r, idx) => {
+			subsidyTicker = recentRows.slice(0, 20).map((r, idx) => {
 				const userId = String(r.merchant_user_id || '');
 				const m = merchantMap.get(userId) || {};
 				return {
-					id: `${userId || 'u'}_${r.arrival_time || 0}_${idx}`,
+					id: `${userId || 'u'}_${r.claimed_time || r.update_time || 0}_${idx}`,
 					name: displayName(m.wx_nickname, m.mobile),
 					avatar: String(m.wx_avatar || ''),
 					amount: Number(r.amount || 0).toFixed(2)
@@ -6149,6 +7120,9 @@ async function feedbackAdminMessages(data) {
 		const merchant = merchantRes.data && merchantRes.data[0];
 		const rechargePackages = await loadRechargePackagesFromQuota();
 		const membership = merchant ? h5MembershipInfo(merchant, rechargePackages) : { tier: 'normal', name: '普通会员' };
+		const biz = await getBizSettings();
+		const rta = biz?.refundTransferAudit || {};
+		const needRefundAudit = membership.tier !== 'normal' ? !!rta.memberRequired : !!rta.nonMemberRequired;
 		const messages = await feedbackLoadMessagesMapped(fid);
 		await feedbackTicketCollection.doc(fid).update({ admin_unread: false, update_time: nowTs() });
 		return {
@@ -6167,7 +7141,8 @@ async function feedbackAdminMessages(data) {
 							avatar: safeText(merchant.wx_avatar || '', 500),
 							membershipTier: membership.tier || 'normal',
 							membershipName: membership.name || '普通会员',
-							isMember: membership.tier !== 'normal'
+							isMember: membership.tier !== 'normal',
+							canSendRefundEntry: !!needRefundAudit
 					  }
 					: null,
 				messages
@@ -6235,11 +7210,14 @@ async function feedbackAdminSendRefundEntry(data, context) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const rechargePackages = await loadRechargePackagesFromQuota();
 		const membership = h5MembershipInfo(merchant, rechargePackages);
-		if (!membership || membership.tier === 'normal') {
-			return { code: 400, message: '该商户非会员，不能发送退款入口' };
+		const biz = await getBizSettings();
+		const rta = biz?.refundTransferAudit || {};
+		const needRefundAudit = membership.tier !== 'normal' ? !!rta.memberRequired : !!rta.nonMemberRequired;
+		if (!needRefundAudit) {
+			return { code: 400, message: '当前未开启该商户对应的退款审核，无需发送退款入口' };
 		}
 		const now = nowTs();
-		const expireAt = now + REFUND_ENTRY_TOKEN_TTL_MS;
+		const expireAt = 0;
 		const operator = await getAdminDisplayName(context);
 		const token = `${randomStr(24)}${randomStr(12)}${String(now).slice(-6)}`;
 		await refundEntryTokenCollection.where({
@@ -6266,9 +7244,9 @@ async function feedbackAdminSendRefundEntry(data, context) {
 		const entryPath = buildRefundEntryPath(token);
 		const entryUrl = buildRefundEntryUrl(token);
 		const text =
-			`已为您发送退款入口，请在72小时内使用：\n${entryUrl}\n` +
-			`过期时间：${formatTime(expireAt)}\n` +
-			`（过期后入口自动失效）`;
+			`已为您发送退款入口：\n${entryUrl}\n` +
+			`当前商户退款流程需管理员审核，入口在审核开启期间可持续使用；` +
+			`若后续关闭退款审核，入口将自动失效。`;
 		await feedbackMessageCollection.add({
 			feedback_id: fid,
 			role: 'admin',
@@ -6285,7 +7263,7 @@ async function feedbackAdminSendRefundEntry(data, context) {
 		await feedbackTicketCollection.doc(fid).update({
 			user_unread_reply: true,
 			admin_unread: false,
-			preview_text: '已发送退款入口（72小时有效）',
+			preview_text: '已发送退款入口（审核模式有效）',
 			last_message_at: now,
 			update_time: now
 		});
@@ -6294,6 +7272,141 @@ async function feedbackAdminSendRefundEntry(data, context) {
 	} catch (e) {
 		console.error('feedbackAdminSendRefundEntry failed', e);
 		return { code: 500, message: '发送退款入口失败' };
+	}
+}
+
+function randomExchangeCode(len = 12) {
+	const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+	let out = '';
+	for (let i = 0; i < len; i += 1) {
+		out += chars[Math.floor(Math.random() * chars.length)];
+	}
+	return out;
+}
+
+async function generateUniqueExchangeCode() {
+	for (let i = 0; i < 20; i += 1) {
+		const code = randomExchangeCode(12);
+		const r = await exchangeCouponCollection.where({ code, is_deleted: false }).limit(1).get();
+		if (!(r.data && r.data.length)) return code;
+	}
+	return `${randomExchangeCode(8)}${String(Date.now()).slice(-4)}`;
+}
+
+async function exchangeCouponGenerate(data, event) {
+	try {
+		const count = Math.min(200, Math.max(1, Number(data?.count || 1)));
+		const memberDays = Math.max(1, Number(data?.memberDays || 30));
+		const now = nowTs();
+		const validFrom = Number(data?.validFrom || now);
+		const validTo = Number(data?.validTo || (validFrom + 90 * 24 * 60 * 60 * 1000));
+		if (validTo <= validFrom) return { code: 400, message: '有效期结束时间必须大于开始时间' };
+		const operator = getOperator(event);
+		const rows = [];
+		for (let i = 0; i < count; i += 1) {
+			const code = await generateUniqueExchangeCode();
+			rows.push({
+				code,
+				generate_time: now,
+				valid_from: validFrom,
+				valid_to: validTo,
+				member_days: memberDays,
+				used: false,
+				used_merchant_id: '',
+				used_merchant_name: '',
+				used_time: 0,
+				generate_user: operator,
+				is_deleted: false,
+				create_time: now,
+				update_time: now
+			});
+		}
+		await exchangeCouponCollection.add(rows);
+		return { code: 0, message: '生成成功', data: { count, rows } };
+	} catch (e) {
+		console.error('exchangeCouponGenerate failed', e);
+		return { code: 500, message: '生成失败' };
+	}
+}
+
+async function exchangeCouponList(data) {
+	try {
+		const page = Math.max(1, Number(data?.page || 1));
+		const pageSize = Math.min(100, Math.max(1, Number(data?.pageSize || 20)));
+		const codeKeyword = safeText(data?.codeKeyword || '', 80);
+		const used = safeText(data?.used || '', 20);
+		const memberStart = Number(data?.memberStart || 0);
+		const memberEnd = Number(data?.memberEnd || 0);
+		const where = [{ is_deleted: false }];
+		if (codeKeyword) where.push({ code: new RegExp(escapeReg(codeKeyword), 'i') });
+		if (used === '0' || used === '1') where.push({ used: used === '1' });
+		if (memberStart) where.push({ member_days: db.command.gte(memberStart) });
+		if (memberEnd) where.push({ member_days: db.command.lte(memberEnd) });
+		const whereExpr = where.length === 1 ? where[0] : db.command.and(where);
+		const totalRes = await exchangeCouponCollection.where(whereExpr).count();
+		const listRes = await exchangeCouponCollection
+			.where(whereExpr)
+			.orderBy('create_time', 'desc')
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.get();
+		const list = (listRes.data || []).map((x) => ({
+			id: x._id,
+			code: x.code || '',
+			generateTime: formatTime(x.generate_time || x.create_time),
+			validFrom: formatTime(x.valid_from || 0),
+			validTo: formatTime(x.valid_to || 0),
+			memberDays: Number(x.member_days || 0),
+			used: !!x.used,
+			usedText: x.used ? '已兑换' : '否',
+			usedMerchantName: safeText(x.used_merchant_name || '', 80),
+			usedTime: formatTime(x.used_time || 0),
+			generateUser: safeText(x.generate_user || '', 80)
+		}));
+		return { code: 0, message: 'ok', data: { list, total: totalRes.total || 0, page, pageSize } };
+	} catch (e) {
+		console.error('exchangeCouponList failed', e);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function h5ExchangeCouponRedeem(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const code = safeText(String(data?.code || '').trim().toUpperCase(), 30);
+		if (!code) return { code: 400, message: '请输入兑换码' };
+		const now = nowTs();
+		const r = await exchangeCouponCollection.where({ code, is_deleted: false }).limit(1).get();
+		const cp = r.data && r.data[0];
+		if (!cp) return { code: 404, message: '兑换码不存在' };
+		if (cp.used) return { code: 400, message: '该兑换码已被使用' };
+		const validFrom = Number(cp.valid_from || 0);
+		const validTo = Number(cp.valid_to || 0);
+		if (validFrom && now < validFrom) return { code: 400, message: '兑换码尚未生效' };
+		if (validTo && now > validTo) return { code: 400, message: '兑换码已过期' };
+		const memberDays = Math.max(1, Number(cp.member_days || 30));
+		const startAt = now;
+		const endAt = now + memberDays * 24 * 60 * 60 * 1000;
+		await exchangeCouponCollection.doc(cp._id).update({
+			used: true,
+			used_merchant_id: merchant._id,
+			used_merchant_name: safeText(merchant.wx_nickname || merchant.mobile || merchant.user_id || merchant._id, 80),
+			used_time: now,
+			update_time: now
+		});
+		await merchantCollection.doc(merchant._id).update({
+			silver_member: true,
+			silver_member_start_at: startAt,
+			silver_member_end_at: endAt,
+			exchange_code_claimed: true,
+			update_time: now
+		});
+		return { code: 0, message: '兑换成功', data: { memberDays, startAt, endAt } };
+	} catch (e) {
+		console.error('h5ExchangeCouponRedeem failed', e);
+		return { code: 500, message: '兑换失败' };
 	}
 }
 
@@ -6627,6 +7740,8 @@ exports.main = async (event, context) => {
 			return await listMerchants(actualData);
 		case 'updateSwitch':
 			return await updateSwitch(actualData);
+		case 'merchantPointsMonthlyInsight':
+			return await merchantPointsMonthlyInsight(actualData);
 		case 'simulateRegister':
 			return await simulateRegister(actualData);
 		case 'offlineFirstRecharge':
@@ -6635,6 +7750,12 @@ exports.main = async (event, context) => {
 			return await getWithdrawList(actualData);
 		case 'withdrawSyncProcessing':
 			return await withdrawSyncProcessing(actualData);
+		case 'refundTransferList':
+			return await getRefundTransferList(actualData);
+		case 'refundTransferSyncProcessing':
+			return await refundTransferSyncProcessing(actualData);
+		case 'refundTransferApprove':
+			return await refundTransferApprove(actualData, event);
 		case 'tradeBillList':
 			return await tradeBillList(actualData);
 		case 'tradeBillDelete':
@@ -6697,6 +7818,8 @@ exports.main = async (event, context) => {
 			return await h5RefundReset(actualData, event);
 		case 'h5RefundEntryValidate':
 			return await h5RefundEntryValidate(actualData);
+		case 'h5RefundConfirmPackage':
+			return await h5RefundConfirmPackage(actualData);
 		case 'h5TransferStatus':
 			return await h5TransferStatus(actualData, event);
 		case 'h5PendingReturnPoints':
@@ -6719,6 +7842,12 @@ exports.main = async (event, context) => {
 			return await couponIssue(actualData, event);
 		case 'h5CouponMyList':
 			return await h5CouponMyList(actualData);
+		case 'exchangeCouponGenerate':
+			return await exchangeCouponGenerate(actualData, event);
+		case 'exchangeCouponList':
+			return await exchangeCouponList(actualData);
+		case 'h5ExchangeCouponRedeem':
+			return await h5ExchangeCouponRedeem(actualData);
 		case 'quotaList':
 			return await quotaList(actualData);
 		case 'quotaSave':

@@ -42,6 +42,7 @@
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
 							<uni-th align="center" width="90" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'microMerchant')">小微商户</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
+							<uni-th align="center" width="120">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
@@ -77,6 +78,9 @@
 								<switch :checked="item.microMerchant" @change="onSwitch(item, 'micro_merchant', $event.detail.value)" />
 							</uni-td>
 							<uni-td align="center">{{ item.loginTime }}</uni-td>
+							<uni-td align="center">
+								<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
+							</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
@@ -135,6 +139,46 @@
 				<view class="img-preview-actions">
 					<button size="mini" @click="resetPreviewTransform">重置</button>
 					<button size="mini" @click="closeImgPreview">关闭</button>
+				</view>
+			</view>
+		</uni-popup>
+		<uni-popup ref="pointsInsightPopup" type="center">
+			<view class="points-insight-modal">
+				<view class="points-insight-title">{{ pointsInsight.title || '商户积分明细' }}</view>
+				<scroll-view class="points-insight-scroll" scroll-y>
+					<view class="points-section">
+						<view class="points-section-hd">历史月份：积分生成与流失（含分期待返池）</view>
+						<view v-if="pointsInsight.history.length" class="points-table">
+							<view class="points-row points-row-hd">
+								<text>月份</text><text>生成</text><text>分期待返池</text><text>流水档</text><text>已生块积分</text><text>流失块</text><text>流失积分</text>
+							</view>
+							<view v-for="row in pointsInsight.history" :key="`h_${row.ym}`" class="points-row">
+								<text>{{ row.ym }}</text><text>{{ row.generatedPoints }}</text><text>{{ row.duePointsTotal }}</text><text>{{ row.flowTiers }}</text><text>{{ row.releasedPointsTotal }}</text><text>{{ row.lostBlocksTotal }}</text><text>{{ row.lostPoints }}</text>
+							</view>
+							<view v-for="row in pointsInsight.history" :key="`s_${row.ym}`" class="points-source-wrap">
+								<view v-for="src in row.sourceBreakdown" :key="`${row.ym}_${src.sourceYm}`" class="points-source-row">
+									<text>来源{{ src.sourceYm }}：分期待返池 {{ src.duePoints }}，可折算 {{ src.dueBlocks }} 块，已生块 {{ src.releasedBlocks }}（{{ src.releasedPoints }} 积分），流失 {{ src.lostBlocks }}（{{ src.lostPoints }} 积分）</text>
+								</view>
+							</view>
+						</view>
+						<view v-else class="points-empty">暂无历史数据</view>
+					</view>
+					<view class="points-section">
+						<view class="points-section-hd">未来月份：分期待返池与待领取（含来源月份）</view>
+						<view v-if="pointsInsight.future.length" class="points-table">
+							<view class="points-row points-row-hd points-row--2"><text>月份</text><text>分期待返池总积分</text><text>已生成待领取积分</text></view>
+							<view v-for="row in pointsInsight.future" :key="`f_${row.ym}`" class="points-row points-row--2"><text>{{ row.ym }}</text><text>{{ row.duePointsTotal }}</text><text>{{ row.packetPendingPointsTotal }}</text></view>
+							<view v-for="row in pointsInsight.future" :key="`fs_${row.ym}`" class="points-source-wrap">
+								<view v-for="src in row.sourceBreakdown" :key="`${row.ym}_${src.sourceYm}`" class="points-source-row">
+									<text>来源{{ src.sourceYm }}：分期待返池 {{ src.duePoints }}，已生成待领取 {{ src.packetPendingPoints }}</text>
+								</view>
+							</view>
+						</view>
+						<view v-else class="points-empty">暂无待领取数据</view>
+					</view>
+				</scroll-view>
+				<view class="points-insight-actions">
+					<button size="mini" @click="closePointsInsight">关闭</button>
 				</view>
 			</view>
 		</uni-popup>
@@ -200,6 +244,13 @@ export default {
 			offlinePackages: [],
 			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E',
 			defaultAgreement: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M15 12h14l4 4v20H15V12Zm14 1.5V17h3.5L29 13.5ZM18 20h12v2H18v-2Zm0 5h12v2H18v-2Zm0 5h9v2h-9v-2Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
+			,
+			pointsInsightLoading: false,
+			pointsInsight: {
+				title: '',
+				history: [],
+				future: []
+			}
 		};
 	},
 	computed: {
@@ -528,6 +579,34 @@ export default {
 				uni.showToast({ title: '网络错误', icon: 'none' });
 				this.search();
 			});
+		},
+		async openPointsInsight(item) {
+			if (!item || !item.userId) return;
+			this.pointsInsightLoading = true;
+			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, history: [], future: [] };
+			this.$refs.pointsInsightPopup.open();
+			try {
+				const res = await this.$request(
+					'merchantPointsMonthlyInsight',
+					{ merchantUserId: item.userId },
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+					return;
+				}
+				const d = res.data || {};
+				this.pointsInsight = {
+					title: `${(d.merchant && d.merchant.name) || item.wxUser || item.userId} 积分明细`,
+					history: d.history || [],
+					future: d.future || []
+				};
+			} finally {
+				this.pointsInsightLoading = false;
+			}
+		},
+		closePointsInsight() {
+			if (this.$refs.pointsInsightPopup) this.$refs.pointsInsightPopup.close();
 		}
 	}
 };
@@ -737,6 +816,70 @@ export default {
 	margin-top: 8px;
 	font-size: 12px;
 	color: #6b7280;
+}
+
+.points-insight-modal {
+	width: 1100px;
+	max-width: 94vw;
+	max-height: 88vh;
+	background: #fff;
+	border-radius: 10px;
+	padding: 12px;
+	box-sizing: border-box;
+}
+.points-insight-title {
+	font-size: 16px;
+	font-weight: 700;
+	margin-bottom: 8px;
+}
+.points-insight-scroll {
+	height: 72vh;
+}
+.points-section {
+	margin-bottom: 14px;
+}
+.points-section-hd {
+	font-size: 14px;
+	font-weight: 600;
+	margin-bottom: 6px;
+}
+.points-table {
+	border: 1px solid #ebeef5;
+	border-radius: 8px;
+	overflow: hidden;
+}
+.points-row {
+	display: grid;
+	grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr 1fr 1fr;
+	padding: 8px 10px;
+	border-top: 1px solid #f3f4f6;
+	font-size: 12px;
+}
+.points-row--2 {
+	grid-template-columns: 1.4fr 1fr 1fr;
+}
+.points-row-hd {
+	background: #f8fafc;
+	font-weight: 600;
+	border-top: none;
+}
+.points-source-wrap {
+	padding: 4px 10px 8px;
+	border-top: 1px dashed #edf2f7;
+}
+.points-source-row {
+	font-size: 12px;
+	color: #4b5563;
+	line-height: 1.7;
+}
+.points-empty {
+	font-size: 12px;
+	color: #9ca3af;
+}
+.points-insight-actions {
+	margin-top: 8px;
+	display: flex;
+	justify-content: flex-end;
 }
 </style>
 

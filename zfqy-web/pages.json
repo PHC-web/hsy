@@ -548,6 +548,18 @@
 					}
 				},
 				{
+					"path": "refund-list/index",
+					"style": {
+						"navigationBarTitleText": "退款列表"
+					}
+				},
+				{
+					"path": "exchange-coupon/index",
+					"style": {
+						"navigationBarTitleText": "兑换券管理"
+					}
+				},
+				{
 					"path": "recharge-gift/index",
 					"style": {
 						"navigationBarTitleText": "充值赠品发货"
@@ -668,6 +680,15 @@
 					"path": "coupons/index",
 					"style": {
 						"navigationBarTitleText": "优惠券",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
+				},
+				{
+					"path": "exchange/index",
+					"style": {
+						"navigationBarTitleText": "兑换码兑换",
 						"navigationStyle": "custom",
 						"topWindow": false,
 						"leftWindow": false

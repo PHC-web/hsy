@@ -23,13 +23,25 @@
 
 				<text class="hero-title">商家收款免手续费</text>
 				<text class="hero-sub">平台联合收单补贴，商家笔笔收款补贴手续费。</text>
-				<view class="subsidy-ticker" v-if="tickerList.length">
-					<view class="subsidy-ticker-track" :style="{ animationDuration: `${tickerDuration}s` }">
-						<view v-for="(item, idx) in tickerRenderList" :key="`${item.id}_${idx}`" class="subsidy-ticker-row">
-							<image :src="item.avatar || appLogo" mode="aspectFill" class="subsidy-avatar" />
-							<text class="subsidy-text">{{ item.name }} 已获得补贴</text>
-							<text class="subsidy-amount">¥{{ item.amount }}</text>
-							<text class="subsidy-text">！</text>
+				<view class="subsidy-ticker subsidy-ticker--double" v-if="tickerList.length">
+					<view class="subsidy-ticker-line">
+						<view class="subsidy-ticker-track" :style="{ animationDuration: `${tickerDuration}s` }">
+							<view v-for="(item, idx) in tickerRenderTop" :key="`t_${item.id}_${idx}`" class="subsidy-ticker-row">
+								<image :src="item.avatar || appLogo" mode="aspectFill" class="subsidy-avatar" />
+								<text class="subsidy-text">{{ item.name }} 已获得补贴</text>
+								<text class="subsidy-amount">¥{{ item.amount }}</text>
+								<text class="subsidy-text">！</text>
+							</view>
+						</view>
+					</view>
+					<view class="subsidy-ticker-line">
+						<view class="subsidy-ticker-track subsidy-ticker-track--delay" :style="{ animationDuration: `${tickerDuration + 2}s` }">
+							<view v-for="(item, idx) in tickerRenderBottom" :key="`b_${item.id}_${idx}`" class="subsidy-ticker-row">
+								<image :src="item.avatar || appLogo" mode="aspectFill" class="subsidy-avatar" />
+								<text class="subsidy-text">{{ item.name }} 已获得补贴</text>
+								<text class="subsidy-amount">¥{{ item.amount }}</text>
+								<text class="subsidy-text">！</text>
+							</view>
 						</view>
 					</view>
 				</view>
@@ -151,6 +163,12 @@ export default {
 		tickerRenderList() {
 			return this.tickerList.length > 1 ? [...this.tickerList, ...this.tickerList] : this.tickerList;
 		},
+		tickerRenderTop() {
+			return this.tickerRenderList.filter((_, idx) => idx % 2 === 0);
+		},
+		tickerRenderBottom() {
+			return this.tickerRenderList.filter((_, idx) => idx % 2 === 1);
+		},
 		tickerDuration() {
 			return Math.max(10, this.tickerList.length * 3);
 		}
@@ -220,11 +238,7 @@ export default {
 					avatar: String(x.avatar || ''),
 					amount: Number(x.amount || 0).toFixed(2)
 				}));
-				// 临时置顶一条测试播报，便于确认滚动样式效果。
-				this.tickerList = [
-					{ id: 'ticker_demo', name: '测试商户', avatar: '', amount: '200.00' },
-					...realTicker
-				];
+				this.tickerList = realTicker.slice(0, 20);
 				const su = d.summary || {};
 				this.summaryPoints = su.accountPoints != null ? String(su.accountPoints) : '0.00';
 			} finally {
@@ -416,7 +430,7 @@ export default {
 	z-index: 1;
 	margin: 12rpx auto 0;
 	width: 100%;
-	height: 58rpx;
+	height: 126rpx;
 	border-radius: 999px;
 	/* background: rgba(15, 23, 42, 0.24); */
 	/* border: 2rpx solid rgba(255, 255, 255, 0.28); */
@@ -434,6 +448,13 @@ export default {
 	animation-name: ticker-marquee-left;
 	animation-timing-function: linear;
 	animation-iteration-count: infinite;
+}
+.subsidy-ticker-track--delay {
+	animation-delay: -3s;
+}
+.subsidy-ticker-line {
+	height: 58rpx;
+	overflow: hidden;
 }
 
 .subsidy-ticker-row {

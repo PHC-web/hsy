@@ -20,41 +20,53 @@
 					<text class="rule-item">{{ entryError || '正在校验退款入口…' }}</text>
 				</view>
 				<template v-else>
-				<view class="countdown-card h5-glass-panel">
-					<view class="cd-head">
-						<text class="cd-title">退款窗口倒计时</text>
-						<view
-							v-if="countdown.phase === 'none'"
-							class="cd-badge cd-badge--action"
-							@click="goRecharge"
-						>
-							<text class="cd-badge-action-txt">额度充值</text>
-							<text class="cd-badge-action-arrow">›</text>
-						</view>
-						<text v-else class="cd-badge">{{ countdownPhaseLabel }}</text>
+					<view v-if="silver.active" class="rule-card h5-glass-panel">
+						<text class="rule-title">白银会员有效期</text>
+						<text class="rule-item">{{ silverCountdownText }}</text>
 					</view>
-					<text class="cd-desc">{{ countdownDesc }}</text>
-					<view v-if="countdownDigits" class="cd-digits">
-						<view v-for="(p, i) in countdownDigits" :key="i" class="cd-seg">
-							<text class="cd-num">{{ p.num }}</text>
-							<text class="cd-unit">{{ p.unit }}</text>
+					<view class="countdown-card h5-glass-panel">
+						<view class="cd-head">
+							<text class="cd-title">退款窗口倒计时</text>
+							<view
+								v-if="countdown.phase === 'none'"
+								class="cd-badge cd-badge--action"
+								@click="goRecharge"
+							>
+								<text class="cd-badge-action-txt">额度充值</text>
+								<text class="cd-badge-action-arrow">›</text>
+							</view>
+							<text v-else class="cd-badge">{{ countdownPhaseLabel }}</text>
 						</view>
+						<text class="cd-desc">{{ countdownDesc }}</text>
+						<view v-if="countdownDigits" class="cd-digits">
+							<view v-for="(p, i) in countdownDigits" :key="i" class="cd-seg">
+								<text class="cd-num">{{ p.num }}</text>
+								<text class="cd-unit">{{ p.unit }}</text>
+							</view>
+						</view>
+						<text v-else class="cd-idle">{{ countdownIdleText }}</text>
 					</view>
-					<text v-else class="cd-idle">{{ countdownIdleText }}</text>
-				</view>
 
-				<view class="rule-card h5-glass-panel">
-					<text class="rule-title">退款规则说明</text>
-					<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
-					<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-					<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
-				</view>
+					<view class="rule-card h5-glass-panel">
+						<text class="rule-title">退款规则说明</text>
+						<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
+						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
+						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+					</view>
 
-				<button class="btn-refund" type="warn" :disabled="loading" @click="refundReset">申请退款并重置权益数据</button>
+					<button
+						class="btn-refund"
+						:class="refundButtonClass"
+						:type="refundButtonType"
+						:disabled="refundButtonDisabled"
+						@click="onRefundMainAction"
+					>
+						{{ refundButtonLabel }}
+					</button>
 
-				<view v-if="loading" class="loading-hint">
-					<text>加载中…</text>
-				</view>
+					<view v-if="loading" class="loading-hint">
+						<text>加载中…</text>
+					</view>
 				</template>
 				<view class="bottom-spacer"></view>
 			</view>
@@ -63,7 +75,29 @@
 </template>
 
 <script>
-import { h5HomeDashboard, h5MineInfo, h5RefundReset, h5TransferStatus, h5RefundEntryValidate } from '@/pages/h5/common/api';
+import {
+	h5HomeDashboard,
+	h5MineInfo,
+	h5RefundReset,
+	h5TransferStatus,
+	h5RefundEntryValidate,
+	h5RefundConfirmPackage
+} from '@/pages/h5/common/api';
+
+function defaultRefundUi() {
+	return {
+		phase: 'idle',
+		outBillNo: '',
+		refundNo: '',
+		wxItemState: '',
+		batchState: '',
+		needRefundAudit: false,
+		refundable: true,
+		refundAmount: '0.00',
+		penaltyAmount: '0.00',
+		finalRefundAmount: '0.00'
+	};
+}
 
 export default {
 	data() {
@@ -72,6 +106,12 @@ export default {
 			entryAllowed: false,
 			entryError: '',
 			refundEntryToken: '',
+			refundUi: defaultRefundUi(),
+			silver: {
+				active: false,
+				expireAt: 0,
+				remainingSec: 0
+			},
 			serverSkew: 0,
 			countdown: {
 				phase: 'none',
@@ -84,7 +124,8 @@ export default {
 			refundCycleDays: 180,
 			refundWindowDays: 3,
 			tick: 0,
-			tickTimer: null
+			tickTimer: null,
+			statusPollTimer: null
 		};
 	},
 	computed: {
@@ -139,6 +180,43 @@ export default {
 			if (this.countdown.phase === 'none') return '';
 			if (this.countdownRemainingMs <= 0) return '正在刷新…';
 			return '';
+		},
+		refundButtonLabel() {
+			const p = this.refundUi && this.refundUi.phase;
+			if (p === 'auditing') return '审核中';
+			if (p === 'processing') return '处理中';
+			if (p === 'confirm_transfer') return '审核通过，点击提取';
+			if (p === 'done') return '退款已完成';
+			return '申请退款并重置权益数据';
+		},
+		refundButtonDisabled() {
+			if (this.loading) return true;
+			const p = this.refundUi && this.refundUi.phase;
+			if (p === 'auditing' || p === 'processing' || p === 'done') return true;
+			if (!this.refundUi.refundable && p === 'idle') return true;
+			return false;
+		},
+		refundButtonType() {
+			const p = this.refundUi && this.refundUi.phase;
+			if (p === 'confirm_transfer') return 'primary';
+			if (p === 'auditing' || p === 'processing' || p === 'done') return 'default';
+			return 'warn';
+		},
+		refundButtonClass() {
+			const p = this.refundUi && this.refundUi.phase;
+			if (p === 'confirm_transfer') return 'btn-refund btn-refund--primary';
+			if (p === 'auditing' || p === 'processing' || p === 'done') return 'btn-refund btn-refund--muted';
+			return 'btn-refund';
+		},
+		silverCountdownText() {
+			if (!this.silver.active) return '未处于白银会员有效期';
+			const left = Math.max(0, Number(this.silver.expireAt || 0) - this.effectiveNow);
+			if (left <= 0) return '白银会员已到期';
+			const sec = Math.floor(left / 1000);
+			const d = Math.floor(sec / 86400);
+			const h = Math.floor((sec % 86400) / 3600);
+			const m = Math.floor((sec % 3600) / 60);
+			return `距离到期：${d}天 ${String(h).padStart(2, '0')}时 ${String(m).padStart(2, '0')}分`;
 		}
 	},
 	onLoad(options) {
@@ -154,9 +232,11 @@ export default {
 	},
 	onUnload() {
 		this.clearTick();
+		this.stopStatusPoll();
 	},
 	onHide() {
 		this.clearTick();
+		this.stopStatusPoll();
 	},
 	methods: {
 		unwrapResult(payload) {
@@ -186,6 +266,52 @@ export default {
 				this.tickTimer = null;
 			}
 		},
+		stopStatusPoll() {
+			if (this.statusPollTimer) {
+				clearInterval(this.statusPollTimer);
+				this.statusPollTimer = null;
+			}
+		},
+		applyRefundUiFromPayload(raw) {
+			const d = (raw && raw.refundUi) || {};
+			this.refundUi = Object.assign(defaultRefundUi(), d);
+			this.syncStatusPoll();
+		},
+		syncStatusPoll() {
+			this.stopStatusPoll();
+			const u = this.refundUi || {};
+			const bill = String(u.outBillNo || u.refundNo || '').trim();
+			if (u.phase !== 'processing' || !bill) return;
+			const tick = async () => {
+				try {
+					const raw = await h5TransferStatus(bill);
+					const sr = this.unwrapResult(raw);
+					if (sr.code !== 0 || !sr.data) return;
+					const wxSt = String(sr.data.wxItemState || sr.data.state || '');
+					if (wxSt === 'WAIT_USER_CONFIRM') {
+						this.refundUi = Object.assign({}, this.refundUi, { phase: 'confirm_transfer', wxItemState: wxSt });
+						this.stopStatusPoll();
+						return;
+					}
+					if (wxSt === 'SUCCESS' || String(sr.data.refundState || '') === 'SUCCESS') {
+						await this.refreshRefundUiOnly();
+						this.stopStatusPoll();
+					}
+				} catch (e) {}
+			};
+			tick();
+			this.statusPollTimer = setInterval(tick, 4000);
+		},
+		async refreshRefundUiOnly() {
+			if (!this.refundEntryToken) return;
+			try {
+				const raw = await h5RefundEntryValidate({ refundEntryToken: this.refundEntryToken });
+				const chk = this.unwrapResult(raw);
+				if (chk.code === 0 && chk.data && chk.data.refundUi) {
+					this.applyRefundUiFromPayload(chk.data);
+				}
+			} catch (e) {}
+		},
 		goBack() {
 			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/feedback/index' }) });
 		},
@@ -204,6 +330,11 @@ export default {
 				this.countdown = Object.assign({}, this.countdown, d.countdown || {});
 				this.refundCycleDays = Number(d.refundCycle?.cycleDays || 180);
 				this.refundWindowDays = Number(d.refundCycle?.windowDays || 3);
+				const mineRaw = await h5MineInfo();
+				const mineRes = this.unwrapResult(mineRaw);
+				if (mineRes.code === 0) {
+					this.silver = Object.assign({}, this.silver, mineRes.data?.silver || {});
+				}
 			} finally {
 				this.loading = false;
 			}
@@ -211,18 +342,23 @@ export default {
 		async ensureRefundEntryAndLoad() {
 			this.entryAllowed = false;
 			this.entryError = '';
+			this.stopStatusPoll();
 			if (!this.refundEntryToken) {
 				this.entryError = '退款入口无效，请联系在线客服重新发送入口。';
 				return;
 			}
 			this.loading = true;
 			try {
-				const chk = await h5RefundEntryValidate({ refundEntryToken: this.refundEntryToken });
+				const raw = await h5RefundEntryValidate({ refundEntryToken: this.refundEntryToken });
+				const chk = this.unwrapResult(raw);
 				if (chk.code !== 0) {
 					this.entryError = chk.message || '退款入口校验失败，请联系在线客服。';
 					return;
 				}
 				this.entryAllowed = true;
+				if (chk.data && chk.data.refundUi) {
+					this.applyRefundUiFromPayload(chk.data);
+				}
 				await this.load();
 			} finally {
 				this.loading = false;
@@ -243,7 +379,64 @@ export default {
 			}
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		},
-		refundReset() {
+		onRefundMainAction() {
+			const p = this.refundUi && this.refundUi.phase;
+			if (p === 'confirm_transfer') {
+				this.confirmRefundTransfer();
+				return;
+			}
+			this.refundApply();
+		},
+		async confirmRefundTransfer() {
+			const no = String(this.refundUi.refundNo || this.refundUi.outBillNo || '').trim();
+			if (!no) {
+				uni.showToast({ title: '缺少退款单号', icon: 'none' });
+				return;
+			}
+			if (typeof window === 'undefined' || !window.WeixinJSBridge || !window.WeixinJSBridge.invoke) {
+				uni.showToast({ title: '请在微信内打开后再确认收款', icon: 'none' });
+				return;
+			}
+			uni.showLoading({ title: '拉起中...', mask: true });
+			try {
+				const raw = await h5RefundConfirmPackage({
+					refundNo: no,
+					outBillNo: no,
+					refundEntryToken: this.refundEntryToken
+				});
+				const res = this.unwrapResult(raw);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '获取确认参数失败', icon: 'none' });
+					return;
+				}
+				const data = res.data || {};
+				await new Promise((resolve) => {
+					window.WeixinJSBridge.invoke(
+						'requestMerchantTransfer',
+						{
+							mchId: String(data.mchId || ''),
+							appId: String(data.appId || ''),
+							package: String(data.package || '')
+						},
+						(r) => {
+							const msg = String((r && r.err_msg) || '');
+							if (msg.indexOf('ok') >= 0) {
+								uni.showToast({ title: '已拉起确认，请在微信完成收款', icon: 'none' });
+							} else if (msg.indexOf('cancel') >= 0) {
+								uni.showToast({ title: '你已取消确认收款', icon: 'none' });
+							} else {
+								uni.showToast({ title: msg || '拉起失败', icon: 'none' });
+							}
+							resolve();
+						}
+					);
+				});
+				await this.refreshRefundUiOnly();
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		refundApply() {
 			const isWindow = this.countdown.phase === 'window';
 			const content = isWindow
 				? '退款后将不享有会员权益，确认退款？'
@@ -261,23 +454,30 @@ export default {
 							refundEntryToken: this.refundEntryToken
 						});
 						const res = this.unwrapResult(rawRes);
+						await this.refreshRefundUiOnly();
 						if (res.code === 409) {
+							const rs = res.data && res.data.refundState;
+							if (rs === 'PENDING_AUDIT') {
+								uni.showToast({ title: '退款申请已提交，请等待审核', icon: 'none' });
+								return;
+							}
 							const outBillNo = res.data && res.data.outBillNo;
 							let latestState = res.data && (res.data.refundState || res.data.transferState || '');
-							let failReason = (res.data && res.data.refundItems && res.data.refundItems[0] && res.data.refundItems[0].error) || '';
+							let failReason =
+								(res.data && res.data.refundItems && res.data.refundItems[0] && res.data.refundItems[0].error) || '';
 							if (outBillNo) {
 								try {
 									const s = await h5TransferStatus(outBillNo);
 									const sr = this.unwrapResult(s);
 									if (sr.code === 0 && sr.data) {
-										latestState = sr.data.state || latestState;
+										latestState = sr.data.wxItemState || sr.data.state || latestState;
 										failReason = sr.data.transferError || failReason;
 									}
 								} catch (e) {}
 							}
 							uni.showModal({
 								title: '退款处理中',
-								content: `当前状态：${latestState || 'PROCESSING'}\n退款单号：${outBillNo || '-'}${failReason ? `\n失败原因：${failReason}` : ''}\n\n退款打款由微信异步处理，稍后可再次进入本页刷新状态。`,
+								content: `当前状态：${latestState || 'PROCESSING'}\n退款单号：${outBillNo || '-'}${failReason ? `\n失败原因：${failReason}` : ''}\n\n微信处理完成后，请点击「审核通过，点击提取」完成收款确认。`,
 								showCancel: false
 							});
 							return;
@@ -291,12 +491,16 @@ export default {
 							});
 							return;
 						}
+						const msg = String(res.message || '');
+						if (msg.indexOf('待管理员审核') >= 0 || (res.data && res.data.refundState === 'PENDING_AUDIT')) {
+							uni.showToast({ title: '已提交审核', icon: 'none' });
+							return;
+						}
 						uni.showModal({
 							title: '退款已发起',
-							content: `退款批次号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计退款：¥${res.data.finalRefundAmount}\n\n款项将通过商家转账退回，到账时间以微信处理结果为准。`,
+							content: `退款批次号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计退款：¥${res.data.finalRefundAmount}\n\n款项将通过商家转账退回；若微信要求确认收款，请在本页点击「审核通过，点击提取」。`,
 							showCancel: false
 						});
-						await this.load();
 					} catch (e) {
 						uni.showToast({ title: this.extractErrorMessage(e, '操作失败'), icon: 'none' });
 					} finally {
@@ -464,6 +668,12 @@ export default {
 .btn-refund {
 	border-radius: 999px;
 	margin-top: 4px;
+}
+.btn-refund--primary {
+	opacity: 1;
+}
+.btn-refund--muted {
+	opacity: 0.65;
 }
 
 .loading-hint {

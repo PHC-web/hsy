@@ -112,6 +112,41 @@ async function upsertPacket(db, doc, dedupSet) {
 	dedupSet.add(dk);
 }
 
+function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
+	const byMonth = {};
+	for (const t of trades || []) {
+		const ym = monthNoFromTs(t.create_time || nowTs);
+		if (!byMonth[ym]) byMonth[ym] = [];
+		byMonth[ym].push(t);
+	}
+	const out = {};
+	Object.keys(byMonth).forEach((ym) => {
+		const rows = byMonth[ym];
+		let curFlow = 0;
+		let curDeferred = 0;
+		const slices = [];
+		for (const t of rows) {
+			const amount = Number(t.amount || 0);
+			if (!(amount > 0)) continue;
+			const total = Number((amount * 0.0038).toFixed(4));
+			const first = Number(t.release_amount != null ? t.release_amount : total);
+			const monthlyDeferred = Number((total - first).toFixed(4));
+			if (curFlow > 0 && curFlow + amount > sliceFlowYuan) {
+				slices.push(Number(curDeferred.toFixed(4)));
+				curFlow = 0;
+				curDeferred = 0;
+			}
+			curFlow += amount;
+			curDeferred += monthlyDeferred;
+		}
+		if (curFlow > 0 || slices.length) {
+			slices.push(Number(curDeferred.toFixed(4)));
+		}
+		out[ym] = slices;
+	});
+	return out;
+}
+
 async function syncSubsidyPackets(db, merchant, nowTs) {
 	const merchantUserId = merchant.user_id || merchant._id;
 	const dedupSet = await existingDedupKeys(db, merchantUserId);
@@ -134,17 +169,22 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 	const trades = tradesRes.data || [];
 	if (!trades.length) return;
 
-	const isMember = Number(merchant.recharge_package_price || 0) >= 600 || Number(merchant.remaining_quota || 0) > 0;
 	const monthFlowMap = {};
-	const deferredPoolByMonth = {};
 	for (const t of trades) {
 		const ym = monthNoFromTs(t.create_time || nowTs);
 		monthFlowMap[ym] = Number((monthFlowMap[ym] || 0) + Number(t.amount || 0));
-		const total = Number((Number(t.amount || 0) * 0.0038).toFixed(4));
-		const first = Number(t.release_amount != null ? t.release_amount : total);
-		const deferred = Number((total - first).toFixed(4));
-		if (deferred > 0) deferredPoolByMonth[ym] = Number((deferredPoolByMonth[ym] || 0) + deferred);
 	}
+	const deferredSlicesBySourceMonth = buildDeferredSlicesByMonth(trades, nowTs, 10000);
+	// 目标月 => 源月 => slices[]
+	const deferredDueByTargetMonth = {};
+	Object.keys(deferredSlicesBySourceMonth).forEach((srcYm) => {
+		const slices = deferredSlicesBySourceMonth[srcYm] || [];
+		for (let k = 1; k <= 4; k += 1) {
+			const targetYm = addMonths(srcYm, k);
+			if (!deferredDueByTargetMonth[targetYm]) deferredDueByTargetMonth[targetYm] = {};
+			deferredDueByTargetMonth[targetYm][srcYm] = slices.slice();
+		}
+	});
 
 	// 1) 首期（第一个月）按每笔流水生成气泡
 	for (const t of trades) {
@@ -152,10 +192,6 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 		const firstRelease = Number(t.release_amount != null ? t.release_amount : total);
 		if (!(firstRelease > 0)) continue;
 		const ym = monthNoFromTs(t.create_time || nowTs);
-		const monthFlow = Number(monthFlowMap[ym] || 0);
-		const canOpenNow = isMember || monthFlow >= 50000;
-		const openAt = canOpenNow ? nowTs : 0;
-		const expAt = canOpenNow ? nowTs + CLAIM_WINDOW_MS : 0;
 		const tradeNo = String(t.trade_no || t._id || '');
 		await upsertPacket(
 			db,
@@ -168,8 +204,8 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 				create_time: Number(t.create_time || nowTs),
 				update_time: nowTs,
 				is_deleted: false,
-				expire_time: expAt,
-				claim_open_time: openAt,
+				expire_time: nowTs + CLAIM_WINDOW_MS,
+				claim_open_time: nowTs,
 				subsidy_kind: 'trade_first',
 				dedup_key: `trade_${merchantUserId}_${tradeNo}`,
 				subsidy_flow_month: ym,
@@ -182,93 +218,53 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 		);
 	}
 
-	// 2) 其余分期进入待返池；3) 按“每满1万一档”释放（不顺延）
-	// 规则：
-	// - 当月每满 1 万：释放“本月待返池”1个7.6；
-	// - 同一档位，最多再释放“上月待返池”1个7.6；
-	// - 上月超出当月档位未释放的部分直接失效，不结转下月。
+	// 2) 其余分期释放规则（按最终口径）：
+	// - 每月流水每满 1 万，生成 1 个释放档位（tiers）；
+	// - tiers 仅用于“当月应释放”的历史月分期池（上月或更早）；
+	// - 每个历史月在当月携带“流水分片”（每片对应上月某个1万流水片，积分可能为0）；
+	// - tiers 不足时，未释放分片直接流失，不顺延到下月。
 	const months = Object.keys(monthFlowMap).sort();
 	for (const ym of months) {
 		const tiers = Math.floor(Number(monthFlowMap[ym] || 0) / 10000);
 		if (tiers <= 0) continue;
-		const curPoolAmt = Number(deferredPoolByMonth[ym] || 0);
-		const curBlocks = Math.floor(curPoolAmt / POINTS_PER_MONTH);
-		const prevYm = addMonths(ym, -1);
-		const prevPoolAmt = Number(deferredPoolByMonth[prevYm] || 0);
-		const prevBlocks = Math.floor(prevPoolAmt / POINTS_PER_MONTH);
-		const grantCur = Math.min(curBlocks, tiers);
-		const grantPrev = Math.min(prevBlocks, tiers);
-
-		for (let i = 0; i < grantCur; i += 1) {
-			await upsertPacket(
-				db,
-				{
-					merchant_user_id: merchantUserId,
-					month_no: ym,
-					title: `本月待返补贴 ${ym} #${i + 1}`,
-					amount: POINTS_PER_MONTH,
-					status: 'pending',
-					create_time: nowTs,
-					update_time: nowTs,
-					is_deleted: false,
-					expire_time: nowTs + CLAIM_WINDOW_MS,
-					claim_open_time: nowTs,
-					subsidy_kind: 'release_pool_current',
-					dedup_key: `pool_cur_${merchantUserId}_${ym}_${i}`,
-					subsidy_flow_month: ym,
-					subsidy_block_index: i,
-					installment_index: 2,
-					anchor_flow_yuan: Number(curPoolAmt.toFixed(4)),
-					unlock_flow_yuan: (i + 1) * 10000
-				},
-				dedupSet
-			);
-		}
-
-		for (let i = 0; i < grantPrev; i += 1) {
-			await upsertPacket(
-				db,
-				{
-					merchant_user_id: merchantUserId,
-					month_no: ym,
-					title: `上月待返补贴 ${prevYm} #${i + 1}`,
-					amount: POINTS_PER_MONTH,
-					status: 'pending',
-					create_time: nowTs,
-					update_time: nowTs,
-					is_deleted: false,
-					expire_time: nowTs + CLAIM_WINDOW_MS,
-					claim_open_time: nowTs,
-					subsidy_kind: 'release_pool_prev',
-					dedup_key: `pool_prev_${merchantUserId}_${prevYm}_to_${ym}_${i}`,
-					subsidy_flow_month: prevYm,
-					subsidy_block_index: i,
-					installment_index: 2,
-					anchor_flow_yuan: Number(prevPoolAmt.toFixed(4)),
-					unlock_flow_yuan: (i + 1) * 10000
-				},
-				dedupSet
-			);
-		}
-	}
-
-	// 非会员：首期气泡当月流水满5万后统一开放，并从开放时刻起算15天
-	if (!isMember) {
-		const pendingRes = await db
-			.collection('hsy-income-packets')
-			.where({ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false, subsidy_kind: 'trade_first' })
-			.limit(2000)
-			.get();
-		for (const p of pendingRes.data || []) {
-			if (Number(p.claim_open_time || 0) > 0) continue;
-			const ym = String(p.month_no || '');
-			const mf = Number(monthFlowMap[ym] || 0);
-			if (mf < 50000) continue;
-			await db.collection('hsy-income-packets').doc(p._id).update({
-				claim_open_time: nowTs,
-				expire_time: nowTs + CLAIM_WINDOW_MS,
-				update_time: nowTs
-			});
+		const dueBySource = deferredDueByTargetMonth[ym] || {};
+		const sourceMonths = Object.keys(dueBySource).sort();
+		let granted = 0;
+		for (const srcYm of sourceMonths) {
+			if (granted >= tiers) break;
+			const chunks = Array.isArray(dueBySource[srcYm]) ? dueBySource[srcYm] : [];
+			if (!chunks.length) continue;
+			const canGrant = Math.min(chunks.length, tiers - granted);
+			for (let i = 0; i < canGrant; i += 1) {
+				const chunkAmt = Number(chunks[i] || 0);
+				if (chunkAmt > 0) {
+					await upsertPacket(
+						db,
+						{
+							merchant_user_id: merchantUserId,
+							month_no: ym,
+							title: `分期待返补贴 ${srcYm} #${i + 1}`,
+							amount: chunkAmt,
+							status: 'pending',
+							create_time: nowTs,
+							update_time: nowTs,
+							is_deleted: false,
+							expire_time: nowTs + CLAIM_WINDOW_MS,
+							claim_open_time: nowTs,
+							subsidy_kind: 'release_pool_history',
+							dedup_key: `pool_hist_${merchantUserId}_${srcYm}_to_${ym}_${i}`,
+							subsidy_flow_month: srcYm,
+							subsidy_block_index: i,
+							installment_index: 2,
+							anchor_flow_yuan: Number(chunks.reduce((s, x) => s + Number(x || 0), 0).toFixed(4)),
+							unlock_flow_yuan: (granted + 1) * 10000
+						},
+						dedupSet
+					);
+				}
+				granted += 1;
+				if (granted >= tiers) break;
+			}
 		}
 	}
 

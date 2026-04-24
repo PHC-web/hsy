@@ -120,7 +120,7 @@
 							:disabled="!canSendRefundEntry"
 							@click="sendRefundEntry"
 						>
-							发送退款入口(72h)
+							发送退款入口
 						</button>
 						<button type="primary" size="mini" :loading="replying" :disabled="sendReplyDisabled" @click="submitReply">
 							发送回复
@@ -159,7 +159,7 @@ export default {
 	},
 	computed: {
 		canSendRefundEntry() {
-			return !!(this.currentTicket && this.currentTicket.status === 'open' && this.currentMerchant && this.currentMerchant.isMember);
+			return !!(this.currentTicket && this.currentTicket.status === 'open' && this.currentMerchant && this.currentMerchant.canSendRefundEntry);
 		},
 		sendReplyDisabled() {
 			const t = String(this.replyText || '').trim();

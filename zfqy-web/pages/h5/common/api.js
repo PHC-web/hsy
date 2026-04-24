@@ -119,6 +119,11 @@ export function h5CouponMyList() {
 	return merchantCall('h5CouponMyList', merchantIdentity());
 }
 
+export function h5ExchangeCouponRedeem(code) {
+	const p = typeof code === 'string' ? { code } : (code || {});
+	return merchantCall('h5ExchangeCouponRedeem', merchantIdentity(p));
+}
+
 export function h5RechargeOptions() {
 	return merchantCall('h5RechargeOptions', merchantIdentity());
 }
@@ -139,6 +144,11 @@ export function h5RefundReset(reason) {
 
 export function h5RefundEntryValidate(payload) {
 	return merchantCall('h5RefundEntryValidate', merchantIdentity(payload || {}));
+}
+
+/** H5 退款：待用户在微信内确认收款时，拉取 requestMerchantTransfer 所需 package */
+export function h5RefundConfirmPackage(payload) {
+	return merchantCall('h5RefundConfirmPackage', merchantIdentity(payload || {}));
 }
 
 export function h5TransferStatus(outBillNo) {
