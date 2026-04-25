@@ -11,6 +11,14 @@
 		"price": { "bsonType": "number", "description": "套餐价格", "default": 0 },
 		"description": { "bsonType": "string", "description": "套餐说明" },
 		"membership_name": { "bsonType": "string", "description": "会员名称（H5 展示，如白金会员、钻石会员）" },
+		"sort_order": { "bsonType": "number", "description": "排序值（越小越靠前）", "default": 0 },
+		"related_product_ids": {
+			"bsonType": "array",
+			"description": "关联商品ID列表",
+			"items": { "bsonType": "string" }
+		},
+		"pick_total": { "bsonType": "number", "description": "几选几中的可选数量（几）", "default": 0 },
+		"pick_required": { "bsonType": "number", "description": "几选几中的必选数量（选几）", "default": 0 },
 		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
 		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
 		"delete_time": { "bsonType": "timestamp", "description": "删除时间" },

@@ -31,6 +31,7 @@
 							<uni-th align="center" width="60">协议</uni-th>
 							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具号码</uni-th>
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'wxNickname')">微信用户</uni-th>
+							<uni-th align="center" width="140" filter-type="select" :filter-data="membershipLevelFilterData" @filter-change="headerFilterChange($event, 'membershipLevel')">会员级别</uni-th>
 							<uni-th align="center" width="90">剩余额度</uni-th>
 							<uni-th align="center" width="90">待提现</uni-th>
 							<uni-th align="center" width="90">已提现</uni-th>
@@ -40,7 +41,6 @@
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag1')">1</uni-th>
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag2')">2</uni-th>
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
-							<uni-th align="center" width="90" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'microMerchant')">小微商户</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
 							<uni-th align="center" width="120">操作</uni-th>
 						</uni-tr>
@@ -52,10 +52,16 @@
 								<image class="agreement" :src="item.agreement || defaultAgreement" mode="aspectFill" @click="previewImg(item.agreement || defaultAgreement)" />
 							</uni-td>
 							<uni-td align="center">
-								<view class="cell-multiline">{{ item.deviceDisplay }}</view>
+								<view class="cell-multiline">{{ formatDeviceDisplay(item.deviceDisplay) }}</view>
 							</uni-td>
 							<uni-td align="center">
-								<view class="cell-multiline">{{ item.wxUser }}</view>
+								<view class="cell-multiline">{{ formatWxUserDisplay(item.wxUser) }}</view>
+							</uni-td>
+							<uni-td align="center">
+								<view class="member-cell">
+									<view>{{ item.membershipLevel || '普通会员' }}</view>
+									<view class="member-open-time">{{ item.membershipOpenedAt || '-' }}</view>
+								</view>
 							</uni-td>
 							<uni-td align="center" class="money">{{ item.remainingQuota }}</uni-td>
 							<uni-td align="center" class="money">{{ item.pendingWithdraw }}</uni-td>
@@ -73,9 +79,6 @@
 							</uni-td>
 							<uni-td align="center">
 								<switch :checked="item.flag3" @change="onSwitch(item, 'flag3', $event.detail.value)" />
-							</uni-td>
-							<uni-td align="center">
-								<switch :checked="item.microMerchant" @change="onSwitch(item, 'micro_merchant', $event.detail.value)" />
 							</uni-td>
 							<uni-td align="center">{{ item.loginTime }}</uni-td>
 							<uni-td align="center">
@@ -211,7 +214,7 @@ export default {
 				flag1: '',
 				flag2: '',
 				flag3: '',
-				microMerchant: '',
+				membershipLevel: '',
 				loginTime: '',
 				loginTimeStart: '',
 				loginTimeEnd: ''
@@ -225,6 +228,7 @@ export default {
 				{ text: '禁用', value: '0', checked: false },
 				{ text: '启用', value: '1', checked: false }
 			],
+			membershipLevelFilterData: [],
 			list: [],
 			loading: false,
 			pageInfo: {
@@ -276,9 +280,42 @@ export default {
 		}
 	},
 	mounted() {
+		this.loadMembershipLevelFilterData();
 		this.search();
 	},
 	methods: {
+		async loadMembershipLevelFilterData() {
+			try {
+				const ret = await this.$request('quotaList', { page: 1, pageSize: 200 }, { functionName: 'merchant' });
+				const names = new Set(['普通会员', '白银会员']);
+				if (ret.code === 0) {
+					(ret.data?.list || []).forEach((x) => {
+						const n = String(x.membershipName || '').trim();
+						if (n) names.add(n);
+					});
+				}
+				this.membershipLevelFilterData = Array.from(names).map((x) => ({ text: x, value: x, checked: false }));
+			} catch (e) {
+				this.membershipLevelFilterData = [
+					{ text: '普通会员', value: '普通会员', checked: false },
+					{ text: '白银会员', value: '白银会员', checked: false }
+				];
+			}
+		},
+		formatDeviceDisplay(raw) {
+			const text = String(raw || '').trim();
+			if (!text) return '-';
+			const parts = text.split('/');
+			if (parts.length < 2) return text;
+			return `${parts[0]}\n${parts.slice(1).join('/')}`;
+		},
+		formatWxUserDisplay(raw) {
+			const text = String(raw || '').trim();
+			if (!text) return '-';
+			const parts = text.split('/');
+			if (parts.length < 2) return text;
+			return `${parts[0]}\n${parts.slice(1).join('/')}`;
+		},
 		getMouseClient(e) {
 			const evt = e && (e.originalEvent || e);
 			return {
@@ -364,7 +401,7 @@ export default {
 				sf.deviceId = String(filter == null ? '' : filter).trim().slice(0, 50);
 			} else if (field === 'wxNickname' && filterType === 'search') {
 				sf.wxNickname = String(filter == null ? '' : filter).trim().slice(0, 50);
-			} else if (['useStatus', 'flag1', 'flag2', 'flag3', 'microMerchant'].includes(field) && filterType === 'select') {
+			} else if (['useStatus', 'flag1', 'flag2', 'flag3', 'membershipLevel'].includes(field) && filterType === 'select') {
 				sf[field] = Array.isArray(filter) && filter.length ? String(filter[0]) : '';
 			} else if (field === 'loginTime' && filterType === 'timestamp') {
 				const { start, end } = this.parseTimestampRange(filter);
@@ -386,7 +423,7 @@ export default {
 				flag1: this.searchForm.flag1,
 				flag2: this.searchForm.flag2,
 				flag3: this.searchForm.flag3,
-				microMerchant: this.searchForm.microMerchant,
+				membershipLevel: this.searchForm.membershipLevel,
 				loginTimeStart: this.searchForm.loginTimeStart,
 				loginTimeEnd: this.searchForm.loginTimeEnd
 			}, { functionName: 'merchant' }).then(res => {
@@ -410,7 +447,7 @@ export default {
 				flag1: '',
 				flag2: '',
 				flag3: '',
-				microMerchant: '',
+				membershipLevel: '',
 				loginTime: '',
 				loginTimeStart: '',
 				loginTimeEnd: ''
@@ -420,11 +457,13 @@ export default {
 			this.search();
 		},
 		onPageChanged(page) {
-			this.pageInfo.currentPage = page;
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.pageInfo.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
 			this.search();
 		},
 		onPageSizeChange(size) {
-			this.pageInfo.pageSize = size;
+			const s = typeof size === 'number' ? size : Number(size?.pageSize || size?.size || size || 10);
+			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 10;
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
@@ -450,7 +489,7 @@ export default {
 				flag1: sf.flag1,
 				flag2: sf.flag2,
 				flag3: sf.flag3,
-				microMerchant: sf.microMerchant,
+				membershipLevel: sf.membershipLevel,
 				loginTimeStart: sf.loginTimeStart,
 				loginTimeEnd: sf.loginTimeEnd
 			}, { functionName: 'merchant' });
@@ -458,6 +497,8 @@ export default {
 			return (ret.data?.list || []).map((x) => ({
 				机具号码: x.deviceNo || '',
 				微信用户: x.wxUser || '',
+				会员级别: x.membershipLevel || '普通会员',
+				开通会员时间: x.membershipOpenedAt || '-',
 				剩余额度: x.remainingQuota || '',
 				待提现: x.pendingWithdraw || '',
 				已提现: x.withdrawn || '',
@@ -467,7 +508,6 @@ export default {
 				开关1: x.flag1 ? '启用' : '禁用',
 				开关2: x.flag2 ? '启用' : '禁用',
 				开关3: x.flag3 ? '启用' : '禁用',
-				小微商户: x.microMerchant ? '启用' : '禁用',
 				登录时间: x.loginTime || ''
 			}));
 		},
@@ -706,6 +746,15 @@ export default {
 .cell-multiline {
 	white-space: pre-line;
 	line-height: 18px;
+}
+
+.member-cell {
+	line-height: 18px;
+}
+
+.member-open-time {
+	font-size: 12px;
+	color: #909399;
 }
 
 .money {

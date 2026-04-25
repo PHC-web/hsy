@@ -34,6 +34,11 @@
 					</view>
 				</view>
 
+				<view v-if="showSilverTradeStat" class="glass silver-trade-card">
+					<text class="silver-trade-title">当月流水统计</text>
+					<text class="silver-trade-value">¥{{ silverMonthTradeYuan }}</text>
+				</view>
+
 				<!-- 提现统计 -->
 				<view class="section-label">
 					<text class="section-title">提现累积</text>
@@ -83,19 +88,11 @@
 						<text class="prestore-title">额度预存</text>
 						<text class="prestore-sub">快捷进入预存页面，升级档位与额度</text>
 						<view class="prestore-packages">
-							<view class="prestore-pkg-row">
-								<text class="prestore-pkg-tag">黄金会员</text>
-								<text class="prestore-pkg-text">配置100万交易量，补贴市场价约3800元手续费</text>
+							<view v-for="pkg in prestorePackages" :key="pkg.id || pkg.price" class="prestore-pkg-row">
+								<text class="prestore-pkg-tag">{{ pkg.membershipName || '会员' }}</text>
+								<text class="prestore-pkg-text">{{ pkg.title }}：{{ pkg.benefitTip || '查看详情请进入预存页' }}</text>
 							</view>
-							<view class="prestore-pkg-row">
-								<text class="prestore-pkg-tag">白金会员</text>
-								<text class="prestore-pkg-text">配置150万交易量，补贴市场价约5700元手续费</text>
-							</view>
-							<view class="prestore-pkg-row">
-								<text class="prestore-pkg-tag">钻石会员</text>
-								<text class="prestore-pkg-text">配置200万交易量，补贴市场价约7600元手续费</text>
-							</view>
-							<text class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（钻石会员专享）</text>
+							<text v-if="hasGiftPackage" class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（指定档位专享）</text>
 						</view>
 					</view>
 					<text class="prestore-arrow">›</text>
@@ -134,8 +131,10 @@ export default {
 			mine: {},
 			membership: { tier: 'normal', name: '普通会员', accent: '#94a3b8' },
 			withdraw: { today: '0.00', month: '0.00', year: '0.00' },
+			withdrawContext: { role: '', silverMonthTradeYuan: 0 },
 			pendingWithdraw: '0.00',
 			quota: { remaining: '0.00', totalGrantedYuan: 0, usedYuan: '0.00' },
+			prestorePackages: [],
 			defaultAvatar: H5_APP_LOGO
 		};
 	},
@@ -158,6 +157,15 @@ export default {
 		deviceDisplayText() {
 			const d = this.mine.deviceDisplay || this.mine.deviceId || '未绑定';
 			return String(d);
+		},
+		showSilverTradeStat() {
+			return String(this.withdrawContext.role || '') === 'silver_member';
+		},
+		silverMonthTradeYuan() {
+			return Number(this.withdrawContext.silverMonthTradeYuan || 0).toFixed(2);
+		},
+		hasGiftPackage() {
+			return (this.prestorePackages || []).some((x) => x && x.giftChoiceRequired);
 		}
 	},
 	onShow() {
@@ -180,9 +188,11 @@ export default {
 					deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || ''
 				});
 				this.membership = d.membership || this.membership;
+				this.withdrawContext = d.withdrawContext || this.withdrawContext;
 				this.withdraw = d.withdraw || this.withdraw;
 				this.pendingWithdraw = d.pendingWithdraw || '0.00';
 				this.quota = Object.assign({}, this.quota, d.quota || {});
+				this.prestorePackages = (d.rechargePackages || []).slice(0, 6);
 			} finally {
 				clearTimeout(maskTimer);
 				this.pending = false;
@@ -378,6 +388,24 @@ export default {
 .hero-foot-txt {
 	font-size: 12px;
 	color: rgba(203, 213, 225, 0.72);
+}
+
+.silver-trade-card {
+	margin-bottom: 14px;
+	padding: 14px 16px;
+}
+.silver-trade-title {
+	display: block;
+	font-size: 12px;
+	color: rgba(148, 163, 184, 0.95);
+}
+.silver-trade-value {
+	display: block;
+	margin-top: 6px;
+	font-size: 24px;
+	font-weight: 800;
+	color: #a7f3d0;
+	letter-spacing: 0.02em;
 }
 
 .section-label {

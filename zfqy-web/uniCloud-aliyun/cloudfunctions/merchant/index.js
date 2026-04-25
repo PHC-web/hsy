@@ -4,6 +4,7 @@ const db = uniCloud.database();
 const merchantCollection = db.collection('hsy-merchant-users');
 const withdrawCollection = db.collection('hsy-withdraw-records');
 const couponCollection = db.collection('hsy-coupons');
+const productCollection = db.collection('hsy-products');
 const couponInstanceCollection = db.collection('hsy-coupon-instances');
 const quotaCollection = db.collection('hsy-quota-packages');
 const machineCollection = db.collection('hsy-machine');
@@ -30,9 +31,11 @@ const subsidyEngine = require('./subsidy-engine.js');
 const redisH5 = require('./redis-h5.js');
 /** Redis 键：与云函数多实例共享热点，未开通 Redis 时自动跳过 */
 const REDIS_KEY_QUOTA_PKGS = 'hsy:h5:quota:pkgs';
+const REDIS_KEY_PRODUCTS = 'hsy:products:list';
 const REDIS_KEY_BIZ = 'hsy:biz:settings';
 const REDIS_KEY_AGR = 'hsy:h5:agreement:current';
 const REDIS_EX_QUOTA_SEC = 90;
+const REDIS_EX_PRODUCTS_SEC = 90;
 const REDIS_EX_BIZ_SEC = 55;
 const REDIS_EX_AGR_SEC = 40;
 const REDIS_EX_WD_SUM_SEC = 28;
@@ -372,6 +375,7 @@ async function listMerchants(data) {
 			flag1 = '',
 			flag2 = '',
 			flag3 = '',
+			membershipLevel = '',
 			microMerchant = '',
 			loginTimeStart = '',
 			loginTimeEnd = ''
@@ -380,6 +384,7 @@ async function listMerchants(data) {
 		let query = merchantCollection;
 
 		const where = {};
+		const whereParts = [];
 		if (mobile) where.mobile = new RegExp(String(mobile));
 		if (deviceId) where.device_id = new RegExp(String(deviceId));
 		if (wxNickname) where.wx_nickname = new RegExp(String(wxNickname));
@@ -401,6 +406,13 @@ async function listMerchants(data) {
 		if (f3 !== undefined) where.flag3 = f3;
 		if (fm !== undefined) where.micro_merchant = fm;
 
+		const rechargePackages = await loadRechargePackagesFromQuota();
+		const membershipLevelText = safeText(membershipLevel, 40);
+		if (membershipLevelText) {
+			const memWhere = buildMerchantMembershipWhereForAdmin(membershipLevelText, rechargePackages);
+			if (memWhere) whereParts.push(memWhere);
+		}
+
 		if (loginTimeStart) where.login_time = db.command.gte(Number(loginTimeStart));
 		if (loginTimeEnd) {
 			where.login_time = where.login_time
@@ -408,49 +420,77 @@ async function listMerchants(data) {
 				: db.command.lte(Number(loginTimeEnd));
 		}
 
-		query = query.where(where);
+		whereParts.unshift(where);
+		const finalWhere = whereParts.length > 1 ? db.command.and(whereParts) : where;
+		query = query.where(finalWhere);
 
-		const countRes = await query.count();
+		const [countRes, res, biz] = await Promise.all([
+			query.count(),
+			query
+				.orderBy('login_time', 'desc')
+				.skip((page - 1) * pageSize)
+				.limit(pageSize)
+				.field({
+					user_id: true,
+					wx_avatar: true,
+					agreement_img: true,
+					device_id: true,
+					brand_name: true,
+					wx_nickname: true,
+					mobile: true,
+					account_points: true,
+					withdrawn: true,
+					coupon_count: true,
+					status: true,
+					flag1: true,
+					flag2: true,
+					flag3: true,
+					micro_merchant: true,
+					use_status: true,
+					login_time: true,
+					recharge_package_id: true,
+					recharge_package_price: true,
+					recharge_cycle_start: true,
+					recharge_update_time: true,
+					silver_member: true,
+					silver_member_start_at: true,
+					silver_member_end_at: true,
+					membership_name: true,
+					recharge_package_quota: true,
+					recharge_package_reward: true,
+					estimated_free_quota: true,
+					frozen_amount: true
+				})
+				.get(),
+			getBizSettings()
+		]);
 		const total = countRes.total;
-
-		const res = await query
-			.orderBy('login_time', 'desc')
-			.skip((page - 1) * pageSize)
-			.limit(pageSize)
-			.get();
-
 		const rows = res.data || [];
-		const nowList = nowTs();
-		const biz = await getBizSettings();
-		let frozenByUid = new Map();
-		try {
-			frozenByUid = await batchComputeFutureDeferredFrozenForMerchants(rows, nowList);
-		} catch (e) {
-			console.error('batchComputeFutureDeferredFrozenForMerchants', e);
-		}
 
 		// pendingWithdraw：与 H5 待提现金额/账号积分一致 = account_points（已领取未发起提现扣减的积分，1:1 元）
 		const list = rows.map((item) => {
-			const uid = String(item.user_id || item._id || '');
-			const frozenYuan = uid && frozenByUid.has(uid) ? frozenByUid.get(uid) : 0;
+			const frozenYuan = Number(item.frozen_amount || 0);
 			const totalGrantedYuan = h5WithdrawQuotaTotalYuan(item, biz.rechargeRules);
 			const withdrawnYuan = Number(item.withdrawn || 0);
 			const remainingQuotaYuan = totalGrantedYuan > 0
 				? Math.max(0, Number((totalGrantedYuan - withdrawnYuan).toFixed(2)))
 				: 0;
+			const membership = resolveMerchantMembershipForAdmin(item, rechargePackages);
 			return {
 			id: item._id,
 			userId: item.user_id || item._id,
 			avatar: item.wx_avatar || '',
 			agreement: item.agreement_img || '',
 			deviceNo: item.device_id,
-			deviceDisplay: `${item.device_id}/${item.brand_name || '-'}`,
-			wxUser: `${item.wx_nickname || '-'}${item.mobile ? '/' + item.mobile : ''}`,
+			deviceDisplay: `${item.device_id || '-'}\n${item.brand_name || '-'}`,
+			wxUser: `${item.wx_nickname || '-'}\n${item.mobile || '-'}`,
 			remainingQuota: toMoney(remainingQuotaYuan),
 			pendingWithdraw: toMoney(item.account_points),
 			withdrawn: toMoney(item.withdrawn),
 			frozenAmount: toMoney(frozenYuan),
 			couponCount: item.coupon_count || 0,
+			membershipLevel: membership.level,
+			membershipOpenedAt: membership.openedAt ? formatTime(membership.openedAt) : '-',
 			status: !!item.status,
 			flag1: !!item.flag1,
 			flag2: !!item.flag2,
@@ -470,6 +510,88 @@ async function listMerchants(data) {
 		console.error('获取商户列表失败:', error);
 		return { code: 500, message: '获取失败' };
 	}
+}
+
+function buildMerchantMembershipWhereForAdmin(levelText, rechargePackages = []) {
+	const _ = db.command;
+	const lvl = String(levelText || '').trim();
+	if (!lvl) return null;
+	const now = nowTs();
+	if (lvl === '白银会员') {
+		return _.or([
+			{ membership_name: lvl },
+			_.and([
+			{ silver_member: true },
+			_.or([{ silver_member_end_at: _.gt(now) }, { silver_member_end_at: 0 }, { silver_member_end_at: _.exists(false) }])
+			])
+		]);
+	}
+	if (lvl === '普通会员') {
+		return _.and([
+			_.or([{ membership_name: lvl }, { membership_name: _.exists(false) }, { membership_name: '' }, { membership_name: null }]),
+			_.or([{ silver_member: _.neq(true) }, { silver_member: _.exists(false) }]),
+			_.or([{ recharge_package_price: _.lte(0) }, { recharge_package_price: _.exists(false) }, { recharge_package_price: null }]),
+			_.or([{ recharge_package_id: '' }, { recharge_package_id: _.exists(false) }, { recharge_package_id: null }])
+		]);
+	}
+	const packages = Array.isArray(rechargePackages) ? rechargePackages : [];
+	const ids = [...new Set(packages.filter((x) => String(x?.membershipName || '').trim() === lvl).map((x) => String(x.id || '').trim()).filter(Boolean))];
+	const prices = [...new Set(packages.filter((x) => String(x?.membershipName || '').trim() === lvl).map((x) => Number(x.price || 0)).filter((n) => Number.isFinite(n) && n > 0))];
+	if (!ids.length && !prices.length) {
+		return { membership_name: lvl };
+	}
+	const orParts = [];
+	orParts.push({ membership_name: lvl });
+	if (ids.length) orParts.push({ recharge_package_id: _.in(ids) });
+	if (prices.length) orParts.push({ recharge_package_price: _.in(prices) });
+	return _.or(orParts);
+}
+
+function resolveMerchantMembershipForAdmin(merchant, rechargePackages = null) {
+	const now = nowTs();
+	const silverStartAt = Number(merchant?.silver_member_start_at || 0);
+	const silverEndAt = Number(merchant?.silver_member_end_at || 0);
+	if (merchant?.silver_member === true && (!silverEndAt || silverEndAt > now)) {
+		return { level: '白银会员', openedAt: silverStartAt };
+	}
+	const directName = String(merchant?.membership_name || '').trim();
+	if (directName) {
+		return {
+			level: directName,
+			openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0)
+		};
+	}
+	const tag = String(merchant?.member_tier || merchant?.membership_tier || merchant?.h5_member_tier || '').toLowerCase();
+	if (tag === 'diamond') {
+		return { level: '钻石会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+	}
+	if (tag === 'platinum') {
+		return { level: '铂金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+	}
+	if (tag === 'white_gold' || tag === 'gold' || tag === 'whitegold') {
+		return { level: '白金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+	}
+	// 与 H5 首页保持同源判定：优先使用动态额度包（含后台新增套餐）
+	const m = h5MembershipInfo(merchant, Array.isArray(rechargePackages) && rechargePackages.length ? rechargePackages : null);
+	if (m && m.tier && m.tier !== 'normal') {
+		return {
+			level: String(m.name || '会员'),
+			openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0)
+		};
+	}
+	// 历史数据兜底：部分老商户未记录 package_id/price，但记录了奖励额度或目标额度
+	const reward = Number(merchant?.recharge_package_reward || 0);
+	const quota = Number(merchant?.estimated_free_quota || merchant?.recharge_package_quota || 0);
+	if (reward >= 7600 || quota >= 2000000) {
+		return { level: '钻石会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+	}
+	if (reward >= 5700 || quota >= 1500000) {
+		return { level: '铂金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+	}
+	if (reward >= 3800 || quota >= 1000000) {
+		return { level: '白金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+	}
+	return { level: '普通会员', openedAt: 0 };
 }
 
 async function updateSwitch(data) {
@@ -1152,6 +1274,174 @@ async function tradeBillDelete(data, event) {
 	} catch (error) {
 		console.error('tradeBillDelete failed:', error);
 		return { code: 500, message: '删除失败' };
+	}
+}
+
+async function financeMerchantFlowList(data) {
+	try {
+		const {
+			page = 1,
+			pageSize = 10,
+			bizType = '',
+			merchantKeyword = '',
+			orderNo = '',
+			timeStart = '',
+			timeEnd = ''
+		} = data || {};
+		const _ = db.command;
+		const logWhereParts = [
+			{ action: _.in(['offline_first_recharge', 'h5_quota_recharge', 'h5_refund_reset']) },
+			_.or([{ is_deleted: false }, { is_deleted: _.exists(false) }])
+		];
+		if (timeStart && timeEnd) {
+			logWhereParts.push(_.and([{ create_time: _.gte(Number(timeStart)) }, { create_time: _.lte(Number(timeEnd)) }]));
+		} else if (timeStart) {
+			logWhereParts.push({ create_time: _.gte(Number(timeStart)) });
+		} else if (timeEnd) {
+			logWhereParts.push({ create_time: _.lte(Number(timeEnd)) });
+		}
+		const logWhere = logWhereParts.length === 1 ? logWhereParts[0] : _.and(logWhereParts);
+
+		const wdWhereParts = [
+			{ is_deleted: _.neq(true) },
+			{ is_paid: true },
+			{ arrival_status: 'received' }
+		];
+		if (timeStart && timeEnd) {
+			wdWhereParts.push(
+				_.or([
+					_.and([{ arrival_time: _.gte(Number(timeStart)) }, { arrival_time: _.lte(Number(timeEnd)) }]),
+					_.and([{ pay_time: _.gte(Number(timeStart)) }, { pay_time: _.lte(Number(timeEnd)) }]),
+					_.and([{ create_time: _.gte(Number(timeStart)) }, { create_time: _.lte(Number(timeEnd)) }])
+				])
+			);
+		} else if (timeStart) {
+			wdWhereParts.push(
+				_.or([{ arrival_time: _.gte(Number(timeStart)) }, { pay_time: _.gte(Number(timeStart)) }, { create_time: _.gte(Number(timeStart)) }])
+			);
+		} else if (timeEnd) {
+			wdWhereParts.push(
+				_.or([{ arrival_time: _.lte(Number(timeEnd)) }, { pay_time: _.lte(Number(timeEnd)) }, { create_time: _.lte(Number(timeEnd)) }])
+			);
+		}
+		const wdWhere = wdWhereParts.length === 1 ? wdWhereParts[0] : _.and(wdWhereParts);
+
+		const [logRes, wdRes] = await Promise.all([
+			operationLogCollection.where(logWhere).orderBy('create_time', 'desc').limit(20000).get(),
+			withdrawCollection.where(wdWhere).orderBy('create_time', 'desc').limit(20000).get()
+		]);
+		const logs = logRes.data || [];
+		const withdraws = wdRes.data || [];
+
+		const merchantKeys = [
+			...new Set([
+				...logs.map((x) => String(x.target_id || '')).filter(Boolean),
+				...withdraws.map((x) => String(x.merchant_user_id || '')).filter(Boolean)
+			])
+		];
+		const merchantMap = {};
+		if (merchantKeys.length) {
+			const [byId, byUserId] = await Promise.all([
+				merchantCollection.where({ _id: _.in(merchantKeys) }).limit(20000).get(),
+				merchantCollection.where({ user_id: _.in(merchantKeys) }).limit(20000).get()
+			]);
+			(byId.data || []).forEach((m) => {
+				merchantMap[String(m._id)] = m;
+			});
+			(byUserId.data || []).forEach((m) => {
+				merchantMap[String(m.user_id || '')] = m;
+			});
+		}
+
+		const rows = [];
+		for (const row of logs) {
+			const merchant = merchantMap[String(row.target_id || '')] || null;
+			const merchantName = merchant?.wx_nickname || merchant?.mobile || row.target_name || '-';
+			const merchantMobile = merchant?.mobile || '-';
+			const ts = Number(row.create_time || 0);
+			if (row.action === 'offline_first_recharge' || row.action === 'h5_quota_recharge') {
+				const amount = Number(row.package_price || 0);
+				const order = safeText(row.platform_no || row.offline_order_no || '', 80) || '-';
+				rows.push({
+					recordKey: `in:${row._id}`,
+					bizType: '充值',
+					direction: '入账',
+					merchantDisplay: `${merchantName}\n${merchantMobile}`,
+					changeAmount: amount,
+					changeAmountText: `￥${amount.toFixed(2)}`,
+					actualAmount: amount,
+					actualAmountText: `￥${amount.toFixed(2)}`,
+					orderNo: order,
+					remark: row.action === 'offline_first_recharge' ? '线下首冲额度' : (safeText(row.package_title || '', 80) || 'H5额度充值'),
+					finishTime: formatTime(ts),
+					_ts: ts
+				});
+				continue;
+			}
+			if (row.action === 'h5_refund_reset') {
+				const outAmount = Number(row.refund_final_amount || row.refund_amount || 0);
+				const refundAmount = Number(row.refund_amount || 0);
+				const penalty = Number(row.refund_penalty_amount || 0);
+				const order = safeText(row.platform_no || '', 80) || '-';
+				rows.push({
+					recordKey: `out_refund:${row._id}`,
+					bizType: '退款',
+					direction: '出账',
+					merchantDisplay: `${merchantName}\n${merchantMobile}`,
+					changeAmount: outAmount,
+					changeAmountText: `￥${outAmount.toFixed(2)}`,
+					actualAmount: outAmount,
+					actualAmountText: `￥${outAmount.toFixed(2)}`,
+					orderNo: order,
+					remark: `原申请:${refundAmount.toFixed(2)}，违约金:${penalty.toFixed(2)}`,
+					finishTime: formatTime(ts),
+					_ts: ts
+				});
+			}
+		}
+
+		for (const wd of withdraws) {
+			const merchant = merchantMap[String(wd.merchant_user_id || '')] || null;
+			const merchantName = merchant?.wx_nickname || wd.user_nickname || wd.user_mobile || '-';
+			const merchantMobile = merchant?.mobile || wd.user_mobile || '-';
+			const ts = Number(wd.arrival_time || wd.pay_time || wd.create_time || 0);
+			const amount = Number(wd.amount || 0);
+			const payable = Number(wd.payable || 0);
+			rows.push({
+				recordKey: `out_withdraw:${wd._id}`,
+				bizType: '提现',
+				direction: '出账',
+				merchantDisplay: `${merchantName}\n${merchantMobile}`,
+				changeAmount: amount,
+				changeAmountText: `￥${amount.toFixed(2)}`,
+				actualAmount: payable,
+				actualAmountText: `￥${payable.toFixed(2)}`,
+				orderNo: safeText(wd.withdraw_no || wd.wx_trade_no || '', 80) || '-',
+				remark: `税费:${Number(wd.fee_tax || 0).toFixed(2)}`,
+				finishTime: formatTime(ts),
+				_ts: ts
+			});
+		}
+
+		let filtered = rows;
+		if (bizType) filtered = filtered.filter((x) => x.bizType === String(bizType));
+		if (merchantKeyword) {
+			const kw = String(merchantKeyword).toLowerCase();
+			filtered = filtered.filter((x) => String(x.merchantDisplay || '').toLowerCase().includes(kw));
+		}
+		if (orderNo) {
+			const kw = String(orderNo).toLowerCase();
+			filtered = filtered.filter((x) => String(x.orderNo || '').toLowerCase().includes(kw));
+		}
+		filtered.sort((a, b) => Number(b._ts || 0) - Number(a._ts || 0));
+		const total = filtered.length;
+		const s = (Number(page) - 1) * Number(pageSize);
+		const e = s + Number(pageSize);
+		const list = filtered.slice(s, e).map(({ _ts, ...rest }) => rest);
+		return { code: 0, message: 'ok', data: { list, total, page: Number(page), pageSize: Number(pageSize) } };
+	} catch (error) {
+		console.error('financeMerchantFlowList failed:', error);
+		return { code: 500, message: '获取交易记录失败' };
 	}
 }
 
@@ -4417,6 +4707,8 @@ async function h5HomeDashboard(data) {
 				.catch((e) => console.error('h5HomeDashboard cycle norm', e));
 		}
 		const membership = h5MembershipInfo(merchant, rechargePackages);
+		const withdrawRole = resolveH5WithdrawRole(merchant);
+		const silverMonthTradeYuan = withdrawRole === 'silver_member' ? await getH5CurrentMonthTradeYuan(merchant, now) : 0;
 		const withdrawQuotaTotalYuan = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
 		// 统一展示：剩余提现额度/可用奖励按“提现申请积分总额”扣减，不受税费/到账净额影响
 		const availableRewardYuan = Math.max(0, Number(Number(merchant.available_reward || 0).toFixed(2)));
@@ -4437,6 +4729,10 @@ async function h5HomeDashboard(data) {
 					display: deviceDisplay
 				},
 				membership,
+				withdrawContext: {
+					role: withdrawRole,
+					silverMonthTradeYuan: Number(silverMonthTradeYuan.toFixed(2))
+				},
 				withdraw: {
 					today: Number(daySum.totalWithdraw || 0).toFixed(2),
 					month: Number(monthSum.totalWithdraw || 0).toFixed(2),
@@ -4448,6 +4744,14 @@ async function h5HomeDashboard(data) {
 					totalGrantedYuan: withdrawQuotaTotalYuan,
 					usedYuan: withdrawQuotaTotalYuan > 0 ? usedQuotaYuan.toFixed(2) : '0.00'
 				},
+				rechargePackages: (rechargePackages || []).map((x) => ({
+					id: safeText(x.id, 40),
+					title: safeText(x.title, 80),
+					price: Number(x.price || 0),
+					benefitTip: safeText(x.benefitTip || '', 300),
+					membershipName: safeText(x.membershipName || '', 40),
+					giftChoiceRequired: !!x.giftChoiceRequired
+				})),
 				countdown: {
 					phase: countdown.phase,
 					days180Left: countdown.days180Left,
@@ -4498,32 +4802,7 @@ const RECHARGE_GIFT_OPTIONS = [
 	{ value: 'scan_pos', label: '扫码POS机' }
 ];
 
-// 与 600 元档同等权益（100 万额度等），标价 0.1 元用于正式环境小额支付/回调验收；列在首位便于选择
-const H5_RECHARGE_PKG_TEST_01 = {
-	id: 'pkg_0_1',
-	title: '0.1元（支付测试）',
-	price: 0.1,
-	quota: 1000000,
-	benefitTip: '与600元档同等100万额度；标价0.1元仅用于正式环境走通微信支付与回调',
-	giftChoiceRequired: false,
-	giftOptions: []
-};
-
-/** 与 1000 元档同等权益（200 万额度 + 赠品二选一），标价 0.2 元仅用于测试 */
-const H5_RECHARGE_PKG_TEST_02 = {
-	id: H5_RECHARGE_TEST_AS_1000_PKG_ID,
-	title: '0.2元（赠品测试）',
-	price: 0.2,
-	quota: 2000000,
-	benefitTip:
-		'与1000元档同等200万额度与7600元档奖励；需选择蓝牙音响或扫码POS机；标价0.2元仅用于测试支付与后台发货流程',
-	giftChoiceRequired: true,
-	giftOptions: RECHARGE_GIFT_OPTIONS
-};
-
 const H5_RECHARGE_PACKAGES = [
-	H5_RECHARGE_PKG_TEST_01,
-	H5_RECHARGE_PKG_TEST_02,
 	{ id: 'pkg_600', title: '600元', price: 600, quota: 1000000, benefitTip: '600元配置100万交易量，等于补贴市场价的3800元手续费', giftChoiceRequired: false, giftOptions: [] },
 	{ id: 'pkg_800', title: '800元', price: 800, quota: 1500000, benefitTip: '800元配置150万交易量，等于补贴市场价的5700元手续费', giftChoiceRequired: false, giftOptions: [] },
 	{
@@ -4573,6 +4852,12 @@ function parseBonusQuotaYuan(raw) {
 	return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+function parseSortOrder(raw, fallback = 0) {
+	const n = Number(raw);
+	if (!Number.isFinite(n)) return Number(fallback) || 0;
+	return Math.trunc(n);
+}
+
 async function ensureDefaultQuotaPackages() {
 	const now = nowTs();
 	for (const item of DEFAULT_QUOTA_PACKAGES) {
@@ -4584,33 +4869,52 @@ async function ensureDefaultQuotaPackages() {
 
 const RECHARGE_PKG_LIST_TTL_MS = 60000;
 let rechargePackagesListCache = { at: 0, data: null };
+function stripTestRechargePackages(list = []) {
+	const testIds = new Set(['pkg_0_1', H5_RECHARGE_TEST_AS_1000_PKG_ID]);
+	return (Array.isArray(list) ? list : []).filter((x) => !testIds.has(String(x?.id || '').trim()));
+}
 async function loadRechargePackagesFromQuota() {
 	const t = nowTs();
 	if (rechargePackagesListCache.data && t - rechargePackagesListCache.at < RECHARGE_PKG_LIST_TTL_MS) {
-		return rechargePackagesListCache.data;
+		return stripTestRechargePackages(rechargePackagesListCache.data);
 	}
 	const rList = await redisH5.h5RedisGetJson(REDIS_KEY_QUOTA_PKGS);
 	if (rList && Array.isArray(rList) && rList.length) {
-		rechargePackagesListCache = { at: t, data: rList };
-		return rList;
+		const clean = stripTestRechargePackages(rList);
+		rechargePackagesListCache = { at: t, data: clean };
+		return clean;
 	}
 	await ensureDefaultQuotaPackages();
+	const products = await loadProductsListCached();
+	const productsMap = new Map((products || []).map((x) => [String(x.id), x]));
 	const res = await quotaCollection.where({ is_deleted: false }).orderBy('price', 'asc').limit(200).get();
 	const core = (res.data || [])
 		.map((x) => ({
 			id: safeText(x.package_id, 40),
 			title: safeText(x.title, 80) || `${Number(x.price || 0)}元套餐`,
 			price: Number(x.price || 0),
+			sortOrder: parseSortOrder(x.sort_order, Number(x.price || 0)),
 			quota: parseBonusQuotaYuan(x.bonus_quota),
 			rewardYuan: Number(x.real_quota || 0),
 			benefitTip: safeText(x.description, 300),
 			membershipName: safeText(x.membership_name, 40),
+			relatedProductIds: Array.isArray(x.related_product_ids) ? x.related_product_ids.map((s) => safeText(s, 80)).filter(Boolean) : [],
+			pickTotal: Number(x.pick_total || 0),
+			pickRequired: Number(x.pick_required || 0),
+			relatedProducts: (Array.isArray(x.related_product_ids) ? x.related_product_ids : [])
+				.map((id) => productsMap.get(String(id)))
+				.filter(Boolean)
+				.map((p) => ({
+					id: p.id,
+					name: p.name,
+					image: p.images && p.images.length ? p.images[0] : ''
+				})),
 			giftChoiceRequired: Number(x.price || 0) === RECHARGE_GIFT_PRICE,
 			giftOptions: Number(x.price || 0) === RECHARGE_GIFT_PRICE ? RECHARGE_GIFT_OPTIONS : []
 		}))
 		.filter((x) => x.id && x.price > 0)
-		.sort((a, b) => a.price - b.price);
-	const out = !core.length ? H5_RECHARGE_PACKAGES : [H5_RECHARGE_PKG_TEST_01, H5_RECHARGE_PKG_TEST_02, ...core];
+		.sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || a.price - b.price);
+	const out = !core.length ? H5_RECHARGE_PACKAGES : core;
 	rechargePackagesListCache = { at: t, data: out };
 	await redisH5.h5RedisSetJson(REDIS_KEY_QUOTA_PKGS, out, REDIS_EX_QUOTA_SEC);
 	return out;
@@ -4619,6 +4923,41 @@ async function loadRechargePackagesFromQuota() {
 async function invalidateH5QuotaPackagesCache() {
 	rechargePackagesListCache = { at: 0, data: null };
 	await redisH5.h5RedisDel(REDIS_KEY_QUOTA_PKGS);
+}
+
+let productsListCache = { at: 0, data: null };
+async function loadProductsListCached() {
+	const t = nowTs();
+	if (productsListCache.data && t - productsListCache.at < RECHARGE_PKG_LIST_TTL_MS) {
+		return productsListCache.data;
+	}
+	const rList = await redisH5.h5RedisGetJson(REDIS_KEY_PRODUCTS);
+	if (Array.isArray(rList)) {
+		productsListCache = { at: t, data: rList };
+		return rList;
+	}
+	const res = await productCollection
+		.where({ is_deleted: false })
+		.orderBy('sort_order', 'asc')
+		.orderBy('create_time', 'desc')
+		.limit(1000)
+		.get();
+	const list = (res.data || []).map((x) => ({
+		id: String(x._id || ''),
+		name: safeText(x.name, 80),
+		intro: safeText(x.intro, 500),
+		images: Array.isArray(x.images) ? x.images.map((s) => safeText(s, 500)).filter(Boolean) : [],
+		isEnabled: x.is_enabled !== false,
+		sortOrder: Number(x.sort_order || 0)
+	}));
+	productsListCache = { at: t, data: list };
+	await redisH5.h5RedisSetJson(REDIS_KEY_PRODUCTS, list, REDIS_EX_PRODUCTS_SEC);
+	return list;
+}
+
+async function invalidateProductsListCache() {
+	productsListCache = { at: 0, data: null };
+	await redisH5.h5RedisDel(REDIS_KEY_PRODUCTS);
 }
 
 function buildRechargePackagesFromRules(rechargeRules = DEFAULT_RECHARGE_RULES) {
@@ -4635,7 +4974,7 @@ function buildRechargePackagesFromRules(rechargeRules = DEFAULT_RECHARGE_RULES) 
 		.filter((x) => x.price > 0)
 		.sort((a, b) => a.price - b.price);
 	if (!core.length) return H5_RECHARGE_PACKAGES;
-	return [H5_RECHARGE_PKG_TEST_01, H5_RECHARGE_PKG_TEST_02, ...core];
+	return core;
 }
 
 function pickRechargePackage(packageId, packages = H5_RECHARGE_PACKAGES) {
@@ -7470,6 +7809,120 @@ async function h5ExchangeCouponRedeem(data) {
 	}
 }
 
+async function productList(data) {
+	try {
+		const {
+			page = 1,
+			pageSize = 10,
+			name = '',
+			intro = '',
+			isEnabled = '',
+			sortOrder = '',
+			updateTimeStart = '',
+			updateTimeEnd = '',
+			createTimeStart = '',
+			createTimeEnd = ''
+		} = data || {};
+		const where = { is_deleted: false };
+		if (name) where.name = new RegExp(escapeReg(name), 'i');
+		if (intro) where.intro = new RegExp(escapeReg(intro), 'i');
+		if (isEnabled !== '' && isEnabled !== undefined && isEnabled !== null) where.is_enabled = String(isEnabled) === '1';
+		if (sortOrder !== '' && sortOrder !== undefined && sortOrder !== null) where.sort_order = parseSortOrder(sortOrder);
+		if (updateTimeStart && updateTimeEnd) where.update_time = db.command.and([db.command.gte(Number(updateTimeStart)), db.command.lte(Number(updateTimeEnd))]);
+		else if (updateTimeStart) where.update_time = db.command.gte(Number(updateTimeStart));
+		else if (updateTimeEnd) where.update_time = db.command.lte(Number(updateTimeEnd));
+		if (createTimeStart && createTimeEnd) where.create_time = db.command.and([db.command.gte(Number(createTimeStart)), db.command.lte(Number(createTimeEnd))]);
+		else if (createTimeStart) where.create_time = db.command.gte(Number(createTimeStart));
+		else if (createTimeEnd) where.create_time = db.command.lte(Number(createTimeEnd));
+		const totalRes = await productCollection.where(where).count();
+		const listRes = await productCollection
+			.where(where)
+			.orderBy('sort_order', 'asc')
+			.orderBy('create_time', 'desc')
+			.skip((Number(page) - 1) * Number(pageSize))
+			.limit(Number(pageSize))
+			.get();
+		const list = (listRes.data || []).map((item) => ({
+			id: item._id,
+			name: safeText(item.name, 80),
+			intro: safeText(item.intro, 500),
+			images: Array.isArray(item.images) ? item.images : [],
+			image: Array.isArray(item.images) && item.images.length ? item.images[0] : '',
+			isEnabled: item.is_enabled !== false,
+			isEnabledText: item.is_enabled === false ? '下架' : '上架',
+			sortOrder: Number(item.sort_order || 0),
+			createTime: formatTime(item.create_time),
+			updateTime: formatTime(item.update_time)
+		}));
+		return { code: 0, message: 'ok', data: { list, total: totalRes.total || 0, page: Number(page), pageSize: Number(pageSize) } };
+	} catch (error) {
+		console.error('productList failed:', error);
+		return { code: 500, message: '获取商品列表失败' };
+	}
+}
+
+async function productSave(data) {
+	try {
+		const now = nowTs();
+		const id = safeText(data?.id, 80);
+		const images = Array.isArray(data?.images)
+			? data.images.map((x) => safeText(x, 500)).filter(Boolean)
+			: String(data?.imagesText || '')
+					.split('\n')
+					.map((x) => safeText(x, 500))
+					.filter(Boolean);
+		const payload = {
+			name: safeText(data?.name, 80),
+			intro: safeText(data?.intro, 500),
+			images,
+			is_enabled: data?.isEnabled === false ? false : String(data?.isEnabled) === '0' ? false : true,
+			sort_order: parseSortOrder(data?.sortOrder, 0),
+			update_time: now
+		};
+		if (!payload.name) return { code: 400, message: '请输入商品名称' };
+		if (!payload.intro) return { code: 400, message: '请输入商品介绍' };
+		if (!payload.images.length) return { code: 400, message: '请至少提供一张商品图片' };
+		if (id) {
+			await productCollection.doc(id).update(payload);
+			await invalidateProductsListCache();
+			await invalidateH5QuotaPackagesCache();
+			return { code: 0, message: '更新成功' };
+		}
+		await productCollection.add({
+			...payload,
+			is_deleted: false,
+			create_time: now
+		});
+		await invalidateProductsListCache();
+		await invalidateH5QuotaPackagesCache();
+		return { code: 0, message: '新增成功' };
+	} catch (error) {
+		console.error('productSave failed:', error);
+		return { code: 500, message: '保存失败' };
+	}
+}
+
+async function productDelete(data, event) {
+	try {
+		const ids = Array.isArray(data?.ids) ? data.ids.map((x) => safeText(x, 80)).filter(Boolean) : [];
+		if (!ids.length) return { code: 400, message: '请选择要删除的记录' };
+		const now = nowTs();
+		const operator = getOperator(event);
+		await productCollection.where({ _id: db.command.in(ids) }).update({
+			is_deleted: true,
+			update_time: now,
+			delete_time: now,
+			delete_user: operator
+		});
+		await invalidateProductsListCache();
+		await invalidateH5QuotaPackagesCache();
+		return { code: 0, message: '删除成功' };
+	} catch (error) {
+		console.error('productDelete failed:', error);
+		return { code: 500, message: '删除失败' };
+	}
+}
+
 async function couponList(data) {
 	try {
 		const {
@@ -7600,8 +8053,11 @@ async function quotaList(data) {
 			bonusQuota = '',
 			realQuota = '',
 			price = '',
+			sortOrder = '',
 			description = '',
 			membershipName = '',
+			pickTotal = '',
+			pickRequired = '',
 			updateTimeStart = '',
 			updateTimeEnd = '',
 			createTimeStart = '',
@@ -7615,6 +8071,9 @@ async function quotaList(data) {
 		if (membershipName) where.membership_name = new RegExp(escapeReg(membershipName), 'i');
 		if (realQuota !== '' && realQuota !== null && realQuota !== undefined) where.real_quota = Number(realQuota);
 		if (price !== '' && price !== null && price !== undefined) where.price = Number(price);
+		if (pickTotal !== '' && pickTotal !== null && pickTotal !== undefined) where.pick_total = Number(pickTotal);
+		if (pickRequired !== '' && pickRequired !== null && pickRequired !== undefined) where.pick_required = Number(pickRequired);
+		if (sortOrder !== '' && sortOrder !== null && sortOrder !== undefined) where.sort_order = parseSortOrder(sortOrder);
 		if (updateTimeStart && updateTimeEnd) {
 			where.update_time = db.command.and([db.command.gte(Number(updateTimeStart)), db.command.lte(Number(updateTimeEnd))]);
 		} else if (updateTimeStart) where.update_time = db.command.gte(Number(updateTimeStart));
@@ -7626,6 +8085,7 @@ async function quotaList(data) {
 		const totalRes = await quotaCollection.where(where).count();
 		const listRes = await quotaCollection
 			.where(where)
+			.orderBy('sort_order', 'asc')
 			.orderBy('create_time', 'desc')
 			.skip((Number(page) - 1) * Number(pageSize))
 			.limit(Number(pageSize))
@@ -7637,8 +8097,12 @@ async function quotaList(data) {
 			bonusQuota: item.bonus_quota || '',
 			realQuota: Number(item.real_quota || 0),
 			price: Number(item.price || 0),
+			sortOrder: parseSortOrder(item.sort_order, Number(item.price || 0)),
 			description: item.description || '',
 			membershipName: item.membership_name || '',
+			relatedProductIds: Array.isArray(item.related_product_ids) ? item.related_product_ids : [],
+			pickTotal: Number(item.pick_total || 0),
+			pickRequired: Number(item.pick_required || 0),
 			createTime: formatTime(item.create_time),
 			updateTime: formatTime(item.update_time)
 		}));
@@ -7661,12 +8125,22 @@ async function quotaSave(data) {
 		const packageId = `pkg_${String(price).replace('.', '_')}`;
 		const title = `${price}元套餐`;
 		const bonusQuotaRaw = Number(data?.bonusQuota || 0);
+		const sortOrder = parseSortOrder(data?.sortOrder, price);
+		const relatedProductIds = Array.isArray(data?.relatedProductIds)
+			? data.relatedProductIds.map((x) => safeText(x, 80)).filter(Boolean)
+			: [];
+		const pickTotal = Math.max(0, parseSortOrder(data?.pickTotal, 0));
+		const pickRequired = Math.max(0, parseSortOrder(data?.pickRequired, 0));
 		const payload = {
 			package_id: safeText(packageId, 40),
 			title: safeText(title, 80),
 			bonus_quota: `¥${bonusQuotaRaw.toFixed(2)}`,
 			real_quota: Number(data?.realQuota || 0),
 			price,
+			sort_order: sortOrder,
+			related_product_ids: relatedProductIds,
+			pick_total: pickTotal,
+			pick_required: pickRequired,
 			description: safeText(data?.description, 300),
 			membership_name: safeText(data?.membershipName, 40),
 			update_time: now
@@ -7676,6 +8150,8 @@ async function quotaSave(data) {
 		if (payload.real_quota < 0) return { code: 400, message: '实际额度不能小于0' };
 		if (payload.price < 0) return { code: 400, message: '套餐价格不能小于0' };
 		if (!payload.description) return { code: 400, message: '请输入套餐说明' };
+		if (payload.pick_required > payload.pick_total) return { code: 400, message: '选中数量不能大于可选数量' };
+		if (payload.pick_total > payload.related_product_ids.length) return { code: 400, message: '可选数量不能大于关联商品数量' };
 
 		const dupWhere = { package_id: payload.package_id, is_deleted: false };
 		if (id) dupWhere._id = db.command.neq(id);
@@ -7820,6 +8296,8 @@ exports.main = async (event, context) => {
 			return await tradeBillList(actualData);
 		case 'tradeBillDelete':
 			return await tradeBillDelete(actualData, event);
+		case 'financeMerchantFlowList':
+			return await financeMerchantFlowList(actualData);
 		case 'withdrawExportCsv':
 			return await exportWithdrawCsv(actualData);
 		case 'withdrawApprove':
@@ -7900,6 +8378,12 @@ exports.main = async (event, context) => {
 			return await couponDelete(actualData, event);
 		case 'couponIssue':
 			return await couponIssue(actualData, event);
+		case 'productList':
+			return await productList(actualData);
+		case 'productSave':
+			return await productSave(actualData);
+		case 'productDelete':
+			return await productDelete(actualData, event);
 		case 'h5CouponMyList':
 			return await h5CouponMyList(actualData);
 		case 'exchangeCouponGenerate':

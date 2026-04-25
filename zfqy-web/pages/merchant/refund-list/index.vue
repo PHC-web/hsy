@@ -370,11 +370,13 @@ export default {
 			});
 		},
 		onPageChanged(page) {
-			this.pageInfo.currentPage = page;
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.pageInfo.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
 			this.search();
 		},
 		onPageSizeChange(size) {
-			this.pageInfo.pageSize = size;
+			const s = typeof size === 'number' ? size : Number(size?.pageSize || size?.size || size || 10);
+			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 10;
 			this.pageInfo.currentPage = 1;
 			this.search();
 		}

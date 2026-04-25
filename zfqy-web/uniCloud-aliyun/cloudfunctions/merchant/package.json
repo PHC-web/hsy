@@ -1,0 +1,7 @@
+{
+  "name": "merchant",
+  "dependencies": {},
+  "extensions": {
+    "uni-cloud-redis": {}
+  }
+}

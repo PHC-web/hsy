@@ -1,0 +1,22 @@
+{
+	"bsonType": "object",
+	"required": ["name", "intro", "images", "create_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": true },
+	"properties": {
+		"_id": { "description": "ID" },
+		"name": { "bsonType": "string", "description": "商品名称" },
+		"intro": { "bsonType": "string", "description": "商品介绍" },
+		"images": {
+			"bsonType": "array",
+			"description": "商品图片URL列表",
+			"items": { "bsonType": "string" }
+		},
+		"is_enabled": { "bsonType": "bool", "description": "是否上架", "default": true },
+		"sort_order": { "bsonType": "number", "description": "排序值（越小越靠前）", "default": 0 },
+		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
+		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
+		"delete_time": { "bsonType": "timestamp", "description": "删除时间" },
+		"delete_user": { "bsonType": "string", "description": "删除人" },
+		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false }
+	}
+}

@@ -202,11 +202,13 @@ export default {
 			}
 		},
 		onPageChanged(page) {
-			this.pageInfo.currentPage = page;
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.pageInfo.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
 			this.loadList();
 		},
 		onPageSizeChange(pageSize) {
-			this.pageInfo.pageSize = pageSize;
+			const s = typeof pageSize === 'number' ? pageSize : Number(pageSize?.pageSize || pageSize?.size || pageSize || 10);
+			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 10;
 			this.pageInfo.currentPage = 1;
 			this.loadList();
 		},

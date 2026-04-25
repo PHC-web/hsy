@@ -685,9 +685,9 @@
 	},
 	{
 		"menu_id": "merchant_coupon",
-		"name": "优惠券管理",
+		"name": "商品管理",
 		"icon": "",
-		"url": "/pages/merchant/coupon/index",
+		"url": "/pages/merchant/product/index",
 		"sort": 1630,
 		"parent_id": "merchant_management",
 		"permission": [],
@@ -706,5 +706,53 @@
 		"enable": true,
 		"create_date": 1773382941000,
 		"_id": "merchant_quota"
+	},
+	{
+		"menu_id": "finance_management",
+		"name": "财务管理",
+		"icon": "el-icon-s-finance",
+		"url": "",
+		"sort": 1700,
+		"parent_id": "",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111001,
+		"_id": "finance_management"
+	},
+	{
+		"menu_id": "finance_device_order",
+		"name": "设备订单",
+		"icon": "el-icon-document",
+		"url": "/pages/merchant/coupon/index",
+		"sort": 1710,
+		"parent_id": "finance_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111002,
+		"_id": "finance_device_order"
+	},
+	{
+		"menu_id": "finance_trade_bill",
+		"name": "交易账单",
+		"icon": "el-icon-tickets",
+		"url": "/pages/finance/trade-bill/index",
+		"sort": 1720,
+		"parent_id": "finance_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1711111111003,
+		"_id": "finance_trade_bill"
+	},
+	{
+		"menu_id": "finance_merchant_flow",
+		"name": "交易记录",
+		"icon": "el-icon-document",
+		"url": "/pages/finance/merchant-flow/index",
+		"sort": 1730,
+		"parent_id": "finance_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000000,
+		"_id": "finance_merchant_flow"
 	}
 ]

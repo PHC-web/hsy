@@ -572,6 +572,12 @@
 					}
 				},
 				{
+					"path": "product/index",
+					"style": {
+						"navigationBarTitleText": "商品管理"
+					}
+				},
+				{
 					"path": "quota/index",
 					"style": {
 						"navigationBarTitleText": "额度包管理"
@@ -598,6 +604,12 @@
 					"path": "trade-bill/index",
 					"style": {
 						"navigationBarTitleText": "交易账单"
+					}
+				},
+				{
+					"path": "merchant-flow/index",
+					"style": {
+						"navigationBarTitleText": "交易记录"
 					}
 				}
 			]

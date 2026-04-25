@@ -34,14 +34,18 @@
 						<uni-th align="center" width="46">
 							<checkbox :checked="allChecked" @click="toggleAll" />
 						</uni-th>
-						<uni-th align="center" width="60">ID</uni-th>
+						<uni-th align="center" width="40">ID</uni-th>
 						<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'packageId')">套餐id</uni-th>
-						<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'title')">标题</uni-th>
+						<uni-th align="center" width="80" filter-type="search" @filter-change="headerFilterChange($event, 'title')">标题</uni-th>
 						<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'membershipName')">会员名称</uni-th>
 						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'bonusQuota')">免额度</uni-th>
 						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'realQuota')">额度</uni-th>
 						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'price')">套餐价格</uni-th>
-						<uni-th align="center" filter-type="search" @filter-change="headerFilterChange($event, 'description')">套餐说明</uni-th>
+						<uni-th align="center" width="90" filter-type="search" @filter-change="headerFilterChange($event, 'sortOrder')">排序</uni-th>
+						<uni-th align="center" width="170">关联商品</uni-th>
+						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'pickTotal')">可选数量</uni-th>
+						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'pickRequired')">必选数量</uni-th>
+						<uni-th align="center" width="200" filter-type="search" @filter-change="headerFilterChange($event, 'description')">套餐说明</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">更新时间</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">创建时间</uni-th>
 						<uni-th align="center" width="120">操作</uni-th>
@@ -57,6 +61,10 @@
 						<uni-td align="center">{{ item.bonusQuota || '-' }}</uni-td>
 						<uni-td align="center">¥{{ Number(item.realQuota || 0).toFixed(2) }}</uni-td>
 						<uni-td align="center">¥{{ Number(item.price || 0).toFixed(2) }}</uni-td>
+						<uni-td align="center">{{ Number(item.sortOrder || 0) }}</uni-td>
+						<uni-td align="center">{{ formatRelatedProducts(item.relatedProductIds) }}</uni-td>
+						<uni-td align="center">{{ Number(item.pickTotal || 0) }}</uni-td>
+						<uni-td align="center">{{ Number(item.pickRequired || 0) }}</uni-td>
 						<uni-td align="center">{{ item.description }}</uni-td>
 						<uni-td align="center">{{ item.updateTime }}</uni-td>
 						<uni-td align="center">{{ item.createTime }}</uni-td>
@@ -107,6 +115,21 @@
 						<uni-forms-item label="套餐价格" required>
 							<uni-easyinput v-model="formData.price" type="number" placeholder="例如 600" />
 						</uni-forms-item>
+						<uni-forms-item label="排序" required>
+							<uni-easyinput v-model="formData.sortOrder" type="number" placeholder="数字越小越靠前，例如 10" />
+						</uni-forms-item>
+						<uni-forms-item label="关联商品ID">
+							<uni-easyinput
+								v-model.trim="formData.relatedProductIdsText"
+								placeholder="逗号分隔，示例：id1,id2,id3"
+							/>
+						</uni-forms-item>
+						<uni-forms-item label="可选数量">
+							<uni-easyinput v-model="formData.pickTotal" type="number" placeholder="几选几中的“几”" />
+						</uni-forms-item>
+						<uni-forms-item label="必选数量">
+							<uni-easyinput v-model="formData.pickRequired" type="number" placeholder="几选几中的“选几”" />
+						</uni-forms-item>
 						<uni-forms-item label="套餐说明" required>
 							<uni-easyinput v-model.trim="formData.description" placeholder="如图，一千元限时享一百五十万奖励额度，提现额度高达5700" />
 						</uni-forms-item>
@@ -133,6 +156,10 @@ const defaultForm = () => ({
 	bonusQuota: 0,
 	realQuota: 0,
 	price: 0,
+	sortOrder: 0,
+	relatedProductIdsText: '',
+	pickTotal: 0,
+	pickRequired: 0,
 	description: '',
 	membershipName: ''
 });
@@ -148,6 +175,9 @@ export default {
 				bonusQuota: '',
 				realQuota: '',
 				price: '',
+				sortOrder: '',
+				pickTotal: '',
+				pickRequired: '',
 				description: '',
 				updateTimeStart: '',
 				updateTimeEnd: '',
@@ -166,6 +196,7 @@ export default {
 				{ text: 'MS-Excel', value: 'excel' }
 			],
 			formData: defaultForm(),
+			productOptions: [],
 			pageInfo: {
 				currentPage: 1,
 				pageSize: 10,
@@ -190,9 +221,28 @@ export default {
 		}
 	},
 	mounted() {
+		this.loadProductOptions();
 		this.search();
 	},
 	methods: {
+		async loadProductOptions() {
+			try {
+				const res = await this.$request('productList', { page: 1, pageSize: 500 }, { functionName: 'merchant' });
+				if (res.code === 0) this.productOptions = res.data.list || [];
+			} catch (e) {}
+		},
+		parseRelatedProductIds(text) {
+			return String(text || '')
+				.split(',')
+				.map((x) => x.trim())
+				.filter(Boolean);
+		},
+		formatRelatedProducts(ids) {
+			const arr = Array.isArray(ids) ? ids : [];
+			if (!arr.length) return '-';
+			const map = new Map((this.productOptions || []).map((x) => [String(x.id), String(x.name || x.id)]));
+			return arr.map((id) => map.get(String(id)) || String(id)).join(' / ');
+		},
 		toggleAll() {
 			this.selectedIds = this.allChecked ? [] : this.list.map((x) => x.id);
 		},
@@ -234,6 +284,9 @@ export default {
 				bonusQuota: '',
 				realQuota: '',
 				price: '',
+				sortOrder: '',
+				pickTotal: '',
+				pickRequired: '',
 				description: '',
 				updateTimeStart: '',
 				updateTimeEnd: '',
@@ -251,7 +304,7 @@ export default {
 		headerFilterChange(e, field) {
 			const { filterType, filter } = e || {};
 			const sf = this.searchForm;
-			if (filterType === 'search' && ['packageId', 'title', 'membershipName', 'bonusQuota', 'realQuota', 'price', 'description'].includes(field)) {
+			if (filterType === 'search' && ['packageId', 'title', 'membershipName', 'bonusQuota', 'realQuota', 'price', 'sortOrder', 'pickTotal', 'pickRequired', 'description'].includes(field)) {
 				sf[field] = String(filter == null ? '' : filter).trim();
 			} else if (field === 'updateTime' && filterType === 'timestamp') {
 				const { start, end } = this.parseTimestampRange(filter);
@@ -276,6 +329,10 @@ export default {
 				bonusQuota: Number(String(row.bonusQuota || '').replace(/[^\d.]/g, '') || 0),
 				realQuota: row.realQuota,
 				price: row.price,
+				sortOrder: Number(row.sortOrder || 0),
+				relatedProductIdsText: Array.isArray(row.relatedProductIds) ? row.relatedProductIds.join(',') : '',
+				pickTotal: Number(row.pickTotal || 0),
+				pickRequired: Number(row.pickRequired || 0),
 				description: row.description,
 				membershipName: row.membershipName || ''
 			};
@@ -290,6 +347,10 @@ export default {
 				bonusQuota: Number(this.formData.bonusQuota || 0),
 				realQuota: Number(this.formData.realQuota || 0),
 				price: Number(this.formData.price || 0),
+				sortOrder: Number(this.formData.sortOrder || 0),
+				relatedProductIds: this.parseRelatedProductIds(this.formData.relatedProductIdsText),
+				pickTotal: Number(this.formData.pickTotal || 0),
+				pickRequired: Number(this.formData.pickRequired || 0),
 				description: this.formData.description,
 				membershipName: (this.formData.membershipName || '').trim()
 			};
@@ -346,6 +407,10 @@ export default {
 				免额度: item.bonusQuota || '',
 				额度: item.realQuota,
 				套餐价格: item.price,
+				排序: Number(item.sortOrder || 0),
+				关联商品: this.formatRelatedProducts(item.relatedProductIds),
+				可选数量: Number(item.pickTotal || 0),
+				必选数量: Number(item.pickRequired || 0),
 				套餐说明: item.description,
 				会员名称: item.membershipName || '',
 				更新时间: item.updateTime,
@@ -412,11 +477,13 @@ export default {
 			}
 		},
 		onPageChanged(page) {
-			this.pageInfo.currentPage = page;
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.pageInfo.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
 			this.search();
 		},
 		onPageSizeChange(size) {
-			this.pageInfo.pageSize = size;
+			const s = typeof size === 'number' ? size : Number(size?.pageSize || size?.size || size || 10);
+			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 10;
 			this.pageInfo.currentPage = 1;
 			this.search();
 		}

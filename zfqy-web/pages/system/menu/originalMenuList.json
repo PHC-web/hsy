@@ -458,7 +458,7 @@
 		"menu_id": "finance_device_order",
 		"name": "设备订单",
 		"icon": "el-icon-document",
-		"url": "/pages/finance/device-order/index",
+		"url": "/pages/merchant/coupon/index",
 		"sort": 1710,
 		"parent_id": "finance_management",
 		"permission": [],
@@ -475,6 +475,17 @@
 		"permission": [],
 		"enable": true,
 		"create_date": 1711111111003
+	},
+	{
+		"menu_id": "finance_merchant_flow",
+		"name": "交易记录",
+		"icon": "el-icon-document",
+		"url": "/pages/finance/merchant-flow/index",
+		"sort": 1730,
+		"parent_id": "finance_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000000
 	},
 	{
 		"menu_id": "wechat_management",
