@@ -146,35 +146,49 @@
 			<view class="points-insight-modal">
 				<view class="points-insight-title">{{ pointsInsight.title || '商户积分明细' }}</view>
 				<scroll-view class="points-insight-scroll" scroll-y>
-					<view class="points-section">
-						<view class="points-section-hd">历史月份：积分生成与流失（含分期待返池）</view>
-						<view v-if="pointsInsight.history.length" class="points-table">
-							<view class="points-row points-row-hd">
-								<text>月份</text><text>生成</text><text>分期待返池</text><text>流水档</text><text>已生块积分</text><text>流失块</text><text>流失积分</text>
-							</view>
-							<view v-for="row in pointsInsight.history" :key="`h_${row.ym}`" class="points-row">
-								<text>{{ row.ym }}</text><text>{{ row.generatedPoints }}</text><text>{{ row.duePointsTotal }}</text><text>{{ row.flowTiers }}</text><text>{{ row.releasedPointsTotal }}</text><text>{{ row.lostBlocksTotal }}</text><text>{{ row.lostPoints }}</text>
-							</view>
-							<view v-for="row in pointsInsight.history" :key="`s_${row.ym}`" class="points-source-wrap">
-								<view v-for="src in row.sourceBreakdown" :key="`${row.ym}_${src.sourceYm}`" class="points-source-row">
-									<text>来源{{ src.sourceYm }}：分期待返池 {{ src.duePoints }}，可折算 {{ src.dueBlocks }} 块，已生块 {{ src.releasedBlocks }}（{{ src.releasedPoints }} 积分），流失 {{ src.lostBlocks }}（{{ src.lostPoints }} 积分）</text>
-								</view>
-							</view>
-						</view>
-						<view v-else class="points-empty">暂无历史数据</view>
+					<view class="points-rule-tip">
+						<text>规则说明：当月每满 1 万有 1 个档位；该档位会对每个来源月独立生效（即每个来源月最多释放当月档位数的分片），未释放分片当月流失不顺延。</text>
 					</view>
 					<view class="points-section">
-						<view class="points-section-hd">未来月份：分期待返池与待领取（含来源月份）</view>
-						<view v-if="pointsInsight.future.length" class="points-table">
-							<view class="points-row points-row-hd points-row--2"><text>月份</text><text>分期待返池总积分</text><text>已生成待领取积分</text></view>
-							<view v-for="row in pointsInsight.future" :key="`f_${row.ym}`" class="points-row points-row--2"><text>{{ row.ym }}</text><text>{{ row.duePointsTotal }}</text><text>{{ row.packetPendingPointsTotal }}</text></view>
-							<view v-for="row in pointsInsight.future" :key="`fs_${row.ym}`" class="points-source-wrap">
-								<view v-for="src in row.sourceBreakdown" :key="`${row.ym}_${src.sourceYm}`" class="points-source-row">
-									<text>来源{{ src.sourceYm }}：分期待返池 {{ src.duePoints }}，已生成待领取 {{ src.packetPendingPoints }}</text>
+						<view class="points-section-hd">A. 月度总览</view>
+						<view v-if="pointsInsight.monthlyOverview.length" class="points-table">
+							<view class="points-row points-row-hd">
+								<text>月份</text><text>生成积分</text><text>当月流水</text><text>当月档位</text><text>应到期片</text><text>已释放片</text><text>流失片</text>
+							</view>
+							<view v-for="row in pointsInsight.monthlyOverview" :key="`ov_${row.ym}`" class="points-row">
+								<text>{{ row.ym }}</text><text>{{ row.generatedPoints }}</text><text>{{ row.flowYuan }}</text><text>{{ row.tiers }}</text><text>{{ row.dueSlices }}</text><text>{{ row.releasedSlices }}</text><text>{{ row.lostSlices }}</text>
+							</view>
+						</view>
+						<view v-else class="points-empty">暂无月度总览数据</view>
+					</view>
+					<view class="points-section">
+						<view class="points-section-hd">B. 片级明细（来源月 -> 目标月）</view>
+						<view v-if="pointsInsight.sliceDetails.length" class="points-table">
+							<view class="points-row points-row-hd points-row--slice">
+								<text>目标月</text><text>来源月</text><text>应到期片</text><text>应到期积分</text><text>已释放片</text><text>已释放积分</text><text>流失片/积分</text>
+							</view>
+							<view v-for="row in pointsInsight.sliceDetails" :key="`sl_${row.targetYm}_${row.sourceYm}`" class="points-row points-row--slice">
+								<text>{{ row.targetYm }}</text><text>{{ row.sourceYm }}</text><text>{{ row.dueSliceCount }}</text><text>{{ row.duePoints }}</text><text>{{ row.releasedSliceCount }}</text><text>{{ row.releasedPoints }}</text><text>{{ row.lostSliceCount }}/{{ row.lostPoints }}</text>
+							</view>
+							<view v-for="row in pointsInsight.sliceDetails" :key="`slp_${row.targetYm}_${row.sourceYm}`" class="points-source-wrap">
+								<view class="points-source-row">
+									<text>片积分预览：{{ row.slicePreview && row.slicePreview.length ? row.slicePreview.join(' / ') : '-' }}</text>
 								</view>
 							</view>
 						</view>
-						<view v-else class="points-empty">暂无待领取数据</view>
+						<view v-else class="points-empty">暂无片级明细</view>
+					</view>
+					<view class="points-section">
+						<view class="points-section-hd">C. 交易抽样（最近200笔）</view>
+						<view v-if="pointsInsight.tradeSamples.length" class="points-table">
+							<view class="points-row points-row-hd points-row--trade">
+								<text>时间</text><text>来源月</text><text>金额</text><text>总积分</text><text>首期积分</text><text>单月分期待返</text>
+							</view>
+							<view v-for="row in pointsInsight.tradeSamples" :key="row.id" class="points-row points-row--trade">
+								<text>{{ row.time }}</text><text>{{ row.tradeYm }}</text><text>{{ row.amount }}</text><text>{{ row.totalPoints }}</text><text>{{ row.firstPoints }}</text><text>{{ row.deferredPerMonth }}</text>
+							</view>
+						</view>
+						<view v-else class="points-empty">暂无交易抽样</view>
 					</view>
 				</scroll-view>
 				<view class="points-insight-actions">
@@ -248,8 +262,9 @@ export default {
 			pointsInsightLoading: false,
 			pointsInsight: {
 				title: '',
-				history: [],
-				future: []
+				monthlyOverview: [],
+				sliceDetails: [],
+				tradeSamples: []
 			}
 		};
 	},
@@ -583,7 +598,7 @@ export default {
 		async openPointsInsight(item) {
 			if (!item || !item.userId) return;
 			this.pointsInsightLoading = true;
-			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, history: [], future: [] };
+			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, monthlyOverview: [], sliceDetails: [], tradeSamples: [] };
 			this.$refs.pointsInsightPopup.open();
 			try {
 				const res = await this.$request(
@@ -598,8 +613,9 @@ export default {
 				const d = res.data || {};
 				this.pointsInsight = {
 					title: `${(d.merchant && d.merchant.name) || item.wxUser || item.userId} 积分明细`,
-					history: d.history || [],
-					future: d.future || []
+					monthlyOverview: d.monthlyOverview || [],
+					sliceDetails: d.sliceDetails || [],
+					tradeSamples: d.tradeSamples || []
 				};
 			} finally {
 				this.pointsInsightLoading = false;
@@ -832,6 +848,16 @@ export default {
 	font-weight: 700;
 	margin-bottom: 8px;
 }
+.points-rule-tip {
+	background: #f8fafc;
+	border: 1px solid #e5e7eb;
+	border-radius: 8px;
+	padding: 8px 10px;
+	margin-bottom: 10px;
+	font-size: 12px;
+	color: #374151;
+	line-height: 1.7;
+}
 .points-insight-scroll {
 	height: 72vh;
 }
@@ -857,6 +883,12 @@ export default {
 }
 .points-row--2 {
 	grid-template-columns: 1.4fr 1fr 1fr;
+}
+.points-row--slice {
+	grid-template-columns: 1fr 1fr 0.9fr 1fr 0.9fr 1fr 1fr;
+}
+.points-row--trade {
+	grid-template-columns: 1.5fr 0.8fr 0.8fr 0.8fr 0.8fr 1fr;
 }
 .points-row-hd {
 	background: #f8fafc;

@@ -506,7 +506,6 @@ async function merchantPointsMonthlyInsight(data) {
 		const trades = tRes.data || [];
 		const genByYm = {};
 		const flowByYm = {};
-		const tradesByYm = {};
 		for (const t of trades) {
 			const amount = Number(t.amount || 0);
 			if (!(amount > 0)) continue;
@@ -515,32 +514,8 @@ async function merchantPointsMonthlyInsight(data) {
 			const first = Number(t.release_amount != null ? t.release_amount : total);
 			genByYm[tradeYm] = Number(((genByYm[tradeYm] || 0) + total).toFixed(4));
 			flowByYm[tradeYm] = Number(((flowByYm[tradeYm] || 0) + amount).toFixed(2));
-			if (!tradesByYm[tradeYm]) tradesByYm[tradeYm] = [];
-			tradesByYm[tradeYm].push(t);
 		}
-		const sourceSlicesByYm = {};
-		Object.keys(tradesByYm).forEach((ym) => {
-			const rows = tradesByYm[ym];
-			let curFlow = 0;
-			let curDeferred = 0;
-			const slices = [];
-			for (const t of rows) {
-				const amount = Number(t.amount || 0);
-				if (!(amount > 0)) continue;
-				const total = Number((amount * 0.0038).toFixed(4));
-				const first = Number(t.release_amount != null ? t.release_amount : total);
-				const monthlyDeferred = Number((total - first).toFixed(4));
-				if (curFlow > 0 && curFlow + amount > 10000) {
-					slices.push(Number(curDeferred.toFixed(4)));
-					curFlow = 0;
-					curDeferred = 0;
-				}
-				curFlow += amount;
-				curDeferred += monthlyDeferred;
-			}
-			if (curFlow > 0 || slices.length) slices.push(Number(curDeferred.toFixed(4)));
-			sourceSlicesByYm[ym] = slices;
-		});
+		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, now, 10000);
 		const dueSlicesByTargetSource = {};
 		Object.keys(sourceSlicesByYm).forEach((srcYm) => {
 			const slices = sourceSlicesByYm[srcYm] || [];
@@ -560,11 +535,10 @@ async function merchantPointsMonthlyInsight(data) {
 				if (tiers <= 0) return;
 				const srcMap = dueSlicesByTargetSource[targetYm] || {};
 				const srcMonths = Object.keys(srcMap).sort((a, b) => String(a).localeCompare(String(b)));
-				let granted = 0;
 				for (const srcYm of srcMonths) {
-					if (granted >= tiers) break;
 					const slices = Array.isArray(srcMap[srcYm]) ? srcMap[srcYm] : [];
-					const canGrant = Math.min(slices.length, tiers - granted);
+					// 与引擎保持一致：每个来源月都可独立使用当月档位数量
+					const canGrant = Math.min(slices.length, tiers);
 					if (canGrant <= 0) continue;
 					if (!releasedSlotsByTargetSource[targetYm]) releasedSlotsByTargetSource[targetYm] = {};
 					if (!releasedPointsByTargetSource[targetYm]) releasedPointsByTargetSource[targetYm] = {};
@@ -576,7 +550,6 @@ async function merchantPointsMonthlyInsight(data) {
 					releasedPointsByTargetSource[targetYm][srcYm] = Number(
 						((releasedPointsByTargetSource[targetYm][srcYm] || 0) + pts).toFixed(4)
 					);
-					granted += canGrant;
 				}
 			});
 		const packetRes = await incomePacketCollection
@@ -680,6 +653,90 @@ async function merchantPointsMonthlyInsight(data) {
 					sourceBreakdown
 				};
 			});
+		const overviewYmSet = new Set([
+			...Object.keys(genByYm),
+			...Object.keys(flowByYm),
+			...Object.keys(dueSlicesByTargetSource),
+			...Object.keys(releasedSlotsByTargetSource),
+			...Object.keys(pendingByTargetSource)
+		]);
+		const monthlyOverview = [...overviewYmSet]
+			.sort((a, b) => String(a).localeCompare(String(b)))
+			.map((ym) => {
+				const dueSrc = dueSlicesByTargetSource[ym] || {};
+				const relSlotsSrc = releasedSlotsByTargetSource[ym] || {};
+				const relPtsSrc = releasedPointsByTargetSource[ym] || {};
+				const pendingSrc = pendingByTargetSource[ym] || {};
+				const dueSlices = Object.values(dueSrc).reduce((s, arr) => s + (Array.isArray(arr) ? arr.length : 0), 0);
+				const duePoints = Object.values(dueSrc).reduce(
+					(s, arr) => s + (Array.isArray(arr) ? arr.reduce((x, y) => x + Number(y || 0), 0) : 0),
+					0
+				);
+				const releasedSlices = Object.values(relSlotsSrc).reduce((s, x) => s + Number(x || 0), 0);
+				const releasedPoints = Object.values(relPtsSrc).reduce((s, x) => s + Number(x || 0), 0);
+				const pendingPoints = Object.values(pendingSrc).reduce((s, x) => s + Number(x || 0), 0);
+				const monthEnded = String(ym).localeCompare(String(curYm)) < 0;
+				const lostSlices = monthEnded ? Math.max(0, dueSlices - releasedSlices) : 0;
+				const lostPoints = monthEnded ? Math.max(0, Number((duePoints - releasedPoints).toFixed(4))) : 0;
+				return {
+					ym,
+					generatedPoints: Number(Number(genByYm[ym] || 0).toFixed(4)),
+					flowYuan: Number(Number(flowByYm[ym] || 0).toFixed(2)),
+					tiers: Math.floor(Number(flowByYm[ym] || 0) / 10000),
+					dueSlices,
+					releasedSlices,
+					lostSlices,
+					releasedPoints: Number(releasedPoints.toFixed(4)),
+					lostPoints: Number(lostPoints.toFixed(4)),
+					pendingPoints: Number(pendingPoints.toFixed(4))
+				};
+			});
+		const sliceDetails = [];
+		Object.keys(dueSlicesByTargetSource)
+			.sort((a, b) => String(a).localeCompare(String(b)))
+			.forEach((targetYm) => {
+				const dueSrc = dueSlicesByTargetSource[targetYm] || {};
+				const relSlotsSrc = releasedSlotsByTargetSource[targetYm] || {};
+				const relPtsSrc = releasedPointsByTargetSource[targetYm] || {};
+				const monthEnded = String(targetYm).localeCompare(String(curYm)) < 0;
+				Object.keys(dueSrc)
+					.sort((a, b) => String(a).localeCompare(String(b)))
+					.forEach((sourceYm) => {
+						const slices = Array.isArray(dueSrc[sourceYm]) ? dueSrc[sourceYm] : [];
+						const dueSliceCount = slices.length;
+						const duePoints = slices.reduce((s, x) => s + Number(x || 0), 0);
+						const releasedSliceCount = Number(relSlotsSrc[sourceYm] || 0);
+						const releasedPoints = Number(relPtsSrc[sourceYm] || 0);
+						const lostSliceCount = monthEnded ? Math.max(0, dueSliceCount - releasedSliceCount) : 0;
+						const lostPoints = monthEnded ? Math.max(0, Number((duePoints - releasedPoints).toFixed(4))) : 0;
+						sliceDetails.push({
+							targetYm,
+							sourceYm,
+							dueSliceCount,
+							duePoints: Number(duePoints.toFixed(4)),
+							releasedSliceCount,
+							releasedPoints: Number(releasedPoints.toFixed(4)),
+							lostSliceCount,
+							lostPoints: Number(lostPoints.toFixed(4)),
+							slicePreview: slices.slice(0, 12).map((x) => Number(Number(x || 0).toFixed(4)))
+						});
+					});
+			});
+		const tradeSamples = (trades || []).slice(-200).map((t, idx) => {
+			const amount = Number(t.amount || 0);
+			const total = Number((amount * 0.0038).toFixed(4));
+			const first = Number(t.release_amount != null ? t.release_amount : total);
+			const deferred = Number((total - first).toFixed(4));
+			return {
+				id: `${t._id || 't'}_${idx}`,
+				tradeYm: subsidyEngine.monthNoFromTs(Number(t.create_time || now)),
+				time: formatTime(Number(t.create_time || 0)),
+				amount: Number(amount.toFixed(2)),
+				totalPoints: total,
+				firstPoints: Number(first.toFixed(4)),
+				deferredPerMonth: Number(deferred.toFixed(4))
+			};
+		});
 		return {
 			code: 0,
 			message: 'ok',
@@ -690,6 +747,9 @@ async function merchantPointsMonthlyInsight(data) {
 					name: String(merchant.wx_nickname || merchant.mobile || uid)
 				},
 				currentYm: curYm,
+				monthlyOverview,
+				sliceDetails,
+				tradeSamples,
 				history,
 				future
 			}

@@ -122,27 +122,36 @@ function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
 	const out = {};
 	Object.keys(byMonth).forEach((ym) => {
 		const rows = byMonth[ym];
-		let curFlow = 0;
-		let curDeferred = 0;
+		let monthFlowCursor = 0; // 当月累计流水游标（用于按0-1w、1-2w切片）
 		const slices = [];
 		for (const t of rows) {
 			const amount = Number(t.amount || 0);
 			if (!(amount > 0)) continue;
 			const total = Number((amount * 0.0038).toFixed(4));
 			const first = Number(t.release_amount != null ? t.release_amount : total);
-			const monthlyDeferred = Number((total - first).toFixed(4));
-			if (curFlow > 0 && curFlow + amount > sliceFlowYuan) {
-				slices.push(Number(curDeferred.toFixed(4)));
-				curFlow = 0;
-				curDeferred = 0;
+			// 后续4个月“每个月”的应到期积分，而非4个月总和
+			const monthlyDeferred = Number(((total - first) / 4).toFixed(6));
+			let remainAmt = amount;
+			let distributed = 0;
+			while (remainAmt > 1e-8) {
+				const sliceIdx = Math.floor(monthFlowCursor / sliceFlowYuan);
+				const sliceEnd = (sliceIdx + 1) * sliceFlowYuan;
+				const room = Math.max(0, sliceEnd - monthFlowCursor);
+				const take = Math.min(remainAmt, room > 0 ? room : remainAmt);
+				const part = amount > 0 ? Number((monthlyDeferred * (take / amount)).toFixed(6)) : 0;
+				slices[sliceIdx] = Number(((slices[sliceIdx] || 0) + part).toFixed(6));
+				distributed = Number((distributed + part).toFixed(6));
+				monthFlowCursor = Number((monthFlowCursor + take).toFixed(6));
+				remainAmt = Number((remainAmt - take).toFixed(6));
 			}
-			curFlow += amount;
-			curDeferred += monthlyDeferred;
+			// 兜底把舍入差补到该笔最后一个片
+			const gap = Number((monthlyDeferred - distributed).toFixed(6));
+			if (Math.abs(gap) > 0.000001) {
+				const lastIdx = Math.max(0, Math.ceil(monthFlowCursor / sliceFlowYuan) - 1);
+				slices[lastIdx] = Number(((slices[lastIdx] || 0) + gap).toFixed(6));
+			}
 		}
-		if (curFlow > 0 || slices.length) {
-			slices.push(Number(curDeferred.toFixed(4)));
-		}
-		out[ym] = slices;
+		out[ym] = slices.map((x) => Number(Number(x || 0).toFixed(4)));
 	});
 	return out;
 }
@@ -221,7 +230,8 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 	// 2) 其余分期释放规则（按最终口径）：
 	// - 每月流水每满 1 万，生成 1 个释放档位（tiers）；
 	// - tiers 仅用于“当月应释放”的历史月分期池（上月或更早）；
-	// - 每个历史月在当月携带“流水分片”（每片对应上月某个1万流水片，积分可能为0）；
+	// - 每个历史月在当月携带“流水分片”（每片对应该来源月某个1万流水区间，积分可能为0）；
+	// - 分期待返按“每个月”口径切片（4个月各有一份，不是4个月总量一次切）；
 	// - tiers 不足时，未释放分片直接流失，不顺延到下月。
 	const months = Object.keys(monthFlowMap).sort();
 	for (const ym of months) {
@@ -229,12 +239,11 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 		if (tiers <= 0) continue;
 		const dueBySource = deferredDueByTargetMonth[ym] || {};
 		const sourceMonths = Object.keys(dueBySource).sort();
-		let granted = 0;
 		for (const srcYm of sourceMonths) {
-			if (granted >= tiers) break;
 			const chunks = Array.isArray(dueBySource[srcYm]) ? dueBySource[srcYm] : [];
 			if (!chunks.length) continue;
-			const canGrant = Math.min(chunks.length, tiers - granted);
+			// 每个来源月在目标月都按“当月档位”独立释放，不是全来源共用一个档位池
+			const canGrant = Math.min(chunks.length, tiers);
 			for (let i = 0; i < canGrant; i += 1) {
 				const chunkAmt = Number(chunks[i] || 0);
 				if (chunkAmt > 0) {
@@ -257,13 +266,11 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 							subsidy_block_index: i,
 							installment_index: 2,
 							anchor_flow_yuan: Number(chunks.reduce((s, x) => s + Number(x || 0), 0).toFixed(4)),
-							unlock_flow_yuan: (granted + 1) * 10000
+							unlock_flow_yuan: (i + 1) * 10000
 						},
 						dedupSet
 					);
 				}
-				granted += 1;
-				if (granted >= tiers) break;
 			}
 		}
 	}
@@ -289,6 +296,7 @@ module.exports = {
 	POINTS_PER_MONTH,
 	monthNoFromTs,
 	monthStartEndTs,
+	buildDeferredSlicesByMonth,
 	sumEligibleRealFlowYuan,
 	sumEligibleReleasePoints,
 	syncSubsidyPackets
