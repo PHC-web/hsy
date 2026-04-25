@@ -9,7 +9,7 @@
 </template>
 
 <script>
-import { h5ExchangeCouponRedeem } from '@/pages/h5/common/api';
+import { h5ExchangeCouponRedeem, h5RefreshHomeCache } from '@/pages/h5/common/api';
 export default {
 	data() {
 		return { code: '', loading: false };
@@ -25,6 +25,7 @@ export default {
 					uni.showToast({ title: res.message || '兑换失败', icon: 'none' });
 					return;
 				}
+				await h5RefreshHomeCache();
 				uni.showToast({ title: '兑换成功', icon: 'success' });
 				setTimeout(() => {
 					uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' }) });

@@ -120,7 +120,7 @@
 </template>
 
 <script>
-import { h5HomeDashboard } from '@/pages/h5/common/api';
+import { h5HomeDashboardCached } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -178,7 +178,7 @@ export default {
 				this.loading = true;
 			}, 320);
 			try {
-				const res = await h5HomeDashboard();
+				const res = await h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000 });
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 					return;

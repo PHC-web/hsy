@@ -13,8 +13,8 @@
 
 				<view class="notice-marquee h5-glass-panel">
 					<view class="notice-track">
-						<text class="notice-text">温馨提示：本平台只针对正常商户交易进行补贴，套现行为会出发风控，将不允补贴。</text>
-						<text class="notice-text notice-text--copy">温馨提示：本平台只针对正常商户交易进行补贴，套现行为会出发风控，将不允补贴。</text>
+						<text class="notice-text">温馨提示：本平台只针对正常商户交易进行补贴，套现行为会触发风控，将不允补贴。</text>
+						<text class="notice-text notice-text--copy">温馨提示：本平台只针对正常商户交易进行补贴，套现行为会触发风控，将不允补贴。</text>
 					</view>
 				</view>
 
@@ -57,12 +57,17 @@
 				
 
 				<view class="menu-card h5-glass-panel">
-					<view class="menu-item" @click="goDevice">
-						<text class="menu-title">码牌绑定</text>
+					<view class="menu-item" @click="goRecharge">
+						<text class="menu-title">额度预存</text>
 						<text class="menu-arrow">›</text>
 					</view>
+					
 					<view class="menu-item" @click="goFinance">
 						<text class="menu-title">财务管理</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goPendingReturn">
+						<text class="menu-title">待返积分</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goCoupons">
@@ -73,18 +78,19 @@
 						<text class="menu-title">兑换码兑换</text>
 						<text class="menu-arrow">›</text>
 					</view>
-					<view class="menu-item" @click="goPendingReturn">
-						<text class="menu-title">待返积分</text>
-						<text class="menu-arrow">›</text>
-					</view>
+					
 					<view class="menu-item" @click="goMobile">
 						<text class="menu-title">手机号维护</text>
 						<text class="menu-arrow">›</text>
 					</view>
-					<view class="menu-item" @click="onViewAgreement">
-						<text class="menu-title">查看协议</text>
+					<view class="menu-item" @click="goDevice">
+						<text class="menu-title">码牌绑定</text>
 						<text class="menu-arrow">›</text>
 					</view>
+					<!-- <view class="menu-item" @click="onViewAgreement">
+						<text class="menu-title">查看协议</text>
+						<text class="menu-arrow">›</text>
+					</view> -->
 					<view class="menu-item" @click="goFeedback">
 						<text class="menu-title">售后反馈</text>
 						<view class="menu-right">
@@ -92,10 +98,7 @@
 							<text class="menu-arrow">›</text>
 						</view>
 					</view>
-					<view class="menu-item" @click="goRecharge">
-						<text class="menu-title">额度预存</text>
-						<text class="menu-arrow">›</text>
-					</view>
+					
 			<!-- 		<view class="menu-item" @click="goPayNotify">
 						<text class="menu-title">支付结果异步通知地址</text>
 						<text class="menu-arrow">›</text>
@@ -156,7 +159,7 @@
 
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
-import { h5MineInfo, h5SignAgreement } from '@/pages/h5/common/api';
+import { h5HomeDashboardCached, h5MineInfoCached, h5SignAgreement } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -298,17 +301,33 @@ export default {
 				this.loading = true;
 			}, 320);
 			try {
-				const res = await h5MineInfo();
-				if (res.code !== 0) {
-					uni.showToast({ title: res.message || '获取失败', icon: 'none' });
+				const [dashboardRes, mineRes] = await Promise.all([
+					h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000 }),
+					h5MineInfoCached({ maxAgeMs: 5 * 60 * 1000 })
+				]);
+				if (dashboardRes.code === 0) {
+					const d = dashboardRes.data || {};
+					this.mine = Object.assign({}, d.merchant || {}, {
+						deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || ''
+					});
+					this.account = Object.assign({}, this.account, {
+						availableReward: d.quota?.remaining != null ? String(d.quota.remaining) : this.account.availableReward,
+						estimatedFreeQuota:
+							d.merchant?.estimatedFreeQuota != null ? String(d.merchant.estimatedFreeQuota) : this.account.estimatedFreeQuota,
+						accountPoints: d.pendingWithdraw != null ? String(d.pendingWithdraw) : this.account.accountPoints
+					});
+				}
+				if (mineRes.code !== 0 && dashboardRes.code !== 0) {
+					uni.showToast({ title: mineRes.message || dashboardRes.message || '获取失败', icon: 'none' });
 					return;
 				}
-				this.mine = Object.assign({}, (res.data && res.data.merchant) || {}, {
-					deviceDisplay: (res.data && res.data.device && res.data.device.display) || ''
+				const mData = mineRes.data || {};
+				this.mine = Object.assign({}, this.mine, mData.merchant || {}, {
+					deviceDisplay: (mData.device && mData.device.display) || this.mine.deviceDisplay || ''
 				});
-				this.account = (res.data && res.data.account) || this.account;
-				this.agreement = Object.assign({}, this.agreement, (res.data && res.data.agreement) || {});
-				const fb = res.data && res.data.feedback;
+				if (mData.account) this.account = Object.assign({}, this.account, mData.account);
+				this.agreement = Object.assign({}, this.agreement, mData.agreement || {});
+				const fb = mData.feedback;
 				if (fb) {
 					this.feedbackUnread = !!fb.unreadReply;
 				}

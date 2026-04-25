@@ -60,7 +60,7 @@
 </template>
 
 <script>
-import { h5WithdrawInfo, h5WithdrawApply } from '@/pages/h5/common/api';
+import { h5WithdrawInfo, h5WithdrawApply, h5RefreshHomeCache } from '@/pages/h5/common/api';
 
 export default {
 	data() {
@@ -150,6 +150,7 @@ export default {
 					uni.showToast({ title: res.message || '提交失败', icon: 'none' });
 					return;
 				}
+				await h5RefreshHomeCache();
 				const no = res.data && res.data.withdrawNo;
 				uni.showModal({
 					title: '提交成功',

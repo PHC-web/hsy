@@ -1,5 +1,6 @@
 <template>
-	<view class="fix-top-window">
+	<view v-if="!allowRender" class="h5-entry-placeholder"></view>
+	<view v-else class="fix-top-window">
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group"></view>
@@ -73,6 +74,7 @@
 	export default {
 		data() {
 			return {
+				allowRender: true,
 				loading: false,
 				dashboard: {
 					brandCount: 0,
@@ -91,7 +93,24 @@
 				},
 			}
 		},
+		onLoad() {
+			// #ifdef H5
+			const pathname = (window.location && window.location.pathname) || '/';
+			const search = (window.location && window.location.search) || '';
+			const hash = (window.location && window.location.hash) || '';
+			const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/');
+			if (!isAdminPath) {
+				this.allowRender = false;
+				if (hash.indexOf('/pages/h5/') === -1) {
+					window.location.replace(`${pathname}${search}#/pages/h5/auth/index`);
+				}
+				return;
+			}
+			this.allowRender = true;
+			// #endif
+		},
 		onShow() {
+			if (!this.allowRender) return;
 			this.loadDashboard();
 		},
 		methods: {
@@ -180,6 +199,12 @@
 </script>
 
 <style>
+.h5-entry-placeholder {
+	width: 100vw;
+	height: 100vh;
+	background: #fff;
+}
+
 .dashboard-page {
 		min-height: 420px;
 		padding: 12px 8px 28px;

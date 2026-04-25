@@ -69,7 +69,7 @@
 </template>
 
 <script>
-import { h5MineInfo, h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm } from '@/pages/h5/common/api';
+import { h5MineInfo, h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefreshHomeCache } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -207,6 +207,7 @@ export default {
 					uni.showToast({ title: confirmRes.message || '支付确认中，请稍后刷新', icon: 'none' });
 					return;
 				}
+				await h5RefreshHomeCache();
 				const tier = this.resolveTierByPrice(
 					pickedPackage ? Number(pickedPackage.price || 0) : 0,
 					pickedPackage

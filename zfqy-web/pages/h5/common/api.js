@@ -43,6 +43,39 @@ function merchantIdentity(extra = {}) {
 	);
 }
 
+const H5_CACHE_TTL_MS = 5 * 60 * 1000;
+const H5_CACHE_PREFIX = 'h5_cache_v1';
+
+function cacheKey(name) {
+	const s = getSession() || {};
+	const uid = String(s.userId || s.merchantId || 'anon');
+	return `${H5_CACHE_PREFIX}:${name}:${uid}`;
+}
+
+function getCached(name, maxAgeMs = H5_CACHE_TTL_MS) {
+	try {
+		const raw = uni.getStorageSync(cacheKey(name));
+		if (!raw || typeof raw !== 'object') return null;
+		const ts = Number(raw.ts || 0);
+		if (!ts || Date.now() - ts > maxAgeMs) return null;
+		return raw.value || null;
+	} catch (e) {
+		return null;
+	}
+}
+
+function setCached(name, value) {
+	try {
+		uni.setStorageSync(cacheKey(name), { ts: Date.now(), value });
+	} catch (e) {}
+}
+
+function removeCached(name) {
+	try {
+		uni.removeStorageSync(cacheKey(name));
+	} catch (e) {}
+}
+
 export function h5AuthSync(payload) {
 	return merchantCall('h5AuthSync', payload);
 }
@@ -87,6 +120,18 @@ export function h5MineInfo() {
 	return merchantCall('h5MineInfo', Object.assign(merchantIdentity(), { cmp: 1 }));
 }
 
+export async function h5MineInfoCached(options = {}) {
+	const maxAgeMs = Number(options.maxAgeMs || H5_CACHE_TTL_MS);
+	const force = !!options.force;
+	if (!force) {
+		const hit = getCached('mine_info', maxAgeMs);
+		if (hit) return hit;
+	}
+	const res = await h5MineInfo();
+	if (res && res.code === 0) setCached('mine_info', res);
+	return res;
+}
+
 export function h5WithdrawInfo() {
 	return merchantCall('h5WithdrawInfo', merchantIdentity());
 }
@@ -101,6 +146,32 @@ export function h5WithdrawConfirmPackage(withdrawNo) {
 
 export function h5HomeDashboard() {
 	return merchantCall('h5HomeDashboard', Object.assign(merchantIdentity(), { cmp: 1 }));
+}
+
+export async function h5HomeDashboardCached(options = {}) {
+	const maxAgeMs = Number(options.maxAgeMs || H5_CACHE_TTL_MS);
+	const force = !!options.force;
+	if (!force) {
+		const hit = getCached('home_dashboard', maxAgeMs);
+		if (hit) return hit;
+	}
+	const res = await h5HomeDashboard();
+	if (res && res.code === 0) setCached('home_dashboard', res);
+	return res;
+}
+
+export function h5InvalidateHomeCache() {
+	removeCached('home_dashboard');
+	removeCached('mine_info');
+}
+
+export async function h5RefreshHomeCache() {
+	h5InvalidateHomeCache();
+	const [dashboard, mine] = await Promise.allSettled([
+		h5HomeDashboardCached({ force: true }),
+		h5MineInfoCached({ force: true })
+	]);
+	return { dashboard, mine };
 }
 
 export function h5SignAgreement(payload) {

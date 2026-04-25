@@ -52,6 +52,7 @@
 						<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
 						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
 						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+						<text class="rule-link" @click="onViewAgreement">查看协议</text>
 					</view>
 
 					<button
@@ -71,6 +72,28 @@
 				<view class="bottom-spacer"></view>
 			</view>
 		</scroll-view>
+		<uni-popup ref="agreementViewPopup" type="bottom">
+			<view class="agreement-view-sheet agreement-sheet--dark">
+				<view class="sheet-head">
+					<text class="sheet-title">我的协议</text>
+				</view>
+				<scroll-view scroll-y class="agreement-view-scroll">
+					<image
+						v-if="agreementImageUrl"
+						class="agreement-preview-image"
+						:src="agreementImageUrl"
+						mode="widthFix"
+						@click="previewAgreementImage"
+					/>
+					<view v-else class="agreement-empty">
+						<text>暂未签署协议</text>
+					</view>
+				</scroll-view>
+				<view class="agreement-view-actions">
+					<button class="agreement-view-btn agreement-view-btn--only" type="primary" size="mini" @click="closeAgreementViewer">关闭</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -81,7 +104,8 @@ import {
 	h5RefundReset,
 	h5TransferStatus,
 	h5RefundEntryValidate,
-	h5RefundConfirmPackage
+	h5RefundConfirmPackage,
+	h5RefreshHomeCache
 } from '@/pages/h5/common/api';
 
 function defaultRefundUi() {
@@ -107,6 +131,7 @@ export default {
 			entryError: '',
 			refundEntryToken: '',
 			refundUi: defaultRefundUi(),
+			mineMerchant: {},
 			silver: {
 				active: false,
 				expireAt: 0,
@@ -184,7 +209,7 @@ export default {
 		refundButtonLabel() {
 			const p = this.refundUi && this.refundUi.phase;
 			if (p === 'auditing') return '审核中';
-			if (p === 'processing') return '处理中';
+			if (p === 'processing') return '加载中';
 			if (p === 'confirm_transfer') return '审核通过，点击提取';
 			if (p === 'done') return '退款已完成';
 			return '申请退款并重置权益数据';
@@ -217,6 +242,9 @@ export default {
 			const h = Math.floor((sec % 86400) / 3600);
 			const m = Math.floor((sec % 3600) / 60);
 			return `距离到期：${d}天 ${String(h).padStart(2, '0')}时 ${String(m).padStart(2, '0')}分`;
+		},
+		agreementImageUrl() {
+			return String(this.mineMerchant && this.mineMerchant.agreementImg ? this.mineMerchant.agreementImg : '').trim();
 		}
 	},
 	onLoad(options) {
@@ -277,6 +305,15 @@ export default {
 			this.refundUi = Object.assign(defaultRefundUi(), d);
 			this.syncStatusPoll();
 		},
+		normalizeRefundStateToPhase(state) {
+			const s = String(state || '').toUpperCase();
+			if (!s) return '';
+			if (s === 'PENDING_AUDIT') return 'auditing';
+			if (s === 'WAIT_USER_CONFIRM') return 'confirm_transfer';
+			if (s === 'SUCCESS') return 'done';
+			if (s === 'PROCESSING' || s === 'ACCEPTED' || s === 'WAITING') return 'processing';
+			return '';
+		},
 		syncStatusPoll() {
 			this.stopStatusPoll();
 			const u = this.refundUi || {};
@@ -334,10 +371,26 @@ export default {
 				const mineRes = this.unwrapResult(mineRaw);
 				if (mineRes.code === 0) {
 					this.silver = Object.assign({}, this.silver, mineRes.data?.silver || {});
+					this.mineMerchant = Object.assign({}, mineRes.data?.merchant || {});
 				}
 			} finally {
 				this.loading = false;
 			}
+		},
+		onViewAgreement() {
+			if (!this.agreementImageUrl) {
+				uni.showToast({ title: '暂未签署协议', icon: 'none' });
+				return;
+			}
+			this.$refs.agreementViewPopup.open();
+		},
+		previewAgreementImage() {
+			const src = String(this.agreementImageUrl || '').trim();
+			if (!src) return;
+			uni.previewImage({ urls: [src], current: src });
+		},
+		closeAgreementViewer() {
+			this.$refs.agreementViewPopup.close();
 		},
 		async ensureRefundEntryAndLoad() {
 			this.entryAllowed = false;
@@ -447,6 +500,7 @@ export default {
 				success: async (r) => {
 					if (!r.confirm) return;
 					this.loading = true;
+					this.refundUi = Object.assign({}, this.refundUi, { phase: 'processing' });
 					uni.showLoading({ title: '处理中...', mask: true });
 					try {
 						const rawRes = await h5RefundReset({
@@ -458,6 +512,7 @@ export default {
 						if (res.code === 409) {
 							const rs = res.data && res.data.refundState;
 							if (rs === 'PENDING_AUDIT') {
+								this.refundUi = Object.assign({}, this.refundUi, { phase: 'auditing' });
 								uni.showToast({ title: '退款申请已提交，请等待审核', icon: 'none' });
 								return;
 							}
@@ -493,14 +548,23 @@ export default {
 						}
 						const msg = String(res.message || '');
 						if (msg.indexOf('待管理员审核') >= 0 || (res.data && res.data.refundState === 'PENDING_AUDIT')) {
+							await h5RefreshHomeCache();
+							this.refundUi = Object.assign({}, this.refundUi, { phase: 'auditing' });
 							uni.showToast({ title: '已提交审核', icon: 'none' });
 							return;
+						}
+						const nextPhase = this.normalizeRefundStateToPhase(res.data && (res.data.refundState || res.data.transferState));
+						if (nextPhase) {
+							this.refundUi = Object.assign({}, this.refundUi, { phase: nextPhase });
+						} else {
+							this.refundUi = Object.assign({}, this.refundUi, { phase: 'processing' });
 						}
 						uni.showModal({
 							title: '退款已发起',
 							content: `退款批次号：${res.data.refundNo}\n原充值金额：¥${res.data.refundAmount}\n违约金：¥${res.data.penaltyAmount}\n预计退款：¥${res.data.finalRefundAmount}\n\n款项将通过商家转账退回；若微信要求确认收款，请在本页点击「审核通过，点击提取」。`,
 							showCancel: false
 						});
+						await h5RefreshHomeCache();
 					} catch (e) {
 						uni.showToast({ title: this.extractErrorMessage(e, '操作失败'), icon: 'none' });
 					} finally {
@@ -664,6 +728,13 @@ export default {
 	color: rgba(254, 243, 199, 0.88);
 	margin-top: 6px;
 }
+.rule-link {
+	display: inline-block;
+	margin-top: 10px;
+	font-size: 12px;
+	color: #93c5fd;
+	text-decoration: underline;
+}
 
 .btn-refund {
 	border-radius: 999px;
@@ -684,5 +755,60 @@ export default {
 }
 .bottom-spacer {
 	height: 20px;
+}
+
+.agreement-sheet--dark {
+	background: rgba(15, 23, 42, 0.92);
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-bottom: none;
+	backdrop-filter: blur(24px);
+	-webkit-backdrop-filter: blur(24px);
+}
+.agreement-view-sheet {
+	border-radius: 20px 20px 0 0;
+	padding: 16px 16px 12px;
+	margin: 0;
+	max-height: 88vh;
+	box-sizing: border-box;
+}
+.sheet-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #f8fafc;
+}
+.agreement-view-scroll {
+	max-height: 62vh;
+	margin-top: 10px;
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 12px;
+	padding: 10px;
+	box-sizing: border-box;
+	background: rgba(0, 0, 0, 0.2);
+}
+.agreement-preview-image {
+	display: block;
+	width: 100%;
+	border-radius: 8px;
+	background: #fff;
+}
+.agreement-empty {
+	min-height: 120px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: rgba(203, 213, 225, 0.85);
+	font-size: 12px;
+}
+.agreement-view-actions {
+	display: flex;
+	justify-content: center;
+	gap: 10px;
+	margin-top: 12px;
+}
+.agreement-view-btn {
+	margin: 0;
+}
+.agreement-view-btn--only {
+	min-width: 120px;
 }
 </style>

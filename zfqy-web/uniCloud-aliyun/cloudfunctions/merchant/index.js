@@ -39,6 +39,8 @@ const REDIS_EX_PRODUCTS_SEC = 90;
 const REDIS_EX_BIZ_SEC = 55;
 const REDIS_EX_AGR_SEC = 40;
 const REDIS_EX_WD_SUM_SEC = 28;
+const REDIS_EX_H5_HOME_DASH_SEC = 15;
+const REDIS_EX_H5_SILVER_TRADE_SEC = 45;
 /** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
 
@@ -4119,6 +4121,10 @@ function buildWithdrawReceivedInRange(merchantUserId, timeStart, timeEnd) {
 
 const H5_HOME_SUMMARY_CACHE_TTL_MS = 30000;
 const h5HomeSummaryCache = new Map();
+const H5_HOME_DASH_CACHE_TTL_MS = 12000;
+const h5HomeDashboardCache = new Map();
+const H5_SILVER_TRADE_CACHE_TTL_MS = 45000;
+const h5SilverTradeCache = new Map();
 
 function h5HomeSummaryCacheKey(merchantUserId, now) {
 	const dayR = chinaRangeMs('day', now);
@@ -4210,6 +4216,10 @@ function h5MembershipInfo(merchant, packages = null) {
 	if (custom) {
 		return { ...out, name: custom };
 	}
+	// 兑换码白银会员：非充值会员时首页也应展示会员身份
+	if (out.tier === 'normal' && hasH5SilverMemberIdentity(merchant)) {
+		return { tier: 'silver', name: '白银会员', accent: '#c0cbd9' };
+	}
 	return out;
 }
 
@@ -4219,10 +4229,11 @@ const H5_WITHDRAW_MAX_POINTS = 200;
 const H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN = 50000;
 
 function isH5RechargeMemberForWithdraw(merchant) {
-	return h5MembershipInfo(merchant).tier !== 'normal';
+	const tier = String(h5MembershipInfo(merchant).tier || '');
+	return tier === 'white_gold' || tier === 'platinum' || tier === 'diamond';
 }
 
-function isH5SilverMemberForWithdraw(merchant) {
+function hasH5SilverMemberIdentity(merchant) {
 	if (!merchant) return false;
 	const now = nowTs();
 	const endAt = Number(merchant.silver_member_end_at || 0);
@@ -4234,6 +4245,10 @@ function isH5SilverMemberForWithdraw(merchant) {
 	const name = String(merchant.membership_name || '').trim();
 	if (name.includes('白银')) return true;
 	return false;
+}
+
+function isH5SilverMemberForWithdraw(merchant) {
+	return hasH5SilverMemberIdentity(merchant);
 }
 
 function resolveH5WithdrawRole(merchant) {
@@ -4276,6 +4291,25 @@ async function getH5CurrentMonthTradeYuan(merchant, now = nowTs()) {
 		console.error('getH5CurrentMonthTradeYuan failed', e);
 		return 0;
 	}
+}
+
+async function getH5CurrentMonthTradeYuanCached(merchant, now = nowTs()) {
+	if (!merchant) return 0;
+	const monthR = chinaRangeMs('month', now);
+	const merchantUserId = String(merchant.user_id || merchant._id || '');
+	const key = `${merchantUserId}|${monthR.start}`;
+	const m = h5SilverTradeCache.get(key);
+	if (m && now - m.at < H5_SILVER_TRADE_CACHE_TTL_MS) return Number(m.val || 0);
+	const redisKey = `hsy:h5:silver:trade:${merchantUserId}:${monthR.start}`;
+	const r = await redisH5.h5RedisGetJson(redisKey);
+	if (r && typeof r.val === 'number') {
+		h5SilverTradeCache.set(key, { at: now, val: Number(r.val || 0) });
+		return Number(r.val || 0);
+	}
+	const val = Number(await getH5CurrentMonthTradeYuan(merchant, now) || 0);
+	h5SilverTradeCache.set(key, { at: now, val });
+	await redisH5.h5RedisSetJson(redisKey, { val }, REDIS_EX_H5_SILVER_TRADE_SEC);
+	return val;
 }
 
 function shanghaiWeekdayAndMinuteOfDay(ts) {
@@ -4683,17 +4717,41 @@ async function h5HomeDashboard(data) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
+		const merchantId = String(merchant._id || merchant.user_id || '');
+		const cacheSign = `${merchantId}|${Number(merchant.update_time || 0)}|${Number(merchant.recharge_cycle_start || 0)}|${Number(merchant.available_reward || 0)}|${Number(merchant.account_points || 0)}|${Number(merchant.silver_member_end_at || 0)}`;
+		const memHit = h5HomeDashboardCache.get(cacheSign);
+		if (memHit && now - memHit.at < H5_HOME_DASH_CACHE_TTL_MS) {
+			const payload = JSON.parse(JSON.stringify(memHit.payload));
+			if (payload?.data) payload.data.serverTime = now;
+			return payload;
+		}
+		const redisDashKey = `hsy:h5:home:dash:${cacheSign}`;
+		const redisHit = await redisH5.h5RedisGetJson(redisDashKey);
+		if (redisHit && redisHit.code === 0 && redisHit.data) {
+			const payload = redisHit;
+			payload.data.serverTime = now;
+			h5HomeDashboardCache.set(cacheSign, { at: now, payload: JSON.parse(JSON.stringify(payload)) });
+			return payload;
+		}
 		const withdrawMerchantKey = String(merchant.user_id || merchant._id || '');
-		const [boundMachines, biz, withdrawSums, rechargePackages] = await Promise.all([
-			listBoundMachinesByMerchant(merchant),
+		const bindIds = [String(merchant?.user_id || '').trim(), String(merchant?._id || '').trim()].filter(Boolean);
+		const bindWhere = {
+			is_deleted: false,
+			is_bound: 1,
+			bind_user_id: bindIds.length <= 1 ? bindIds[0] : db.command.in([...new Set(bindIds)])
+		};
+		const [boundCountRes, boundSampleRes, biz, withdrawSums, rechargePackages] = await Promise.all([
+			bindIds.length ? machineCollection.where(bindWhere).count() : Promise.resolve({ total: 0 }),
+			bindIds.length ? machineCollection.where(bindWhere).field({ device_id: true }).limit(8).get() : Promise.resolve({ data: [] }),
 			getBizSettings(),
 			getH5WithdrawSummaryCached(withdrawMerchantKey, now),
 			loadRechargePackagesFromQuota()
 		]);
 		const { daySum, monthSum, yearSum } = withdrawSums;
-		const boundDeviceIds = [...new Set(boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean))];
-		const deviceDisplay = boundDeviceIds.length
-			? `${boundDeviceIds.length}个码牌：${boundDeviceIds.join('、')}`
+		const boundCount = Number(boundCountRes?.total || boundCountRes?.result?.total || 0);
+		const boundDeviceIds = [...new Set((boundSampleRes?.data || []).map((m) => safeText(m.device_id, 80)).filter(Boolean))];
+		const deviceDisplay = boundCount
+			? `${boundCount}个码牌：${boundDeviceIds.join('、')}${boundCount > boundDeviceIds.length ? '…' : ''}`
 			: (safeText(merchant.device_id, 80) || '未绑定');
 		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
 		let countdown = computeRechargeCountdown(merchant.recharge_cycle_start, now, cycleCfg.cycleDays, cycleCfg.windowDays);
@@ -4708,7 +4766,7 @@ async function h5HomeDashboard(data) {
 		}
 		const membership = h5MembershipInfo(merchant, rechargePackages);
 		const withdrawRole = resolveH5WithdrawRole(merchant);
-		const silverMonthTradeYuan = withdrawRole === 'silver_member' ? await getH5CurrentMonthTradeYuan(merchant, now) : 0;
+		const silverMonthTradeYuan = withdrawRole === 'silver_member' ? await getH5CurrentMonthTradeYuanCached(merchant, now) : 0;
 		const withdrawQuotaTotalYuan = h5WithdrawQuotaTotalYuan(merchant, biz.rechargeRules);
 		// 统一展示：剩余提现额度/可用奖励按“提现申请积分总额”扣减，不受税费/到账净额影响
 		const availableRewardYuan = Math.max(0, Number(Number(merchant.available_reward || 0).toFixed(2)));
@@ -4718,14 +4776,14 @@ async function h5HomeDashboard(data) {
 			withdrawQuotaTotalYuan > 0
 				? Math.max(0, Number((withdrawQuotaTotalYuan - availableRewardYuan).toFixed(2)))
 				: 0;
-		return {
+		const out = {
 			code: 0,
 			message: 'ok',
 			data: {
 				serverTime: now,
 				merchant: compactMerchantInfo(merchant),
 				device: {
-					boundCount: boundDeviceIds.length,
+					boundCount,
 					display: deviceDisplay
 				},
 				membership,
@@ -4766,6 +4824,9 @@ async function h5HomeDashboard(data) {
 				}
 			}
 		};
+		h5HomeDashboardCache.set(cacheSign, { at: now, payload: JSON.parse(JSON.stringify(out)) });
+		await redisH5.h5RedisSetJson(redisDashKey, out, REDIS_EX_H5_HOME_DASH_SEC);
+		return out;
 	} catch (e) {
 		console.error('h5HomeDashboard failed', e);
 		return { code: 500, message: '获取首页数据失败' };

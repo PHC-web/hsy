@@ -132,7 +132,7 @@
 </template>
 
 <script>
-import { h5IncomeList, h5IncomeClaimAll, h5IncomeClaim } from '@/pages/h5/common/api';
+import { h5IncomeList, h5IncomeClaimAll, h5IncomeClaim, h5RefreshHomeCache } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -256,6 +256,7 @@ export default {
 					uni.showToast({ title: res.message || '领取失败', icon: 'none' });
 					return;
 				}
+				await h5RefreshHomeCache();
 				uni.showToast({ title: '领取成功', icon: 'success' });
 				await this.loadData();
 			} finally {
@@ -272,6 +273,7 @@ export default {
 					uni.showToast({ title: res.message || '领取失败', icon: 'none' });
 					return;
 				}
+				await h5RefreshHomeCache();
 				const n = res.data && res.data.claimedCount != null ? res.data.claimedCount : 0;
 				uni.showToast({ title: n ? `已领取 ${n} 笔` : '暂无待领取', icon: 'success' });
 				await this.loadData();
