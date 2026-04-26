@@ -5,6 +5,7 @@
 			<view class="uni-group">
 				<view class="header-actions">
 					<button size="mini" @click="reset">重置</button>
+					<button size="mini" type="warn" @click="runDataCorrect">数据矫正</button>
 					<view class="export-dropdown" @mouseleave="showExportMenu = false">
 						<button size="mini" class="export-trigger" @click="toggleExportMenu">
 							<text class="bi bi-download export-icon"></text>
@@ -300,6 +301,61 @@ export default {
 					{ text: '普通会员', value: '普通会员', checked: false },
 					{ text: '白银会员', value: '白银会员', checked: false }
 				];
+			}
+		},
+		async runDataCorrect() {
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '确认矫正',
+					content: '将执行一次历史重算矫正（冻结金额/已提现），可能耗时较长，是否继续？',
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			uni.showLoading({ title: '启动矫正任务...', mask: true });
+			try {
+				const startRet = await this.$request('merchantDataCorrectStart', {}, { functionName: 'merchant' });
+				if (startRet.code !== 0) {
+					uni.showToast({ title: startRet.message || '启动矫正失败', icon: 'none' });
+					return;
+				}
+				const taskId = String(startRet.data?.taskId || '').trim();
+				if (!taskId) {
+					uni.showToast({ title: '启动矫正失败：任务ID为空', icon: 'none' });
+					return;
+				}
+				let d = null;
+				for (let i = 0; i < 2000; i += 1) {
+					await new Promise((resolve) => setTimeout(resolve, 400));
+					const st = await this.$request('merchantDataCorrectStatus', { taskId, chunkSize: 120 }, { functionName: 'merchant' });
+					if (st.code !== 0) {
+						uni.showToast({ title: st.message || '矫正任务执行失败', icon: 'none' });
+						return;
+					}
+					d = st.data || {};
+					const p = Math.max(0, Math.min(100, Number(d.progress || 0)));
+					uni.hideLoading();
+					uni.showLoading({ title: `矫正中 ${p}%`, mask: true });
+					if (d.status === 'done' || d.status === 'failed') break;
+				}
+				if (!d) {
+					uni.showToast({ title: '矫正超时，请稍后查看', icon: 'none' });
+					return;
+				}
+				if (String(d.status || '') === 'failed') {
+					uni.showToast({ title: d.errorMessage || '矫正任务失败', icon: 'none' });
+					return;
+				}
+				uni.showModal({
+					title: '矫正完成',
+					content: `扫描商户：${Number(d.scanned || 0)}\n修正冻结金额：${Number(d.correctedFrozen || 0)}\n修正已提现：${Number(d.correctedWithdrawn || 0)}\n修正基础字段：${Number(d.correctedMerchantBase || 0)}`,
+					showCancel: false
+				});
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '矫正失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
 			}
 		},
 		formatDeviceDisplay(raw) {

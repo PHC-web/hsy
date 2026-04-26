@@ -344,6 +344,19 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		total_transaction: newTotal,
 		frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
 	});
+	// 商户基础表 frozen_amount 同步累加，供商户列表直接读取
+	if (cashback > 0 && machine.bind_user_id && (!risk.is_risk || risk.risk_audit_status === 'approved')) {
+		const mRes = await merchantCol.where(
+			db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }])
+		).limit(1).get();
+		const mer = mRes.data && mRes.data[0];
+		if (mer) {
+			await merchantCol.doc(mer._id).update({
+				frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
+				update_time: createTime
+			});
+		}
+	}
 }
 
 /**

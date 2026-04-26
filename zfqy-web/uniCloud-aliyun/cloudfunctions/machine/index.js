@@ -391,6 +391,19 @@ async function virtualSwipe(data, event) {
 			total_transaction: newTotal,
 			frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
 		});
+		// 商户基础表 frozen_amount 同步累加，供商户管理列表直接读取
+		if (cashback > 0 && machine.bind_user_id) {
+			const mRes = await merchantCollection.where(
+				db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }])
+			).limit(1).get();
+			const mer = mRes.data && mRes.data[0];
+			if (mer) {
+				await merchantCollection.doc(mer._id).update({
+					frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
+					update_time: now
+				});
+			}
+		}
 		const act = await tryActivateMachineByTotal(machine, newTotal, now);
 
 		const tradeNo = generateTradeNo();
@@ -1036,6 +1049,21 @@ async function riskAuditTrade(data, event) {
 			risk_audit_time: now,
 			risk_control_status: status === 'approved' ? 'release' : 'risk'
 		});
+		// 风险流水审核通过后，补计入商户基础表 frozen_amount（之前 pending 不计入）
+		if (status === 'approved') {
+			const cashback = Number(doc.cashback || 0);
+			const uid = String(doc.user_id || '').trim();
+			if (cashback > 0 && uid) {
+				const mRes = await merchantCollection.where(db.command.or([{ user_id: uid }, { _id: uid }])).limit(1).get();
+				const mer = mRes.data && mRes.data[0];
+				if (mer) {
+					await merchantCollection.doc(mer._id).update({
+						frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
+						update_time: now
+					});
+				}
+			}
+		}
 
 		await recordOperationLog(event, 'riskAuditTrade', tradeId, tradeId, `风险审核:${status} ${remark}`);
 

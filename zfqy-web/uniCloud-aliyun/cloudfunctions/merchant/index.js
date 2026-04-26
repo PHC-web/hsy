@@ -23,6 +23,7 @@ const exchangeCouponCollection = db.collection('hsy-exchange-coupons');
 const transferLogCollection = db.collection('hsy-transfer-logs');
 const robotPushLogCollection = db.collection('hsy-robot-push-logs');
 const refundEntryTokenCollection = db.collection('hsy-refund-entry-tokens');
+const dataCorrectTaskCollection = db.collection('hsy-data-correct-tasks');
 const adminUserCollection = db.collection('uni-id-users');
 const zlib = require('zlib');
 const { promisify } = require('util');
@@ -477,17 +478,13 @@ async function listMerchants(data) {
 		]);
 		const total = countRes.total;
 		const rows = res.data || [];
-		// 冻结金额口径：被分期到后面、当前月尚不可领取的积分（未来月待返）
-		const frozenByUid = await batchComputeFutureDeferredFrozenForMerchants(rows, nowTs());
 		// 已提现口径：提现记录里“已到账(arrival_status=received)”的历史累计（与 H5 已到账统计同源）
 		const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(rows);
 
 		// pendingWithdraw：与 H5 待提现金额/账号积分一致 = account_points（已领取未发起提现扣减的积分，1:1 元）
 		const list = rows.map((item) => {
 			const uid = String(item.user_id || item._id || '');
-			const frozenYuan = Number(
-				(frozenByUid.has(uid) ? frozenByUid.get(uid) : Number(item.frozen_amount || 0)) || 0
-			);
+			const frozenYuan = Number(item.frozen_amount || 0) || 0;
 			const withdrawnYuan = Number(
 				(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(item.withdrawn || 0)) || 0
 			);
@@ -2968,6 +2965,13 @@ async function applyRechargeByOrder(orderDoc) {
 		baseRechargeTotal = Number(fromLogs.toFixed(2));
 	}
 	const nextRechargeTotalYuan = Number((baseRechargeTotal + addPaidYuan).toFixed(2));
+	const targetMembershipName = safeText(custom.target_membership_name || '', 40);
+	let nextMembershipName = targetMembershipName;
+	if (!nextMembershipName) {
+		if (targetReward >= 7600 || Number(custom.target_quota || 0) >= 2000000 || targetPrice >= 1000) nextMembershipName = '钻石会员';
+		else if (targetReward >= 5700 || Number(custom.target_quota || 0) >= 1500000 || targetPrice >= 800) nextMembershipName = '铂金会员';
+		else if (targetReward >= 3800 || Number(custom.target_quota || 0) >= 1000000 || targetPrice >= 600 || targetPrice === 0.1) nextMembershipName = '白金会员';
+	}
 	await merchantCollection.doc(merchant._id).update({
 		remaining_quota: afterRem,
 		available_reward: nextAvailableReward,
@@ -2981,6 +2985,7 @@ async function applyRechargeByOrder(orderDoc) {
 		recharge_cycle_days: Number(refundCycle.cycleDays || 180),
 		recharge_window_days: Number(refundCycle.windowDays || 3),
 		recharge_total_yuan: nextRechargeTotalYuan,
+		membership_name: nextMembershipName || merchant.membership_name || '',
 		recharge_update_time: now,
 		update_time: now
 	});
@@ -4334,6 +4339,29 @@ function h5WithdrawQuotaTotalYuan(merchant, rechargeRules = DEFAULT_RECHARGE_RUL
 }
 
 function h5MembershipInfo(merchant, packages = null) {
+	const persistedName = safeText(merchant?.membership_name || '', 40);
+	if (persistedName) {
+		let tier = 'normal';
+		let accent = '#94a3b8';
+		if (persistedName.includes('钻石')) {
+			tier = 'diamond';
+			accent = '#38bdf8';
+		} else if (persistedName.includes('铂金')) {
+			tier = 'platinum';
+			accent = '#c084fc';
+		} else if (persistedName.includes('白金')) {
+			tier = 'white_gold';
+			accent = '#fcd34d';
+		} else if (persistedName.includes('白银')) {
+			tier = 'silver';
+			accent = '#c0cbd9';
+		} else if (Number(merchant?.recharge_total_yuan || 0) > 0) {
+			// 自定义会员名（例如“测试会员”）且已充值，视为充值会员档
+			tier = 'white_gold';
+			accent = '#fcd34d';
+		}
+		return { tier, name: persistedName, accent };
+	}
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
 	const pkg = pickRechargePackage(merchant.recharge_package_id, list) || getRechargePackageByPrice(merchant.recharge_package_price, list);
 	let price = Number((pkg && pkg.price) || merchant.recharge_package_price || 0);
@@ -5461,6 +5489,7 @@ async function h5RechargeCreate(data, event) {
 				merchant_id: merchant._id,
 				package_id: pkg.id,
 				package_title: pkg.title,
+				target_membership_name: safeText(pkg.membershipName || '', 40),
 				target_price: Number(pkg.price || 0),
 				before_price: Number(currentPrice || 0),
 				target_quota: Number(pkg.quota || 0),
@@ -7068,12 +7097,14 @@ async function finalizeTransferSuccessIfNeeded(transferOrder, event) {
 		available_reward: 0,
 		withdraw_quota_balance: 0,
 		estimated_free_quota: 0,
+		membership_name: '普通会员',
 		recharge_package_id: '',
 		recharge_package_price: 0,
 		recharge_package_quota: 0,
 		recharge_package_reward: 0,
 		recharge_cycle_start: 0,
 		recharge_total_yuan: 0,
+		recharge_update_time: 0,
 		update_time: now
 	});
 	await operationLogCollection.add({
@@ -7268,6 +7299,19 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 		frozenByUid.set(uid, sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm));
 	}
 	return frozenByUid;
+}
+
+async function recalcAndPersistFrozenAmountForMerchantById(merchantIdOrUserId) {
+	const merchant = await getMerchantByIdOrUserId(merchantIdOrUserId);
+	if (!merchant) return { ok: false, reason: 'merchant_not_found' };
+	const frozenByUid = await batchComputeFutureDeferredFrozenForMerchants([merchant], nowTs());
+	const uid = String(merchant.user_id || merchant._id || '');
+	const nextFrozen = Number(frozenByUid.get(uid) || 0);
+	await merchantCollection.doc(merchant._id).update({
+		frozen_amount: Number(nextFrozen.toFixed(4)),
+		update_time: nowTs()
+	});
+	return { ok: true, frozenAmount: Number(nextFrozen.toFixed(4)), merchantId: merchant._id, userId: uid };
 }
 
 /**
@@ -7732,6 +7776,8 @@ async function claimPackets(merchant, packetIds) {
 				pending_amount: Number((Number(m.pending_amount || 0) + claimedAmount).toFixed(4))
 			});
 		}
+		// 同步刷新商户基础表 frozen_amount（与商户列表读取口径保持一致）
+		await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
 	}
 	return { claimedCount: claimedIds.length, claimedAmount };
 }
@@ -7864,6 +7910,214 @@ async function h5Unbind(data, event) {
 		console.error('h5Unbind failed', e);
 		return { code: 500, message: '解绑失败' };
 	}
+}
+
+async function getDataCorrectTaskById(taskId) {
+	const id = safeText(taskId, 80);
+	if (!id) return null;
+	const r = await dataCorrectTaskCollection.doc(id).get();
+	return r.data && r.data[0] ? r.data[0] : null;
+}
+
+async function runDataCorrectTaskChunk(task, chunkSize = 120) {
+	if (!task || safeText(task.status, 20) !== 'running') return task;
+	const _ = db.command;
+	const size = Math.min(Math.max(Number(chunkSize || 120), 20), 500);
+	const cursorId = safeText(task.cursor_id, 80);
+	const where = cursorId ? { _id: _.gt(cursorId) } : { _id: _.neq('') };
+	const res = await merchantCollection
+		.where(where)
+		.field({
+			_id: true,
+			user_id: true,
+			device_id: true,
+			bind_time: true,
+			frozen_amount: true,
+			withdrawn: true,
+			recharge_total_yuan: true,
+			recharge_package_reward: true,
+			estimated_free_quota: true,
+			recharge_package_quota: true,
+			recharge_package_price: true,
+			available_reward: true,
+			withdraw_quota_balance: true,
+			account_points: true,
+			withdraw_pending_balance: true,
+			membership_name: true,
+			recharge_update_time: true,
+			recharge_cycle_start: true,
+			update_time: true,
+			silver_member: true,
+			silver_member_end_at: true,
+			member_tier: true,
+			membership_tier: true,
+			h5_member_tier: true,
+			redeem_code_claimed: true,
+			exchange_code_claimed: true
+		})
+		.orderBy('_id', 'asc')
+		.limit(size)
+		.get();
+	const rows = res.data || [];
+	if (!rows.length) {
+		await dataCorrectTaskCollection.doc(task._id).update({
+			status: 'done',
+			finish_time: nowTs(),
+			update_time: nowTs(),
+			progress: 100
+		});
+		return await getDataCorrectTaskById(task._id);
+	}
+	const frozenByUid = await batchComputeFutureDeferredFrozenForMerchants(rows, nowTs());
+	const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(rows);
+	let correctedFrozen = Number(task.corrected_frozen || 0);
+	let correctedWithdrawn = Number(task.corrected_withdrawn || 0);
+	let correctedMerchantBase = Number(task.corrected_merchant_base || 0);
+	let scanned = Number(task.scanned || 0);
+	for (const row of rows) {
+		const uid = String(row.user_id || row._id || '');
+		const nextFrozen = Number((frozenByUid.get(uid) || 0).toFixed(4));
+		const nextWithdrawn = Number((withdrawnByUid.get(uid) || 0).toFixed(4));
+		const curFrozen = Number(Number(row.frozen_amount || 0).toFixed(4));
+		const curWithdrawn = Number(Number(row.withdrawn || 0).toFixed(4));
+		const patch = {};
+		if (Math.abs(nextFrozen - curFrozen) > 0.0001) {
+			patch.frozen_amount = nextFrozen;
+			correctedFrozen += 1;
+		}
+		if (Math.abs(nextWithdrawn - curWithdrawn) > 0.0001) {
+			patch.withdrawn = nextWithdrawn;
+			correctedWithdrawn += 1;
+		}
+		const totalRechargeYuan = Number(row.recharge_total_yuan || 0);
+		const normalizedPending = normalizePendingBalance(row);
+		const normalizedRemain = normalizeWithdrawQuotaBalance(row);
+		let normalizedMembershipName = safeText(row.membership_name || '', 40);
+		let normalizedOpenedAt = Number(row.recharge_update_time || 0);
+		if (totalRechargeYuan > 0) {
+			if (!normalizedMembershipName || normalizedMembershipName === '普通会员') {
+				const reward = Number(row.recharge_package_reward || 0);
+				const quota = Number(row.estimated_free_quota || row.recharge_package_quota || 0);
+				const price = Number(row.recharge_package_price || 0);
+				if (reward >= 7600 || quota >= 2000000 || price >= 1000) normalizedMembershipName = '钻石会员';
+				else if (reward >= 5700 || quota >= 1500000 || price >= 800) normalizedMembershipName = '铂金会员';
+				else if (reward >= 3800 || quota >= 1000000 || price >= 600 || price === 0.1) normalizedMembershipName = '白金会员';
+			}
+			if (!normalizedOpenedAt) normalizedOpenedAt = Number(row.recharge_cycle_start || row.update_time || nowTs());
+		} else {
+			normalizedMembershipName = hasH5SilverMemberIdentity(row) ? (normalizedMembershipName || '白银会员') : '普通会员';
+			normalizedOpenedAt = 0;
+		}
+		if (Math.abs(Number(row.available_reward || 0) - normalizedRemain) > 0.0001) patch.available_reward = Number(normalizedRemain.toFixed(4));
+		if (Math.abs(Number(row.withdraw_quota_balance || 0) - normalizedRemain) > 0.0001) patch.withdraw_quota_balance = Number(normalizedRemain.toFixed(4));
+		if (Math.abs(Number(rawPendingBalance(row) || 0) - normalizedPending) > 0.0001) {
+			patch.account_points = Number(normalizedPending.toFixed(4));
+			patch.withdraw_pending_balance = Number(normalizedPending.toFixed(4));
+		}
+		if (safeText(row.membership_name || '', 40) !== normalizedMembershipName) patch.membership_name = normalizedMembershipName;
+		if (Number(row.recharge_update_time || 0) !== Number(normalizedOpenedAt || 0)) patch.recharge_update_time = Number(normalizedOpenedAt || 0);
+		if (Object.keys(patch).length) {
+			patch.update_time = nowTs();
+			await merchantCollection.doc(row._id).update(patch);
+			if (
+				Object.prototype.hasOwnProperty.call(patch, 'available_reward') ||
+				Object.prototype.hasOwnProperty.call(patch, 'withdraw_quota_balance') ||
+				Object.prototype.hasOwnProperty.call(patch, 'account_points') ||
+				Object.prototype.hasOwnProperty.call(patch, 'withdraw_pending_balance') ||
+				Object.prototype.hasOwnProperty.call(patch, 'membership_name') ||
+				Object.prototype.hasOwnProperty.call(patch, 'recharge_update_time')
+			) {
+				correctedMerchantBase += 1;
+			}
+		}
+		scanned += 1;
+	}
+	const total = Math.max(1, Number(task.total || 0));
+	const progress = Math.min(99, Math.floor((scanned / total) * 100));
+	await dataCorrectTaskCollection.doc(task._id).update({
+		cursor_id: safeText(rows[rows.length - 1]?._id || '', 80),
+		scanned,
+		corrected_frozen: correctedFrozen,
+		corrected_withdrawn: correctedWithdrawn,
+		corrected_merchant_base: correctedMerchantBase,
+		progress,
+		update_time: nowTs()
+	});
+	return await getDataCorrectTaskById(task._id);
+}
+
+async function merchantDataCorrectStart(data = {}, event = {}) {
+	try {
+		const now = nowTs();
+		const totalRes = await merchantCollection.where({ _id: db.command.neq('') }).count();
+		const total = Number(totalRes.total || 0);
+		const addRes = await dataCorrectTaskCollection.add({
+			type: 'merchant_data_correct',
+			status: 'running',
+			total,
+			scanned: 0,
+			corrected_frozen: 0,
+			corrected_withdrawn: 0,
+			corrected_merchant_base: 0,
+			progress: 0,
+			cursor_id: '',
+			error_message: '',
+			create_time: now,
+			update_time: now,
+			start_user: safeText(event?.uid || '', 80)
+		});
+		return { code: 0, message: '已开始矫正任务', data: { taskId: addRes.id, total } };
+	} catch (e) {
+		console.error('merchantDataCorrectStart failed', e);
+		return { code: 500, message: safeText(e?.message || '启动矫正任务失败', 180) };
+	}
+}
+
+async function merchantDataCorrectStatus(data = {}) {
+	try {
+		const taskId = safeText(data?.taskId, 80);
+		if (!taskId) return { code: 400, message: '缺少任务ID' };
+		let task = await getDataCorrectTaskById(taskId);
+		if (!task) return { code: 404, message: '任务不存在' };
+		if (safeText(task.status, 20) === 'running') {
+			const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 120), 20), 500);
+			try {
+				task = await runDataCorrectTaskChunk(task, chunkSize);
+			} catch (eRun) {
+				await dataCorrectTaskCollection.doc(task._id).update({
+					status: 'failed',
+					error_message: safeText(eRun?.message || '任务执行失败', 180),
+					update_time: nowTs(),
+					finish_time: nowTs()
+				});
+				task = await getDataCorrectTaskById(task._id);
+			}
+		}
+		const status = safeText(task.status, 20) || 'running';
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				taskId: task._id,
+				status,
+				total: Number(task.total || 0),
+				scanned: Number(task.scanned || 0),
+				progress: Number(task.progress || 0),
+				correctedFrozen: Number(task.corrected_frozen || 0),
+				correctedWithdrawn: Number(task.corrected_withdrawn || 0),
+				correctedMerchantBase: Number(task.corrected_merchant_base || 0),
+				errorMessage: safeText(task.error_message || '', 180)
+			}
+		};
+	} catch (e) {
+		console.error('merchantDataCorrectStatus failed', e);
+		return { code: 500, message: safeText(e?.message || '获取矫正任务状态失败', 180) };
+	}
+}
+
+async function merchantDataCorrect(data = {}, event = {}) {
+	// 兼容旧调用：直接点击“数据矫正”时，改为返回任务ID。
+	return await merchantDataCorrectStart(data, event);
 }
 
 async function feedbackFindOpenTicket(merchantId) {
@@ -8939,6 +9193,12 @@ exports.main = async (event, context) => {
 			return await withdrawApprove(actualData);
 		case 'withdrawDelete':
 			return await withdrawDelete(actualData, event);
+		case 'merchantDataCorrect':
+			return await merchantDataCorrect(actualData, event);
+		case 'merchantDataCorrectStart':
+			return await merchantDataCorrectStart(actualData, event);
+		case 'merchantDataCorrectStatus':
+			return await merchantDataCorrectStatus(actualData);
 		case 'rechargeGiftShipmentList':
 			return await rechargeGiftShipmentList(actualData);
 		case 'rechargeGiftShipmentUpdate':
