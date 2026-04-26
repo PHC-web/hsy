@@ -130,6 +130,7 @@ export default {
 			entryAllowed: false,
 			entryError: '',
 			refundEntryToken: '',
+			fromFeedbackEntry: true,
 			refundUi: defaultRefundUi(),
 			mineMerchant: {},
 			silver: {
@@ -210,6 +211,7 @@ export default {
 			const p = this.refundUi && this.refundUi.phase;
 			if (p === 'auditing') return '审核中';
 			if (p === 'processing') return '加载中';
+			if (p === 'failed') return '退款失败，请联系客服';
 			if (p === 'confirm_transfer') return '审核通过，点击提取';
 			if (p === 'done') return '退款已完成';
 			return '申请退款并重置权益数据';
@@ -217,20 +219,20 @@ export default {
 		refundButtonDisabled() {
 			if (this.loading) return true;
 			const p = this.refundUi && this.refundUi.phase;
-			if (p === 'auditing' || p === 'processing' || p === 'done') return true;
+			if (p === 'auditing' || p === 'processing' || p === 'done' || p === 'failed') return true;
 			if (!this.refundUi.refundable && p === 'idle') return true;
 			return false;
 		},
 		refundButtonType() {
 			const p = this.refundUi && this.refundUi.phase;
 			if (p === 'confirm_transfer') return 'primary';
-			if (p === 'auditing' || p === 'processing' || p === 'done') return 'default';
+			if (p === 'auditing' || p === 'processing' || p === 'done' || p === 'failed') return 'default';
 			return 'warn';
 		},
 		refundButtonClass() {
 			const p = this.refundUi && this.refundUi.phase;
 			if (p === 'confirm_transfer') return 'btn-refund btn-refund--primary';
-			if (p === 'auditing' || p === 'processing' || p === 'done') return 'btn-refund btn-refund--muted';
+			if (p === 'auditing' || p === 'processing' || p === 'done' || p === 'failed') return 'btn-refund btn-refund--muted';
 			return 'btn-refund';
 		},
 		silverCountdownText() {
@@ -249,6 +251,8 @@ export default {
 	},
 	onLoad(options) {
 		this.refundEntryToken = String(options?.rt || options?.refundToken || options?.token || '').trim();
+		// 关闭“退款入口无效”拦截：退款页默认允许进入并可发起退款流程
+		this.fromFeedbackEntry = true;
 	},
 	onShow() {
 		this.ensureRefundEntryAndLoad();
@@ -267,6 +271,11 @@ export default {
 		this.stopStatusPoll();
 	},
 	methods: {
+		markNeedRefreshHomeMine() {
+			try {
+				uni.setStorageSync('h5_refund_success_refresh_ts', Date.now());
+			} catch (e) {}
+		},
 		unwrapResult(payload) {
 			if (payload && typeof payload === 'object' && payload.success === true && payload.data && typeof payload.data === 'object') {
 				return payload.data;
@@ -311,6 +320,7 @@ export default {
 			if (s === 'PENDING_AUDIT') return 'auditing';
 			if (s === 'WAIT_USER_CONFIRM') return 'confirm_transfer';
 			if (s === 'SUCCESS') return 'done';
+			if (s === 'FAIL' || s === 'FAILED' || s === 'CLOSED' || s === 'REVOKED') return 'failed';
 			if (s === 'PROCESSING' || s === 'ACCEPTED' || s === 'WAITING') return 'processing';
 			return '';
 		},
@@ -330,8 +340,14 @@ export default {
 						this.stopStatusPoll();
 						return;
 					}
+					if (wxSt === 'FAIL' || wxSt === 'FAILED' || wxSt === 'CLOSED' || wxSt === 'REVOKED') {
+						this.refundUi = Object.assign({}, this.refundUi, { phase: 'failed', wxItemState: wxSt });
+						this.stopStatusPoll();
+						return;
+					}
 					if (wxSt === 'SUCCESS' || String(sr.data.refundState || '') === 'SUCCESS') {
 						await this.refreshRefundUiOnly();
+						this.markNeedRefreshHomeMine();
 						this.stopStatusPoll();
 					}
 				} catch (e) {}
@@ -340,9 +356,11 @@ export default {
 			this.statusPollTimer = setInterval(tick, 4000);
 		},
 		async refreshRefundUiOnly() {
-			if (!this.refundEntryToken) return;
 			try {
-				const raw = await h5RefundEntryValidate({ refundEntryToken: this.refundEntryToken });
+				const raw = await h5RefundEntryValidate({
+					refundEntryToken: this.refundEntryToken,
+					entrySource: 'feedback'
+				});
 				const chk = this.unwrapResult(raw);
 				if (chk.code === 0 && chk.data && chk.data.refundUi) {
 					this.applyRefundUiFromPayload(chk.data);
@@ -396,21 +414,19 @@ export default {
 			this.entryAllowed = false;
 			this.entryError = '';
 			this.stopStatusPoll();
-			if (!this.refundEntryToken) {
-				this.entryError = '退款入口无效，请联系在线客服重新发送入口。';
-				return;
-			}
 			this.loading = true;
 			try {
-				const raw = await h5RefundEntryValidate({ refundEntryToken: this.refundEntryToken });
+				const raw = await h5RefundEntryValidate({
+					refundEntryToken: this.refundEntryToken,
+					entrySource: 'feedback'
+				});
 				const chk = this.unwrapResult(raw);
-				if (chk.code !== 0) {
-					this.entryError = chk.message || '退款入口校验失败，请联系在线客服。';
-					return;
-				}
+				// 关闭入口无效拦截：即便校验失败也允许进入页面
 				this.entryAllowed = true;
-				if (chk.data && chk.data.refundUi) {
+				if (chk.code === 0 && chk.data && chk.data.refundUi) {
 					this.applyRefundUiFromPayload(chk.data);
+				} else {
+					this.applyRefundUiFromPayload({});
 				}
 				await this.load();
 			} finally {
@@ -446,6 +462,23 @@ export default {
 				uni.showToast({ title: '缺少退款单号', icon: 'none' });
 				return;
 			}
+			try {
+				const pre = await h5TransferStatus(no);
+				const preRes = this.unwrapResult(pre);
+				if (preRes.code === 0 && preRes.data) {
+					const s = String(preRes.data.wxItemState || preRes.data.state || preRes.data.refundState || '').toUpperCase();
+					if (s === 'FAIL' || s === 'FAILED' || s === 'CLOSED' || s === 'REVOKED') {
+						const failReason = String(preRes.data.transferError || preRes.data.error || '当前状态为 FAIL，请联系管理员');
+						this.refundUi = Object.assign({}, this.refundUi, { phase: 'failed', wxItemState: s });
+						uni.showModal({
+							title: '退款失败',
+							content: failReason,
+							showCancel: false
+						});
+						return;
+					}
+				}
+			} catch (e) {}
 			if (typeof window === 'undefined' || !window.WeixinJSBridge || !window.WeixinJSBridge.invoke) {
 				uni.showToast({ title: '请在微信内打开后再确认收款', icon: 'none' });
 				return;
@@ -455,11 +488,17 @@ export default {
 				const raw = await h5RefundConfirmPackage({
 					refundNo: no,
 					outBillNo: no,
-					refundEntryToken: this.refundEntryToken
+					refundEntryToken: this.refundEntryToken,
+					entrySource: 'feedback'
 				});
 				const res = this.unwrapResult(raw);
 				if (res.code !== 0) {
-					uni.showToast({ title: res.message || '获取确认参数失败', icon: 'none' });
+					const detail = String(res?.data?.detail || '').trim();
+					uni.showModal({
+						title: '暂无法拉起确认收款',
+						content: detail ? `${res.message || '获取确认参数失败'}\n\n真实报错：${detail}` : (res.message || '获取确认参数失败'),
+						showCancel: false
+					});
 					return;
 				}
 				const data = res.data || {};
@@ -474,7 +513,11 @@ export default {
 						(r) => {
 							const msg = String((r && r.err_msg) || '');
 							if (msg.indexOf('ok') >= 0) {
-								uni.showToast({ title: '已拉起确认，请在微信完成收款', icon: 'none' });
+								this.markNeedRefreshHomeMine();
+								uni.showToast({ title: '确认成功，正在返回首页', icon: 'none' });
+								setTimeout(() => {
+									uni.redirectTo({ url: '/pages/h5/home/index' });
+								}, 350);
 							} else if (msg.indexOf('cancel') >= 0) {
 								uni.showToast({ title: '你已取消确认收款', icon: 'none' });
 							} else {
@@ -485,6 +528,9 @@ export default {
 					);
 				});
 				await this.refreshRefundUiOnly();
+				if (String(this.refundUi?.phase || '') === 'done') {
+					this.markNeedRefreshHomeMine();
+				}
 			} finally {
 				uni.hideLoading();
 			}
@@ -505,7 +551,8 @@ export default {
 					try {
 						const rawRes = await h5RefundReset({
 							reason: '用户在退款与周期页发起退款重置',
-							refundEntryToken: this.refundEntryToken
+							refundEntryToken: this.refundEntryToken,
+							entrySource: 'feedback'
 						});
 						const res = this.unwrapResult(rawRes);
 						await this.refreshRefundUiOnly();
@@ -556,6 +603,7 @@ export default {
 						const nextPhase = this.normalizeRefundStateToPhase(res.data && (res.data.refundState || res.data.transferState));
 						if (nextPhase) {
 							this.refundUi = Object.assign({}, this.refundUi, { phase: nextPhase });
+							if (nextPhase === 'done') this.markNeedRefreshHomeMine();
 						} else {
 							this.refundUi = Object.assign({}, this.refundUi, { phase: 'processing' });
 						}

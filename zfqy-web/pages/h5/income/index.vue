@@ -35,7 +35,7 @@
 						</view>
 					</view>
 					<view class="subsidy-ticker-line">
-						<view class="subsidy-ticker-track subsidy-ticker-track--delay" :style="{ animationDuration: `${tickerDuration + 2}s` }">
+						<view class="subsidy-ticker-track subsidy-ticker-track--delay" :style="{ animationDuration: `${tickerDuration}s` }">
 							<view v-for="(item, idx) in tickerRenderBottom" :key="`b_${item.id}_${idx}`" class="subsidy-ticker-row">
 								<image :src="item.avatar || appLogo" mode="aspectFill" class="subsidy-avatar" />
 								<text class="subsidy-text">{{ item.name }} 已获得补贴</text>
@@ -147,7 +147,8 @@ export default {
 			appLogo: H5_APP_LOGO,
 			loading: false,
 			pendingExpanded: true,
-			claimingId: ''
+			claimingId: '',
+			servicePhone: '400-668-5796'
 		};
 	},
 	computed: {
@@ -161,7 +162,7 @@ export default {
 			return this.claimDisabled ? '暂无奖励' : '一键领取';
 		},
 		tickerRenderList() {
-			return this.tickerList.length > 1 ? [...this.tickerList, ...this.tickerList] : this.tickerList;
+			return this.tickerList.length ? [...this.tickerList, ...this.tickerList] : [];
 		},
 		tickerRenderTop() {
 			return this.tickerRenderList.filter((_, idx) => idx % 2 === 0);
@@ -170,7 +171,7 @@ export default {
 			return this.tickerRenderList.filter((_, idx) => idx % 2 === 1);
 		},
 		tickerDuration() {
-			return Math.max(10, this.tickerList.length * 3);
+			return Math.max(6, this.tickerList.length * 1.6);
 		}
 	},
 	onShow() {
@@ -215,8 +216,17 @@ export default {
 		contactService() {
 			uni.showModal({
 				title: '联系客服',
-				content: '如有疑问请联系业务员或平台客服；后续可在后台配置客服电话或企业微信。',
-				showCancel: false
+				content: `客服电话：${this.servicePhone}`,
+				confirmText: '确定',
+				success: (res) => {
+					if (!res.confirm) return;
+					uni.makePhoneCall({
+						phoneNumber: String(this.servicePhone || '').trim(),
+						fail: () => {
+							uni.showToast({ title: '拨号失败，请稍后重试', icon: 'none' });
+						}
+					});
+				}
 			});
 		},
 		async loadData() {
@@ -239,6 +249,7 @@ export default {
 					amount: Number(x.amount || 0).toFixed(2)
 				}));
 				this.tickerList = realTicker.slice(0, 20);
+				this.servicePhone = String(d.servicePhone || '400-668-5796').trim() || '400-668-5796';
 				const su = d.summary || {};
 				this.summaryPoints = su.accountPoints != null ? String(su.accountPoints) : '0.00';
 			} finally {
@@ -452,7 +463,7 @@ export default {
 	animation-iteration-count: infinite;
 }
 .subsidy-ticker-track--delay {
-	animation-delay: -3s;
+	animation-delay: -2s;
 }
 .subsidy-ticker-line {
 	height: 58rpx;
@@ -494,8 +505,8 @@ export default {
 }
 
 @keyframes ticker-marquee-left {
-	0% { transform: translateX(100%); }
-	100% { transform: translateX(-100%); }
+	0% { transform: translateX(0); }
+	100% { transform: translateX(-50%); }
 }
 
 /* 仅叠气泡与金额；招财猫由整张 .hero 背景承担，避免重复一张小图 */

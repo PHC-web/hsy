@@ -12,6 +12,7 @@
 			<text class="nav-title">售后反馈</text>
 			<view class="nav-end-wrap">
 				<text v-if="ticket" class="nav-end" @click="onCloseFeedback">结束反馈</text>
+				<text v-else-if="showRefundNavButton" class="nav-end nav-end--refund" @click="openRefundPage">退款</text>
 				<text v-else class="nav-end nav-end--placeholder">结束反馈</text>
 			</view>
 		</view>
@@ -66,17 +67,6 @@
 				<view class="bottom-anchor" id="msg-bottom"></view>
 			</view>
 		</scroll-view>
-		<view class="action-toolbar h5-glass-panel">
-			<button
-				v-if="showRefundToolbarButton"
-				class="toolbar-btn toolbar-btn--refund"
-				size="mini"
-				@click="openHiddenRefundEntry"
-			>
-				退款
-			</button>
-		</view>
-
 		<view class="composer h5-glass-panel">
 			<view v-if="pendingImages.length || pendingVideoPath" class="pending-row">
 				<view v-for="(p, i) in pendingImages" :key="i" class="pending-item">
@@ -132,19 +122,9 @@ export default {
 			if (this.pendingImages.length) return false;
 			return !t;
 		},
-		showRefundToolbarButton() {
-			return this.canShowRefundButton && !!this.hiddenRefundPath;
-		},
-		hiddenRefundPath() {
-			const msgs = Array.isArray(this.messages) ? this.messages : [];
-			for (let i = msgs.length - 1; i >= 0; i -= 1) {
-				const m = msgs[i] || {};
-				const path = String(m.refundEntryPath || '').trim();
-				if (!path) continue;
-				const exp = Number(m.refundEntryExpireTime || 0);
-				if (!exp || Date.now() <= exp) return path;
-			}
-			return '';
+		showRefundNavButton() {
+			// 反馈进行中隐藏；仅充值会员显示
+			return !this.ticket && this.canShowRefundButton;
 		}
 	},
 	onShow() {
@@ -192,8 +172,8 @@ export default {
 				const res = await h5HomeDashboard();
 				if (res.code !== 0) return;
 				const data = (res.data && res.data.data) || res.data || {};
-				const countdown = data.countdown || {};
-				this.canShowRefundButton = String(countdown.phase || '').trim() !== 'none';
+				const role = String(data.withdrawContext?.role || '').trim();
+				this.canShowRefundButton = role === 'recharge_member';
 			} catch (e) {
 				this.canShowRefundButton = false;
 			}
@@ -254,15 +234,24 @@ export default {
 				uni.showToast({ title: '退款入口无效', icon: 'none' });
 				return;
 			}
-			uni.navigateTo({ url: path });
+			this.confirmRefundAction(() => {
+				uni.navigateTo({ url: path });
+			});
 		},
-		openHiddenRefundEntry() {
-			const path = String(this.hiddenRefundPath || '').trim();
-			if (!path) {
-				uni.showToast({ title: '暂无可用退款入口', icon: 'none' });
-				return;
-			}
-			uni.navigateTo({ url: path });
+		openRefundPage() {
+			this.confirmRefundAction(() => {
+				uni.navigateTo({ url: '/pages/h5/recharge-refund/index?from=feedback' });
+			});
+		},
+		confirmRefundAction(onConfirm) {
+			uni.showModal({
+				title: '确认退款',
+				content: '该操作会失去您在慧收盈平台的所有权益，是否确定？',
+				success: (r) => {
+					if (!r.confirm) return;
+					if (typeof onConfirm === 'function') onConfirm();
+				}
+			});
 		},
 		async uploadToCloud(localPath, extGuess) {
 			const session = getSession() || {};
@@ -382,6 +371,10 @@ export default {
 	text-align: right;
 	font-size: 13px;
 	color: #fca5a5;
+}
+
+.nav-end--refund {
+	color: #93c5fd;
 }
 
 .nav-end-wrap {
@@ -525,28 +518,6 @@ export default {
 	flex-shrink: 0;
 	border-bottom-left-radius: 0;
 	border-bottom-right-radius: 0;
-}
-
-.action-toolbar {
-	margin: 0 10px 8px;
-	padding: 8px 12px;
-	display: flex;
-	justify-content: flex-start;
-	align-items: center;
-}
-
-.toolbar-btn {
-	height: 28px;
-	line-height: 28px;
-	padding: 0 12px;
-	font-size: 12px;
-	border-radius: 999px;
-}
-
-.toolbar-btn--refund {
-	background: rgba(59, 130, 246, 0.2) !important;
-	color: #dbeafe !important;
-	border: 1px solid rgba(147, 197, 253, 0.55) !important;
 }
 
 .pending-row {

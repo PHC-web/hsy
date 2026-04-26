@@ -11,6 +11,7 @@
 			<view class="scroll-inner">
 				<view class="top-row">
 					<text class="page-title">商户中心</text>
+					<view class="top-refresh-btn" @click="refreshPage">刷新</view>
 				</view>
 
 				<!-- 会员与头像 -->
@@ -169,16 +170,25 @@ export default {
 		}
 	},
 	onShow() {
-		this.load();
+		let force = false;
+		try {
+			const ts = Number(uni.getStorageSync('h5_refund_success_refresh_ts') || 0);
+			const consumed = Number(uni.getStorageSync('h5_refund_success_refresh_ts_home') || 0);
+			if (ts > 0 && ts > consumed) {
+				force = true;
+				uni.setStorageSync('h5_refund_success_refresh_ts_home', ts);
+			}
+		} catch (e) {}
+		this.load(force);
 	},
 	methods: {
-		async load() {
+		async load(force = false) {
 			this.pending = true;
 			const maskTimer = setTimeout(() => {
 				this.loading = true;
 			}, 320);
 			try {
-				const res = await h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000 });
+				const res = await h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000, force: !!force });
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 					return;
@@ -198,6 +208,11 @@ export default {
 				this.pending = false;
 				this.loading = false;
 			}
+		},
+		async refreshPage() {
+			if (this.pending || this.loading) return;
+			await this.load(true);
+			uni.showToast({ title: '已刷新', icon: 'none' });
 		},
 		goIncome() {
 			uni.redirectTo({ url: '/pages/h5/income/index' });
@@ -279,6 +294,9 @@ export default {
 }
 
 .top-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
 	margin-bottom: 14px;
 }
 .page-title {
@@ -286,6 +304,15 @@ export default {
 	font-weight: 700;
 	color: rgba(248, 250, 252, 0.96);
 	letter-spacing: 0.02em;
+}
+.top-refresh-btn {
+	padding: 4px 12px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	color: #cbd5e1;
+	background: rgba(15, 23, 42, 0.35);
+	border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .glass {

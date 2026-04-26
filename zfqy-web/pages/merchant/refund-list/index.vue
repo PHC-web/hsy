@@ -64,7 +64,7 @@
 							<uni-td align="center">
 								<view class="op-actions">
 									<button
-										v-if="item.auditRequired && item.auditStatus === 'pending'"
+										v-if="item.auditRequired && item.auditStatus === 'pending' && item.batchState === 'PENDING_AUDIT'"
 										size="mini"
 										type="primary"
 										class="op-btn"
@@ -73,13 +73,31 @@
 										同意退款
 									</button>
 									<button
-										v-if="item.auditRequired && item.auditStatus === 'pending'"
+										v-if="item.auditRequired && item.auditStatus === 'pending' && item.batchState === 'PENDING_AUDIT'"
 										size="mini"
 										type="warn"
 										class="op-btn"
 										@click="approve(item, 'reject')"
 									>
 										不同意退款
+									</button>
+									<button
+										v-else-if="item.auditStatus === 'rejected' && item.batchState === 'PROCESSING'"
+										size="mini"
+										type="warn"
+										class="op-btn"
+										@click="fixRejectedProcessing(item)"
+									>
+										单笔状态修复
+									</button>
+									<button
+										v-else-if="item.batchState === 'PROCESSING'"
+										size="mini"
+										type="warn"
+										class="op-btn"
+										@click="forceFail(item)"
+									>
+										标记失败
 									</button>
 									<text v-else class="op-done">{{ opHint(item) }}</text>
 								</view>
@@ -122,7 +140,8 @@ export default {
 				{ text: '待审核', value: 'PENDING_AUDIT', checked: false },
 				{ text: '处理中', value: 'PROCESSING', checked: false },
 				{ text: '已成功', value: 'SUCCESS', checked: false },
-				{ text: '失败', value: 'FAILED', checked: false }
+				{ text: '失败', value: 'FAILED', checked: false },
+				{ text: '已拒绝', value: 'REJECTED', checked: false }
 			],
 			list: [],
 			loading: false,
@@ -356,6 +375,72 @@ export default {
 				this.search();
 			} catch (err) {
 				uni.showToast({ title: err?.message || '审批失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		async forceFail(item) {
+			if (!item || !item.id) return;
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '确认操作',
+					content: `确认将退款单 ${item.refundNo || ''} 标记为失败吗？`,
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			uni.showLoading({ title: '提交中...', mask: true });
+			try {
+				let res = await this.$request(
+					'refundTransferForceFail',
+					{ id: item.id, refundNo: item.refundNo, reason: '管理员手动标记失败' },
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0 && String(res.message || '').includes('无效的操作')) {
+					// 兼容未升级到 refundTransferForceFail action 的老版本云函数
+					res = await this.$request(
+						'refundTransferApprove',
+						{ id: item.id, actionType: 'forceFail', reason: '管理员手动标记失败' },
+						{ functionName: 'merchant' }
+					);
+				}
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '操作失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '已标记失败', icon: 'success' });
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '操作失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		async fixRejectedProcessing(item) {
+			if (!item || !item.id) return;
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '确认修复',
+					content: `确认修复退款单 ${item.refundNo || ''} 的状态吗？\n将从“处理中”修复为“已拒绝”。`,
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			uni.showLoading({ title: '修复中...', mask: true });
+			try {
+				const res = await this.$request(
+					'refundTransferFixRejectedProcessing',
+					{ id: item.id, refundNo: item.refundNo },
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '修复失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: res.message || '修复成功', icon: 'success' });
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '修复失败', icon: 'none' });
 			} finally {
 				uni.hideLoading();
 			}

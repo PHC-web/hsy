@@ -136,6 +136,11 @@
 					placeholder="示例：\n668f98c7ab1234567890abcd\nuid_merchant_test_001, uid_merchant_test_002"
 				/>
 			</view>
+			<view class="card">
+				<view class="card-title">6）H5 联系客服电话</view>
+				<text class="card-tip">用于 H5 权益页右上角“联系客服”按钮展示及拨号，支持固话或手机号。</text>
+				<uni-easyinput v-model.trim="form.servicePhone" placeholder="如 400-668-5796" />
+			</view>
 		</view>
 	</view>
 </template>
@@ -155,7 +160,8 @@ const defaultForm = () => ({
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
-	testMerchantIdsText: ''
+	testMerchantIdsText: '',
+	servicePhone: '400-668-5796'
 });
 
 export default {

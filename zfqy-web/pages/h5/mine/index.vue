@@ -9,7 +9,10 @@
 
 		<scroll-view class="mine-scroll" scroll-y :show-scrollbar="false">
 			<view class="mine-inner">
-				<text class="page-title">我的</text>
+				<view class="mine-top-row">
+					<text class="page-title">我的</text>
+					<view class="top-refresh-btn" @click="refreshPage">刷新</view>
+				</view>
 
 				<view class="notice-marquee h5-glass-panel">
 					<view class="notice-track">
@@ -131,8 +134,28 @@
 					<text class="sheet-title">{{ agreement.title || '开户优惠活动计划书签署' }}</text>
 				</view>
 				<scroll-view scroll-y class="agreement-text">
-					<text v-for="(line, idx) in agreementLines" :key="idx" :class="line.cls">{{ line.text }}</text>
+					<view v-if="!agreementDocUrl" class="agreement-doc-empty">
+						<text class="p">未配置最新协议文件，请在后台协议管理中设置当前协议。</text>
+					</view>
+					<view v-else-if="agreementPdfLoading" class="agreement-doc-loading">
+						<text class="p">正在加载最新协议内容...</text>
+					</view>
+					<view v-else-if="agreementPdfImages.length" class="agreement-doc-images">
+						<image
+							v-for="(src, idx) in agreementPdfImages"
+							:key="`pdf_img_${idx}`"
+							class="agreement-doc-image"
+							:src="src"
+							mode="widthFix"
+						/>
+					</view>
+					<view v-else class="agreement-doc-empty">
+						<text class="p">{{ agreementPdfError || '协议内容暂时无法在当前环境内预览，请点击下方按钮查看原文件。' }}</text>
+					</view>
 				</scroll-view>
+				<view v-if="agreementDocUrl" class="agreement-doc-actions">
+					<button size="mini" @click="openAgreementFile">查看原始协议文件</button>
+				</view>
 				<signature-pad @signed="onSigned" />
 			</view>
 		</uni-popup>
@@ -184,6 +207,11 @@ export default {
 				pdfFileId: '',
 				notifyAllResign: false
 			},
+			agreementPdfImages: [],
+			agreementPdfLoading: false,
+			agreementPdfError: '',
+			pdfjsReady: false,
+			pdfjsLoading: false,
 			agreementLines: [
 				{ cls: 'p p-title', text: '慧收盈“开户优惠”活动计划书（完整内容）' },
 				{ cls: 'p p-sub', text: '重要须知' },
@@ -289,21 +317,33 @@ export default {
 		},
 		agreementNeedSign() {
 			return !!this.agreement.needSign;
+		},
+		agreementDocUrl() {
+			return String(this.agreement.pdfFileId || '').trim();
 		}
 	},
 	onShow() {
-		this.loadMine();
+		let force = false;
+		try {
+			const ts = Number(uni.getStorageSync('h5_refund_success_refresh_ts') || 0);
+			const consumed = Number(uni.getStorageSync('h5_refund_success_refresh_ts_mine') || 0);
+			if (ts > 0 && ts > consumed) {
+				force = true;
+				uni.setStorageSync('h5_refund_success_refresh_ts_mine', ts);
+			}
+		} catch (e) {}
+		this.loadMine(force);
 	},
 	methods: {
-		async loadMine() {
+		async loadMine(force = false) {
 			this.pending = true;
 			const maskTimer = setTimeout(() => {
 				this.loading = true;
 			}, 320);
 			try {
 				const [dashboardRes, mineRes] = await Promise.all([
-					h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000 }),
-					h5MineInfoCached({ maxAgeMs: 5 * 60 * 1000 })
+					h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000, force: !!force }),
+					h5MineInfoCached({ maxAgeMs: 5 * 60 * 1000, force: !!force })
 				]);
 				if (dashboardRes.code === 0) {
 					const d = dashboardRes.data || {};
@@ -326,7 +366,13 @@ export default {
 					deviceDisplay: (mData.device && mData.device.display) || this.mine.deviceDisplay || ''
 				});
 				if (mData.account) this.account = Object.assign({}, this.account, mData.account);
+				const oldPdf = String(this.agreement.pdfFileId || '').trim();
 				this.agreement = Object.assign({}, this.agreement, mData.agreement || {});
+				const newPdf = String(this.agreement.pdfFileId || '').trim();
+				if (newPdf !== oldPdf) {
+					this.agreementPdfImages = [];
+					this.agreementPdfError = '';
+				}
 				const fb = mData.feedback;
 				if (fb) {
 					this.feedbackUnread = !!fb.unreadReply;
@@ -336,6 +382,11 @@ export default {
 				this.pending = false;
 				this.loading = false;
 			}
+		},
+		async refreshPage() {
+			if (this.pending || this.loading) return;
+			await this.loadMine(true);
+			uni.showToast({ title: '已刷新', icon: 'none' });
 		},
 		goDevice() {
 			uni.navigateTo({ url: '/pages/h5/device/index' });
@@ -347,6 +398,11 @@ export default {
 			uni.navigateTo({ url: '/pages/h5/coupons/index' });
 		},
 		goExchange() {
+			if (this.agreementNeedSign) {
+				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
+				this.openAgreementPopup();
+				return;
+			}
 			uni.navigateTo({ url: '/pages/h5/exchange/index' });
 		},
 		goPendingReturn() {
@@ -360,11 +416,11 @@ export default {
 		},
 		onAcctCardClick() {
 			if (!this.agreementNeedSign) return;
-			this.$refs.agreementPopup.open();
+			this.openAgreementPopup();
 		},
 		onViewAgreement() {
 			if (this.agreementNeedSign) {
-				this.$refs.agreementPopup.open();
+				this.openAgreementPopup();
 				return;
 			}
 			this.$refs.agreementViewPopup.open();
@@ -382,7 +438,7 @@ export default {
 			if (ar <= 0) return;
 			if (this.agreementNeedSign) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.$refs.agreementPopup.open();
+				this.openAgreementPopup();
 				return;
 			}
 			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
@@ -397,118 +453,191 @@ export default {
 		onAccountPointsExchangeClick() {
 			if (this.agreementNeedSign) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.$refs.agreementPopup.open();
+				this.openAgreementPopup();
 				return;
 			}
 			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
 		},
-		drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color = '#334155', font = '500 26px sans-serif') {
-			ctx.font = font;
-			ctx.fillStyle = color;
-			const s = String(text || '');
-			let line = '';
-			for (let i = 0; i < s.length; i += 1) {
-				const ch = s[i];
-				const test = line + ch;
-				if (ctx.measureText(test).width > maxWidth && line) {
-					ctx.fillText(line, x, y);
-					y += lineHeight;
-					line = ch;
-				} else {
-					line = test;
+		async openAgreementPopup() {
+			this.$refs.agreementPopup.open();
+			await this.ensureAgreementPreviewReady();
+		},
+		async ensurePdfJsReady() {
+			// #ifndef H5
+			return false;
+			// #endif
+			// #ifdef H5
+			if (this.pdfjsReady) return true;
+			if (this.pdfjsLoading) {
+				return await new Promise((resolve) => {
+					const timer = setInterval(() => {
+						if (!this.pdfjsLoading) {
+							clearInterval(timer);
+							resolve(!!this.pdfjsReady);
+						}
+					}, 50);
+				});
+			}
+			this.pdfjsLoading = true;
+			try {
+				if (!(window && window.pdfjsLib)) {
+					await new Promise((resolve, reject) => {
+						const script = document.createElement('script');
+						script.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
+						script.async = true;
+						script.onload = resolve;
+						script.onerror = reject;
+						document.head.appendChild(script);
+					});
 				}
+				if (window && window.pdfjsLib) {
+					window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+						'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+					this.pdfjsReady = true;
+					return true;
+				}
+				return false;
+			} catch (e) {
+				return false;
+			} finally {
+				this.pdfjsLoading = false;
 			}
-			if (line) {
-				ctx.fillText(line, x, y);
-				y += lineHeight;
+			// #endif
+		},
+		async ensureAgreementPreviewReady() {
+			const url = String(this.agreementDocUrl || '').trim();
+			if (!url || this.agreementPdfLoading || this.agreementPdfImages.length) return;
+			this.agreementPdfLoading = true;
+			this.agreementPdfError = '';
+			try {
+				const ok = await this.ensurePdfJsReady();
+				if (!ok) {
+					this.agreementPdfError = '当前环境不支持内嵌渲染PDF';
+					return;
+				}
+				// #ifdef H5
+				const resp = await fetch(url);
+				if (!resp.ok) throw new Error(`协议文件加载失败(${resp.status})`);
+				const ab = await resp.arrayBuffer();
+				const doc = await window.pdfjsLib.getDocument({ data: ab }).promise;
+				const pages = [];
+				const maxPages = Math.min(doc.numPages || 0, 40);
+				for (let i = 1; i <= maxPages; i += 1) {
+					const page = await doc.getPage(i);
+					const viewport = page.getViewport({ scale: 1.5 });
+					const canvas = document.createElement('canvas');
+					const ctx = canvas.getContext('2d');
+					canvas.width = Math.ceil(viewport.width);
+					canvas.height = Math.ceil(viewport.height);
+					await page.render({ canvasContext: ctx, viewport }).promise;
+					pages.push(canvas.toDataURL('image/jpeg', 0.9));
+				}
+				this.agreementPdfImages = pages;
+				if (!pages.length) this.agreementPdfError = '协议文件暂无可渲染页面';
+				// #endif
+			} catch (e) {
+				this.agreementPdfError = e?.message || '协议内容渲染失败';
+			} finally {
+				this.agreementPdfLoading = false;
 			}
-			return y;
+		},
+		loadImageElement(src) {
+			return new Promise((resolve, reject) => {
+				const img = new Image();
+				img.crossOrigin = 'anonymous';
+				img.onload = () => resolve(img);
+				img.onerror = (e) => reject(e);
+				img.src = src;
+			});
 		},
 		buildAgreementCompositeImage(signatureImage) {
 			// #ifndef H5
 			return Promise.resolve(signatureImage);
 			// #endif
 			// #ifdef H5
-			return new Promise((resolve, reject) => {
-				try {
-					const contentWidth = 1120;
-					const pagePadding = 52;
-					const lineHeight = 36;
-					const signAreaHeight = 210;
-					const draftCanvas = document.createElement('canvas');
-					const draftCtx = draftCanvas.getContext('2d');
-					if (!draftCtx) {
-						resolve(signatureImage);
-						return;
-					}
+			return (async () => {
+				await this.ensureAgreementPreviewReady();
+				const pageImages = (this.agreementPdfImages || []).filter((x) => String(x || '').trim());
+				if (!pageImages.length) return signatureImage;
 
-					let estimateHeight = 180 + signAreaHeight;
-					const textMaxWidth = contentWidth - pagePadding * 2;
-					(this.agreementLines || []).forEach((line) => {
-						const t = String((line && line.text) || '');
-						draftCtx.font = line && line.cls && line.cls.includes('p-title') ? '700 30px sans-serif' : line && line.cls && line.cls.includes('p-sub') ? '700 27px sans-serif' : '500 26px sans-serif';
-						const rows = Math.max(1, Math.ceil(draftCtx.measureText(t).width / textMaxWidth));
-						estimateHeight += rows * lineHeight + 8;
-					});
-
-					const canvas = document.createElement('canvas');
-					canvas.width = contentWidth;
-					canvas.height = Math.max(estimateHeight, 1200);
-					const ctx = canvas.getContext('2d');
-					if (!ctx) {
-						resolve(signatureImage);
-						return;
-					}
-
-					ctx.fillStyle = '#ffffff';
-					ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-					let y = 70;
-					ctx.fillStyle = '#0f172a';
-					ctx.font = '700 38px sans-serif';
-					ctx.fillText('慧收盈“开户优惠”活动计划书', pagePadding, y);
-					y += 56;
-
-					for (const line of this.agreementLines || []) {
-						const cls = (line && line.cls) || '';
-						const text = (line && line.text) || '';
-						const isTitle = cls.includes('p-title');
-						const isSub = cls.includes('p-sub');
-						const color = isTitle ? '#0f172a' : isSub ? '#1e293b' : '#334155';
-						const font = isTitle ? '700 30px sans-serif' : isSub ? '700 27px sans-serif' : '500 26px sans-serif';
-						y = this.drawWrappedText(ctx, text, pagePadding, y, textMaxWidth, lineHeight, color, font);
-						y += 8;
-					}
-
-					const signTop = Math.max(y + 24, canvas.height - signAreaHeight - 36);
-					ctx.strokeStyle = '#94a3b8';
-					ctx.lineWidth = 2;
-					ctx.setLineDash([10, 8]);
-					ctx.strokeRect(pagePadding, signTop, textMaxWidth, signAreaHeight);
-					ctx.setLineDash([]);
-					ctx.fillStyle = '#475569';
-					ctx.font = '600 26px sans-serif';
-					ctx.fillText('用户签字/盖章', pagePadding + 16, signTop + 42);
-
-					const signImg = new Image();
-					signImg.onload = () => {
-						const signW = 280;
-						const signH = 120;
-						const signX = pagePadding + textMaxWidth - signW - 16;
-						const signY = signTop + 58;
-						ctx.drawImage(signImg, signX, signY, signW, signH);
-						ctx.fillStyle = '#64748b';
-						ctx.font = '500 24px sans-serif';
-						const ds = new Date();
-						const dateText = `签署日期：${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, '0')}-${String(ds.getDate()).padStart(2, '0')}`;
-						ctx.fillText(dateText, pagePadding + 16, signTop + signAreaHeight - 18);
-						resolve(canvas.toDataURL('image/png', 0.92));
-					};
-					signImg.onerror = () => resolve(signatureImage);
-					signImg.src = signatureImage;
-				} catch (e) {
-					reject(e);
+				const loadedPages = [];
+				for (const src of pageImages) {
+					try {
+						const img = await this.loadImageElement(src);
+						loadedPages.push(img);
+					} catch (e) {}
 				}
+				if (!loadedPages.length) return signatureImage;
+
+				let signImg = null;
+				try {
+					signImg = await this.loadImageElement(signatureImage);
+				} catch (e) {
+					signImg = null;
+				}
+
+				const pageMaxWidth = Math.max(...loadedPages.map((x) => Number(x.width || 0)));
+				const contentWidth = Math.max(1000, pageMaxWidth);
+				const sidePad = 24;
+				const signBlockHeight = 220;
+				let totalHeight = 0;
+				const draws = [];
+				for (const img of loadedPages) {
+					const ratio = contentWidth / Number(img.width || contentWidth);
+					const drawH = Math.max(1, Math.round(Number(img.height || 1) * ratio));
+					draws.push({ img, y: totalHeight, w: contentWidth, h: drawH });
+					totalHeight += drawH;
+				}
+				totalHeight += signBlockHeight;
+
+				const canvas = document.createElement('canvas');
+				canvas.width = contentWidth;
+				canvas.height = totalHeight;
+				const ctx = canvas.getContext('2d');
+				if (!ctx) return signatureImage;
+
+				ctx.fillStyle = '#ffffff';
+				ctx.fillRect(0, 0, canvas.width, canvas.height);
+				for (const d of draws) {
+					ctx.drawImage(d.img, 0, d.y, d.w, d.h);
+				}
+
+				const blockTop = totalHeight - signBlockHeight;
+				ctx.fillStyle = '#ffffff';
+				ctx.fillRect(0, blockTop, canvas.width, signBlockHeight);
+				ctx.strokeStyle = '#d0d7e2';
+				ctx.lineWidth = 2;
+				ctx.strokeRect(sidePad, blockTop + 12, canvas.width - sidePad * 2, signBlockHeight - 24);
+				ctx.fillStyle = '#0f172a';
+				ctx.font = '600 28px sans-serif';
+				ctx.fillText('用户签字确认', sidePad + 20, blockTop + 56);
+				ctx.font = '500 22px sans-serif';
+				const ds = new Date();
+				const dateText = `签署日期：${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, '0')}-${String(ds.getDate()).padStart(2, '0')} ${String(ds.getHours()).padStart(2, '0')}:${String(ds.getMinutes()).padStart(2, '0')}`;
+				ctx.fillText(dateText, sidePad + 20, blockTop + signBlockHeight - 36);
+				if (signImg) {
+					const maxSignW = Math.min(360, Math.floor(canvas.width * 0.36));
+					const ratio = maxSignW / Number(signImg.width || maxSignW);
+					const signW = maxSignW;
+					const signH = Math.max(80, Math.round(Number(signImg.height || 80) * ratio));
+					const signX = canvas.width - sidePad - signW - 24;
+					const signY = blockTop + 40;
+					ctx.drawImage(signImg, signX, signY, signW, signH);
+				}
+				return canvas.toDataURL('image/jpeg', 0.92);
+			})();
+			// #endif
+		},
+		openAgreementFile() {
+			const url = String(this.agreementDocUrl || '').trim();
+			if (!url) return;
+			// #ifdef H5
+			window.open(url, '_blank');
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({
+				data: url,
+				success: () => uni.showToast({ title: '协议链接已复制', icon: 'none' })
 			});
 			// #endif
 		},
@@ -532,7 +661,7 @@ export default {
 				uni.showToast({ title: '签署成功', icon: 'success' });
 				this.$refs.agreementViewPopup.close();
 				this.$refs.agreementPopup.close();
-				this.loadMine();
+				await this.loadMine(true);
 			} finally {
 				uni.hideLoading();
 			}
@@ -546,7 +675,7 @@ export default {
 		goRecharge() {
 			if (this.agreementNeedSign) {
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.$refs.agreementPopup.open();
+				this.openAgreementPopup();
 				return;
 			}
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
@@ -584,14 +713,27 @@ export default {
 .mine-inner {
 	padding: 12px 16px 8px;
 }
-
+.mine-top-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 14px;
+}
 .page-title {
 	display: block;
 	font-size: 22px;
 	font-weight: 700;
 	color: rgba(248, 250, 252, 0.96);
-	margin-bottom: 14px;
 	letter-spacing: 0.02em;
+}
+.top-refresh-btn {
+	padding: 4px 12px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 600;
+	color: #cbd5e1;
+	background: rgba(15, 23, 42, 0.35);
+	border: 1px solid rgba(255, 255, 255, 0.18);
 }
 
 .notice-marquee {
@@ -917,6 +1059,45 @@ export default {
 	padding: 10px;
 	box-sizing: border-box;
 	background: rgba(0, 0, 0, 0.2);
+}
+.agreement-doc-wrap {
+	width: 100%;
+	height: 42vh;
+}
+.agreement-doc-loading {
+	min-height: 120px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.agreement-doc-frame {
+	width: 100%;
+	height: 100%;
+	border: 0;
+	border-radius: 8px;
+	background: #fff;
+}
+.agreement-doc-images {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.agreement-doc-image {
+	display: block;
+	width: 100%;
+	border-radius: 8px;
+	background: #fff;
+}
+.agreement-doc-empty {
+	min-height: 120px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.agreement-doc-actions {
+	margin-top: 10px;
+	display: flex;
+	justify-content: flex-end;
 }
 
 .p {
