@@ -153,9 +153,9 @@
 						<text class="p">{{ agreementPdfError || '协议内容暂时无法在当前环境内预览，请点击下方按钮查看原文件。' }}</text>
 					</view>
 				</scroll-view>
-				<view v-if="agreementDocUrl" class="agreement-doc-actions">
+				<!-- <view v-if="agreementDocUrl" class="agreement-doc-actions">
 					<button size="mini" @click="openAgreementFile">查看原始协议文件</button>
-				</view>
+				</view> -->
 				<signature-pad @signed="onSigned" />
 			</view>
 		</uni-popup>

@@ -214,18 +214,10 @@ export default {
 			this.pendingExpanded = !this.pendingExpanded;
 		},
 		contactService() {
-			uni.showModal({
-				title: '联系客服',
-				content: `客服电话：${this.servicePhone}`,
-				confirmText: '确定',
-				success: (res) => {
-					if (!res.confirm) return;
-					uni.makePhoneCall({
-						phoneNumber: String(this.servicePhone || '').trim(),
-						fail: () => {
-							uni.showToast({ title: '拨号失败，请稍后重试', icon: 'none' });
-						}
-					});
+			uni.makePhoneCall({
+				phoneNumber: String(this.servicePhone || '').trim(),
+				fail: () => {
+					uni.showToast({ title: '拨号失败，请稍后重试', icon: 'none' });
 				}
 			});
 		},

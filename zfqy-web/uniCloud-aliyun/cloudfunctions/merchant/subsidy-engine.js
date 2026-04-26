@@ -43,7 +43,7 @@ async function sumEligibleRealFlowYuan(db, merchantUserId, start, end) {
 		.where(
 			_.and([
 				{ user_id: merchantUserId },
-				{ trade_type: 'real' },
+				{ trade_type: _.in(['real', 'virtual']) },
 				{ stats_eligible: _.neq(false) },
 				{ create_time: _.gte(start).and(_.lte(end)) },
 				{ amount: _.gt(0) },
@@ -67,7 +67,7 @@ async function sumEligibleReleasePoints(db, merchantUserId, start, end) {
 		.where(
 			_.and([
 				{ user_id: merchantUserId },
-				{ trade_type: 'real' },
+				{ trade_type: _.in(['real', 'virtual']) },
 				{ stats_eligible: _.neq(false) },
 				{ create_time: _.gte(start).and(_.lte(end)) },
 				{ amount: _.gt(0) },
@@ -165,7 +165,7 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 		.where(
 			_.and([
 				{ user_id: merchantUserId },
-				{ trade_type: 'real' },
+				{ trade_type: _.in(['real', 'virtual']) },
 				{ stats_eligible: _.neq(false) },
 				{ amount: _.gt(0) },
 				_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])

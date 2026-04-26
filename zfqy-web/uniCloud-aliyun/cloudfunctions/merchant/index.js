@@ -491,8 +491,8 @@ async function listMerchants(data) {
 			const withdrawnYuan = Number(
 				(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(item.withdrawn || 0)) || 0
 			);
-			// 统一口径：Web 商户列表“剩余额度”与 H5 首页“剩余提现额度”、H5 我的“可用奖励”完全一致，均取 available_reward
-			const remainingQuotaYuan = normalizeWithdrawQuotaBalance(item);
+			// 后台商户列表“剩余额度”优先展示会员配置额度（recharge_package_reward），无配置时回退可用奖励余额。
+			const remainingQuotaYuan = normalizeAdminRemainingQuota(item);
 			const membership = resolveMerchantMembershipForAdmin(item, rechargePackages);
 			return {
 			id: item._id,
@@ -686,7 +686,7 @@ async function merchantPointsMonthlyInsight(data) {
 		const now = nowTs();
 		const curYm = subsidyEngine.monthNoFromTs(now);
 		const tRes = await machineTradeCollection
-			.where({ user_id: uid, trade_type: 'real', amount: db.command.gt(0) })
+			.where({ user_id: uid, trade_type: db.command.in(['real', 'virtual']), amount: db.command.gt(0) })
 			.field({ amount: true, cashback: true, release_amount: true, create_time: true })
 			.orderBy('create_time', 'asc')
 			.limit(20000)
@@ -1767,13 +1767,6 @@ async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState 
 			withdrawn: Number((Number(merchant.withdrawn || 0) + settleAmt).toFixed(4)),
 			update_time: nowTs()
 		};
-		// 非审核提现在申请时未冻结积分，这里补扣，确保与“需审核”路径口径一致
-		if (!withdrawRow.audit_required) {
-			merchantUpdate.available_reward = Number(Math.max(0, rawWithdrawQuotaBalance(merchant) - amountPoints).toFixed(4));
-			merchantUpdate.withdraw_quota_balance = Number(Math.max(0, rawWithdrawQuotaBalance(merchant) - amountPoints).toFixed(4));
-			merchantUpdate.account_points = Number(Math.max(0, rawPendingBalance(merchant) - amountPoints).toFixed(4));
-			merchantUpdate.withdraw_pending_balance = Number(Math.max(0, rawPendingBalance(merchant) - amountPoints).toFixed(4));
-		}
 		await merchantCollection.doc(merchant._id).update(merchantUpdate);
 	}
 	if (machine) {
@@ -3148,6 +3141,15 @@ function normalizeWithdrawQuotaBalance(row) {
 	return Math.max(0, Number(Number(balance).toFixed(2)));
 }
 
+function normalizeAdminRemainingQuota(row) {
+	// 管理后台“剩余额度”优先按会员档位总额度展示（奖励额度字段缺失时，按quota档位兜底到3800/5700/7600）。
+	const totalQuota = Number(h5WithdrawQuotaTotalYuan(row) || 0);
+	if (Number.isFinite(totalQuota) && totalQuota > 0) {
+		return Math.max(0, Number(totalQuota.toFixed(2)));
+	}
+	return normalizeWithdrawQuotaBalance(row);
+}
+
 function rawPendingBalance(row) {
 	if (!row) return 0;
 	if (row.withdraw_pending_balance != null && row.withdraw_pending_balance !== '') {
@@ -3865,6 +3867,38 @@ async function h5WithdrawConfirmPackage(data) {
 			return { code: 400, message: '该笔提现已到账，无需确认收款' };
 		}
 		if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
+			// 终态失败：自动提现单需回退已冻结积分，避免长时间占用可提现余额。
+			if (!row.audit_required && safeText(row.arrival_status, 20) !== 'returned') {
+				const settleAmt = Number(row.payable != null ? row.payable : row.amount || 0);
+				const amountPoints = Number(row.amount || 0);
+				const merchantRes = await merchantCollection.where({ _id: merchant._id }).limit(1).get();
+				const latestMerchant = merchantRes.data && merchantRes.data[0];
+				if (latestMerchant) {
+					await merchantCollection.doc(latestMerchant._id).update({
+						available_reward: Number((rawWithdrawQuotaBalance(latestMerchant) + amountPoints).toFixed(4)),
+						withdraw_quota_balance: Number((rawWithdrawQuotaBalance(latestMerchant) + amountPoints).toFixed(4)),
+						account_points: Number((rawPendingBalance(latestMerchant) + amountPoints).toFixed(4)),
+						withdraw_pending_balance: Number((rawPendingBalance(latestMerchant) + amountPoints).toFixed(4)),
+						pending_withdraw: Number(Math.max(0, Number(latestMerchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
+						update_time: nowTs()
+					});
+				}
+				if (row.device_id) {
+					const machineRes = await machineCollection.where({ device_id: row.device_id, is_deleted: false }).limit(1).get();
+					const machine = machineRes.data && machineRes.data[0];
+					if (machine) {
+						await machineCollection.doc(machine._id).update({
+							pending_amount: Number(Math.max(0, Number(machine.pending_amount || 0) - settleAmt).toFixed(4))
+						});
+					}
+				}
+				await withdrawCollection.doc(row._id).update({
+					arrival_status: 'returned',
+					transfer_state: state,
+					transfer_error: `微信提现失败：${state}`,
+					update_time: nowTs()
+				});
+			}
 			return { code: 400, message: `该笔提现当前状态为${state}，请联系管理员重试打款` };
 		}
 		const packageInfo = safeText(
@@ -4375,7 +4409,7 @@ async function getH5CurrentMonthTradeYuan(merchant, now = nowTs()) {
 		const _ = db.command;
 		const tradeParts = [
 			{ user_id: merchantUserId },
-			{ trade_type: 'real' },
+			{ trade_type: _.in(['real', 'virtual']) },
 			{ stats_eligible: _.neq(false) },
 			{ amount: _.gt(0) },
 			{ is_deleted: _.neq(true) },
@@ -4655,22 +4689,39 @@ async function h5WithdrawApply(data) {
 		const machineWithdrawnBefore = machine ? Number(machine.withdrawn_amount || 0) : 0;
 		const pendingWithdrawBefore = Number(merchant.pending_withdraw || 0);
 		const machinePendingBefore = machine ? Number(machine.pending_amount || 0) : 0;
-		try {
-			if (needAudit) {
-				// 待审核提现：先冻结额度/积分并生成订单，等待后台“同意提现”后才商家打款
-				await merchantCollection.doc(merchant._id).update({
-					available_reward: Number((ar - points).toFixed(4)),
-					withdraw_quota_balance: Number((ar - points).toFixed(4)),
-					account_points: Number((ap - points).toFixed(4)),
-					withdraw_pending_balance: Number((ap - points).toFixed(4)),
-					pending_withdraw: Number((pendingWithdrawBefore + payable).toFixed(4)),
-					update_time: now
+		const restoreWithdrawDeduction = async () => {
+			await merchantCollection.doc(merchant._id).update({
+				available_reward: Number(ar.toFixed(4)),
+				withdraw_quota_balance: Number(ar.toFixed(4)),
+				account_points: Number(ap.toFixed(4)),
+				withdraw_pending_balance: Number(ap.toFixed(4)),
+				pending_withdraw: Number(pendingWithdrawBefore.toFixed(4)),
+				withdrawn: Number(withdrawnBefore.toFixed(4)),
+				update_time: nowTs()
+			});
+			if (machine) {
+				await machineCollection.doc(machine._id).update({
+					pending_amount: Number(machinePendingBefore.toFixed(4)),
+					withdrawn_amount: Number(machineWithdrawnBefore.toFixed(4))
 				});
-				if (machine) {
-					await machineCollection.doc(machine._id).update({
-						pending_amount: Number((machinePendingBefore + payable).toFixed(4))
-					});
-				}
+			}
+		};
+		try {
+			// 点击“积分兑换提现”即先冻结并扣除积分，防止回执未更新期间重复发起退款/提现。
+			await merchantCollection.doc(merchant._id).update({
+				available_reward: Number((ar - points).toFixed(4)),
+				withdraw_quota_balance: Number((ar - points).toFixed(4)),
+				account_points: Number((ap - points).toFixed(4)),
+				withdraw_pending_balance: Number((ap - points).toFixed(4)),
+				pending_withdraw: Number((pendingWithdrawBefore + payable).toFixed(4)),
+				update_time: now
+			});
+			if (machine) {
+				await machineCollection.doc(machine._id).update({
+					pending_amount: Number((machinePendingBefore + payable).toFixed(4))
+				});
+			}
+			if (needAudit) {
 				await sendWecomRobotText(`商户${maybeMerchantDisplayName(merchant)}申请提现，请及时处理。`);
 				return {
 					code: 0,
@@ -4720,6 +4771,7 @@ async function h5WithdrawApply(data) {
 					update_time: nowTs(),
 					transfer_error: msg
 				});
+				await restoreWithdrawDeduction();
 				await writeTransferLog({
 					stage: 'withdraw_auto_transfer_error',
 					level: 'error',
@@ -4769,29 +4821,19 @@ async function h5WithdrawApply(data) {
 			const isTerminalFail = ['FAIL', 'FAILED', 'CANCELLED'].includes(transferState);
 
 			if (isSuccess) {
-				if (machine) {
-					await machineCollection.doc(machine._id).update({
-						withdrawn_amount: Number((machineWithdrawnBefore + payable).toFixed(4))
+				if (withdrawPackageInfo) {
+					await withdrawCollection.doc(newWithdrawId).update({
+						package_info: withdrawPackageInfo,
+						update_time: nowTs()
 					});
 				}
-				await merchantCollection.doc(merchant._id).update({
-					available_reward: Number((ar - points).toFixed(4)),
-					withdraw_quota_balance: Number((ar - points).toFixed(4)),
-					account_points: Number((ap - points).toFixed(4)),
-					withdraw_pending_balance: Number((ap - points).toFixed(4)),
-					withdrawn: Number((withdrawnBefore + payable).toFixed(4)),
-					update_time: now
-				});
-				await withdrawCollection.doc(newWithdrawId).update({
-					is_paid: true,
-					arrival_status: 'received',
-					pay_time: nowTs(),
-					arrival_time: nowTs(),
-					update_time: nowTs(),
-					wx_trade_no: transferBillNo,
-					transfer_state: transferState,
-					...(withdrawPackageInfo ? { package_info: withdrawPackageInfo } : {})
-				});
+				const freshRes = await withdrawCollection.doc(newWithdrawId).get();
+				const freshRow = freshRes.data && freshRes.data[0];
+				await settleWithdrawSuccess(
+					freshRow || { _id: newWithdrawId, amount: points, payable, merchant_user_id: merchantUserId, device_id: safeText(machine?.device_id || merchant.device_id, 80) },
+					transferBillNo,
+					transferState
+				);
 				return {
 					code: 0,
 					message: '提交成功，已完成微信打款',
@@ -4811,6 +4853,7 @@ async function h5WithdrawApply(data) {
 					transfer_state: transferState,
 					transfer_error: failMsg
 				});
+				await restoreWithdrawDeduction();
 				return { code: 500, message: `微信提现失败：${failMsg}` };
 			}
 
@@ -7186,7 +7229,7 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 
 	const tradePartsBase = [
 		{ user_id: _.in(uids) },
-		{ trade_type: 'real' },
+		{ trade_type: _.in(['real', 'virtual']) },
 		{ stats_eligible: _.neq(false) },
 		{ amount: _.gt(0) },
 		{ is_deleted: _.neq(true) },
@@ -7248,7 +7291,7 @@ async function h5PendingReturnPoints(data) {
 		const _ = db.command;
 		const tradeParts = [
 			{ user_id: merchantUserId },
-			{ trade_type: 'real' },
+			{ trade_type: _.in(['real', 'virtual']) },
 			{ stats_eligible: _.neq(false) },
 			{ amount: _.gt(0) },
 			{ is_deleted: _.neq(true) },
