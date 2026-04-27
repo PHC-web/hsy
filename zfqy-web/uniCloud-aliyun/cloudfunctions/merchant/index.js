@@ -468,6 +468,8 @@ async function listMerchants(data) {
 					recharge_package_quota: true,
 					recharge_package_reward: true,
 					estimated_free_quota: true,
+					recharge_total_yuan: true,
+					recharge_amount: true,
 					frozen_amount: true,
 					available_reward: true,
 					withdraw_quota_balance: true,
@@ -500,6 +502,7 @@ async function listMerchants(data) {
 			deviceDisplay: `${item.device_id || '-'}\n${item.brand_name || '-'}`,
 			wxUser: `${item.wx_nickname || '-'}\n${item.mobile || '-'}`,
 			remainingQuota: toMoney(remainingQuotaYuan),
+			rechargeAmount: toMoney(Number(item.recharge_amount || item.recharge_total_yuan || 0)),
 			pendingWithdraw: toMoney(normalizePendingBalance(item)),
 			withdrawn: toMoney(withdrawnYuan),
 			frozenAmount: toMoney(frozenYuan),
@@ -2946,7 +2949,7 @@ async function applyRechargeByOrder(orderDoc) {
 	const nextAvailableReward = Number((targetReward > 0 ? targetReward : grantYuanByRechargePrice(targetPrice, biz.rechargeRules)).toFixed(2));
 	const volAdd = Number(custom.add_quota || 0);
 	const addPaidYuan = Number(Number(custom.paid_amount || 0).toFixed(2));
-	const prevTrackedTotal = Number(merchant.recharge_total_yuan || 0);
+	const prevTrackedTotal = Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0);
 	let baseRechargeTotal = Number.isFinite(prevTrackedTotal) && prevTrackedTotal > 0 ? prevTrackedTotal : 0;
 	if (baseRechargeTotal <= 0 && addPaidYuan > 0) {
 		const logRes = await operationLogCollection
@@ -2985,6 +2988,7 @@ async function applyRechargeByOrder(orderDoc) {
 		recharge_cycle_days: Number(refundCycle.cycleDays || 180),
 		recharge_window_days: Number(refundCycle.windowDays || 3),
 		recharge_total_yuan: nextRechargeTotalYuan,
+		recharge_amount: nextRechargeTotalYuan,
 		membership_name: nextMembershipName || merchant.membership_name || '',
 		recharge_update_time: now,
 		update_time: now
@@ -3111,6 +3115,11 @@ async function getMerchantByIdOrUserId(key) {
 function compactMerchantInfo(row) {
 	const quotaBalance = normalizeWithdrawQuotaBalance(row);
 	const pendingBalance = normalizePendingBalance(row);
+	let rechargeAmount = Number(row.recharge_amount != null ? row.recharge_amount : row.recharge_total_yuan || 0);
+	if ((!Number.isFinite(rechargeAmount) || rechargeAmount <= 0) && Number(row.recharge_package_price || 0) > 0) {
+		// 兼容历史数据：累计充值字段缺失时，回退到当前套餐价格展示，避免误显示 0.00
+		rechargeAmount = Number(row.recharge_package_price || 0);
+	}
 	return {
 		id: row._id,
 		userId: row.user_id || row._id,
@@ -3124,7 +3133,9 @@ function compactMerchantInfo(row) {
 		agreementVersion: row.agreement_version || '',
 		availableReward: quotaBalance,
 		estimatedFreeQuota: Number(row.estimated_free_quota || 0),
-		accountPoints: pendingBalance
+		accountPoints: pendingBalance,
+		membershipName: safeText(row.membership_name || '', 40) || '普通会员',
+		rechargeAmount: Number(Number(rechargeAmount || 0).toFixed(2))
 	};
 }
 
@@ -6414,7 +6425,7 @@ async function resolveH5RefundOrderContext(merchant, event) {
 	const logs = await operationLogCollection.where({ user_id: merchantUserId, action: 'h5_quota_recharge', refunded: false }).limit(1000).get();
 	const rows = logs.data || [];
 	const now = nowTs();
-	let refundAmount = Number(Number(merchant.recharge_total_yuan || 0).toFixed(2));
+	let refundAmount = Number(Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2));
 	if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
 		refundAmount = 0;
 		rows.forEach((x) => {
@@ -7104,6 +7115,7 @@ async function finalizeTransferSuccessIfNeeded(transferOrder, event) {
 		recharge_package_reward: 0,
 		recharge_cycle_start: 0,
 		recharge_total_yuan: 0,
+		recharge_amount: 0,
 		recharge_update_time: 0,
 		update_time: now
 	});

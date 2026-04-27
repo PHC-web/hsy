@@ -46,11 +46,15 @@
 					</view>
 					<view class="acct-item">
 						<text class="k">预估免额度</text>
-						<text class="v">¥{{ account.estimatedFreeQuota }}</text>
+						<text class="v">{{ account.estimatedFreeQuota }} 交易量</text>
 					</view>
 					<view class="acct-item acct-item--link" @click.stop="toggleAccountPoints">
 						<text class="k">账号积分</text>
 						<text class="v">{{ displayAccountPoints }}</text>
+					</view>
+					<view class="acct-item">
+						<text class="k">权益费</text>
+						<text class="v">{{ rechargeAmountDisplay }}</text>
 					</view>
 					<text v-if="agreementNeedSign" class="acct-hint">点击此区域签署「{{ agreement.title || '开户优惠活动计划书' }}」</text>
 				</view>
@@ -69,6 +73,10 @@
 						<text class="menu-title">财务管理</text>
 						<text class="menu-arrow">›</text>
 					</view>
+					<view class="menu-item" @click="goRules">
+						<text class="menu-title">规则说明</text>
+						<text class="menu-arrow">›</text>
+					</view>
 					<view class="menu-item" @click="goPendingReturn">
 						<text class="menu-title">待返积分</text>
 						<text class="menu-arrow">›</text>
@@ -78,7 +86,7 @@
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goExchange">
-						<text class="menu-title">兑换码兑换</text>
+						<text class="menu-title">兑换码</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					
@@ -311,6 +319,19 @@ export default {
 			if (!this.accountPointsVisible) return '*****';
 			return `¥${this.account.accountPoints}`;
 		},
+		rechargeAmountDisplay() {
+			const tier = String(this.mine.membershipTier || '').toLowerCase();
+			const membershipName = String(this.mine.membershipName || '').trim();
+			const isNormalOrSilver =
+				tier === 'normal' ||
+				tier === 'silver' ||
+				membershipName.includes('普通') ||
+				membershipName.includes('白银');
+			if (isNormalOrSilver) return '未充值';
+			const amount = Number(this.mine.rechargeAmount || 0);
+			if (!Number.isFinite(amount) || amount <= 0) return '¥0.00';
+			return `¥${amount.toFixed(2)}`;
+		},
 		deviceDisplayText() {
 			const d = this.mine.deviceDisplay || this.mine.deviceId || '未绑定';
 			return String(d);
@@ -348,7 +369,8 @@ export default {
 				if (dashboardRes.code === 0) {
 					const d = dashboardRes.data || {};
 					this.mine = Object.assign({}, d.merchant || {}, {
-						deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || ''
+						deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || '',
+						membershipTier: d.membership?.tier || ''
 					});
 					this.account = Object.assign({}, this.account, {
 						availableReward: d.quota?.remaining != null ? String(d.quota.remaining) : this.account.availableReward,
@@ -393,6 +415,9 @@ export default {
 		},
 		goFinance() {
 			uni.navigateTo({ url: '/pages/h5/finance/index' });
+		},
+		goRules() {
+			uni.navigateTo({ url: '/pages/h5/rules/index' });
 		},
 		goCoupons() {
 			uni.navigateTo({ url: '/pages/h5/coupons/index' });

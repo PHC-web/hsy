@@ -783,6 +783,15 @@
 						"topWindow": false,
 						"leftWindow": false
 					}
+				},
+				{
+					"path": "rules/index",
+					"style": {
+						"navigationBarTitleText": "规则说明",
+						"navigationStyle": "custom",
+						"topWindow": false,
+						"leftWindow": false
+					}
 				}
 			]
 		}

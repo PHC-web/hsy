@@ -34,6 +34,7 @@
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'wxNickname')">微信用户</uni-th>
 							<uni-th align="center" width="140" filter-type="select" :filter-data="membershipLevelFilterData" @filter-change="headerFilterChange($event, 'membershipLevel')">会员级别</uni-th>
 							<uni-th align="center" width="90">剩余额度</uni-th>
+							<uni-th align="center" width="90">充值金额</uni-th>
 							<uni-th align="center" width="90">待提现</uni-th>
 							<uni-th align="center" width="90">已提现</uni-th>
 							<uni-th align="center" width="90">冻结金额</uni-th>
@@ -65,6 +66,7 @@
 								</view>
 							</uni-td>
 							<uni-td align="center" class="money">{{ item.remainingQuota }}</uni-td>
+							<uni-td align="center" class="money">{{ item.rechargeAmount }}</uni-td>
 							<uni-td align="center" class="money">{{ item.pendingWithdraw }}</uni-td>
 							<uni-td align="center" class="money">{{ item.withdrawn }}</uni-td>
 							<uni-td align="center" class="money">{{ item.frozenAmount }}</uni-td>
@@ -556,6 +558,7 @@ export default {
 				会员级别: x.membershipLevel || '普通会员',
 				开通会员时间: x.membershipOpenedAt || '-',
 				剩余额度: x.remainingQuota || '',
+				充值金额: x.rechargeAmount || '',
 				待提现: x.pendingWithdraw || '',
 				已提现: x.withdrawn || '',
 				冻结金额: x.frozenAmount || '',

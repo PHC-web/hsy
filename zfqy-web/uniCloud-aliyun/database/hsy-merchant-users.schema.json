@@ -40,6 +40,11 @@
 			"bsonType": "number",
 			"description": "当前充值周期内用户已成功支付的累计金额（元），退款成功后清零",
 			"default": 0
+		},
+		"recharge_amount": {
+			"bsonType": "number",
+			"description": "累计充值金额（元），退款成功后清零",
+			"default": 0
 		}
 	}
 }
