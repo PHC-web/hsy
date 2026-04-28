@@ -26,7 +26,7 @@
 						<view class="icon-box red"><text class="bi bi-currency-dollar"></text></view>
 						<view class="card-content">
 							<view class="card-value">{{ dashboard.withdrawCount }} / {{ toMoney(dashboard.withdrawAmount) }}</view>
-							<view class="card-label">提现单数 / 提现金额</view>
+							<view class="card-label">提现成功单数 / 提现成功金额</view>
 						</view>
 					</view>
 
@@ -50,9 +50,9 @@
 
 			<view class="bottom-row">
 				<view class="returns-card">
-					<view class="returns-title">返现总额比例</view>
-					<view class="returns-rate">{{ dashboard.returnRate }}%</view>
-					<view class="returns-desc">总返现{{ toMoney(dashboard.returnPaid) }} / 应交服务{{ toMoney(dashboard.returnDue) }}</view>
+					<view class="returns-title">积分提现汇总</view>
+					<view class="returns-rate">{{ toMoney(dashboard.withdrawNetAmount) }}</view>
+					<view class="returns-desc">累计实际到账{{ toMoney(dashboard.withdrawNetAmount) }} / 累计手续费{{ toMoney(dashboard.withdrawFeeAmount) }}</view>
 				</view>
 
 				<view class="summary-card">
@@ -60,6 +60,60 @@
 					<view class="summary-item">提现：按提现记录汇总，金额保留两位小数</view>
 					<view class="summary-item">激活：今日激活按当天 00:00 后时间统计</view>
 					<view class="summary-item">会员率：会员数 / 用户数</view>
+				</view>
+			</view>
+
+			<view class="panel-wrap chart-panel">
+				<view class="panel-head">
+					<view class="panel-title mb0">趋势统计</view>
+					<view class="range-tabs">
+						<view
+							v-for="opt in rangeOptions"
+							:key="opt.value"
+							class="range-tab"
+							:class="{ active: trendRangeType === opt.value }"
+							@click="changeTrendRange(opt.value)"
+						>{{ opt.label }}</view>
+					</view>
+				</view>
+				<view class="chart-grid">
+					<view class="chart-card">
+						<view class="chart-head">
+							<view class="chart-title">流水统计</view>
+							<view class="chart-summary">{{ trendRangeLabel }}总流水：{{ toMoney(trendSummary.totalFlow) }} ｜ 历史总流水：{{ toMoney(trendSummary.allTimeTotalFlow) }}</view>
+						</view>
+						<view ref="flowChart" class="echart-box"></view>
+					</view>
+					<view class="chart-card">
+						<view class="chart-head">
+							<view class="chart-title">新增商户 / 充值商户</view>
+							<view class="chart-summary chart-summary--multi">
+								<view>{{ trendRangeLabel }}累计新增绑定：{{ trendSummary.totalBindMerchantCount || 0 }} ｜ {{ trendRangeLabel }}累计充值商户：{{ trendSummary.totalRechargeMerchantCount || 0 }}</view>
+								<view>历史累计新增绑定：{{ trendSummary.allTimeBindMerchantCount || 0 }} ｜ 历史累计充值商户：{{ trendSummary.allTimeRechargeMerchantCount || 0 }}</view>
+							</view>
+						</view>
+						<view ref="bindChart" class="echart-box"></view>
+					</view>
+					<view class="chart-card">
+						<view class="chart-head">
+							<view class="chart-title">充值/退款金额</view>
+							<view class="chart-summary chart-summary--multi">
+								<view>{{ trendRangeLabel }}累计充值：{{ toMoney(trendSummary.totalRechargeAmount) }} ｜ {{ trendRangeLabel }}累计退款：{{ toMoney(trendSummary.totalRefundAmount) }}</view>
+								<view>历史累计充值：{{ toMoney(trendSummary.allTimeRechargeAmount) }} ｜ 历史累计退款：{{ toMoney(trendSummary.allTimeRefundAmount) }}</view>
+							</view>
+						</view>
+						<view ref="rechargeChart" class="echart-box"></view>
+					</view>
+					<view class="chart-card">
+						<view class="chart-head">
+							<view class="chart-title">积分兑换数量 / 兑换到账金额</view>
+							<view class="chart-summary chart-summary--multi">
+								<view>{{ trendRangeLabel }}累计兑换数量：{{ trendSummary.totalExchangeCount || 0 }} ｜ {{ trendRangeLabel }}累计到账：{{ toMoney(trendSummary.totalExchangeNetAmount) }}</view>
+								<view>历史累计兑换数量：{{ trendSummary.allTimeExchangeCount || 0 }} ｜ 历史累计到账：{{ toMoney(trendSummary.allTimeExchangeNetAmount) }}</view>
+							</view>
+						</view>
+						<view ref="exchangeChart" class="echart-box"></view>
+					</view>
 				</view>
 			</view>
 		</view>
@@ -89,8 +143,43 @@
 					memberRate: '0.00',
 					returnPaid: 0,
 					returnDue: 0,
-					returnRate: '0.00'
+					returnRate: '0.00',
+					withdrawNetAmount: 0,
+					withdrawFeeAmount: 0
 				},
+				trendRangeType: '30d',
+				rangeOptions: [
+					{ label: '今日', value: 'today' },
+					{ label: '本周', value: 'week' },
+					{ label: '本月', value: 'month' },
+					{ label: '近30天', value: '30d' }
+				],
+				trendCharts: {
+					flow: { categories: [], series: [] },
+					bindRechargeUsers: { categories: [], series: [] },
+					rechargeRefund: { categories: [], series: [] },
+					exchange: { categories: [], series: [] }
+				},
+				trendSummary: {
+					totalFlow: 0,
+					allTimeTotalFlow: 0,
+					totalBindMerchantCount: 0,
+					totalRechargeMerchantCount: 0,
+					allTimeBindMerchantCount: 0,
+					allTimeRechargeMerchantCount: 0,
+					totalRechargeAmount: 0,
+					totalRefundAmount: 0,
+					allTimeRechargeAmount: 0,
+					allTimeRefundAmount: 0,
+					totalExchangeCount: 0,
+					totalExchangeNetAmount: 0,
+					allTimeExchangeCount: 0,
+					allTimeExchangeNetAmount: 0
+				},
+				echartsReady: false,
+				echartsInstances: [],
+				_resizeHandler: null,
+				_chartResizeObserver: null
 			}
 		},
 		onLoad() {
@@ -112,6 +201,20 @@
 		onShow() {
 			if (!this.allowRender) return;
 			this.loadDashboard();
+			this.loadTrendCharts();
+		},
+		onUnload() {
+			this.disposeEcharts();
+			// #ifdef H5
+			if (this._resizeHandler && typeof window !== 'undefined') {
+				window.removeEventListener('resize', this._resizeHandler);
+				this._resizeHandler = null;
+			}
+			if (this._chartResizeObserver) {
+				try { this._chartResizeObserver.disconnect(); } catch (e) {}
+				this._chartResizeObserver = null;
+			}
+			// #endif
 		},
 		methods: {
 			toMoney(value) {
@@ -148,27 +251,27 @@
 							is_activated: true,
 							activated_time: dbCmd.gte(todayStart)
 						}).count(),
-						db.collection('hsy-withdraw-records').where({ is_deleted: false }).field('amount').limit(10000).get(),
+						db.collection('hsy-withdraw-records').where({
+							is_deleted: false,
+							is_paid: true,
+							arrival_status: 'received'
+						}).field('payable,fee_tax').limit(10000).get(),
 						db.collection('hsy-merchant-users').count(),
-						db.collection('hsy-merchant-users').where({ device_id: dbCmd.neq('') }).count()
+						db.collection('hsy-merchant-users').where(
+							dbCmd.or([
+								{ recharge_amount: dbCmd.gt(0) },
+								{ recharge_total_yuan: dbCmd.gt(0) }
+							])
+						).count()
 					]);
 
 					const withdrawRows = withdrawRes.result?.data || [];
-					const withdrawAmount = withdrawRows.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-
-					const brandStatRes = await db.collection('hsy-brand')
-						.where({ is_deleted: false })
-						.field('return_machine,return_payment')
-						.limit(10000)
-						.get();
-					const brandRows = brandStatRes.result?.data || [];
-					const returnDue = brandRows.reduce((sum, item) => sum + Number(item.return_machine || 0), 0);
-					const returnPaid = brandRows.reduce((sum, item) => sum + Number(item.return_payment || 0), 0);
+					const withdrawAmount = withdrawRows.reduce((sum, item) => sum + Number(item.payable || 0), 0);
+					const withdrawFeeAmount = withdrawRows.reduce((sum, item) => sum + Number(item.fee_tax || 0), 0);
 
 					const userCount = merchantRes.result?.total || 0;
 					const memberCount = memberRes.result?.total || 0;
 					const memberRate = userCount ? ((memberCount / userCount) * 100).toFixed(2) : '0.00';
-					const returnRate = returnDue ? ((returnPaid / returnDue) * 100).toFixed(2) : '0.00';
 
 					this.dashboard = {
 						brandCount: brandRes.result?.total || 0,
@@ -181,9 +284,11 @@
 						userCount,
 						memberCount,
 						memberRate,
-						returnPaid,
-						returnDue,
-						returnRate
+						returnPaid: 0,
+						returnDue: 0,
+						returnRate: '0.00',
+						withdrawNetAmount: withdrawAmount,
+						withdrawFeeAmount
 					};
 				} catch (err) {
 					uni.showModal({
@@ -193,6 +298,196 @@
 				} finally {
 					this.loading = false;
 				}
+			},
+			buildLineData(categories, defs = []) {
+				return {
+					categories: Array.isArray(categories) ? categories : [],
+					series: defs.map((x) => ({
+						name: x.name,
+						data: Array.isArray(x.data) ? x.data : []
+					}))
+				};
+			},
+			changeTrendRange(v) {
+				if (!v || v === this.trendRangeType) return;
+				this.trendRangeType = v;
+				this.loadTrendCharts();
+			},
+			trendRangeLabelText() {
+				const m = {
+					today: '今日',
+					week: '本周',
+					month: '本月',
+					'30d': '近30日'
+				};
+				return m[this.trendRangeType] || '当前';
+			},
+			async ensureEchartsReady() {
+				// #ifndef H5
+				return false;
+				// #endif
+				// #ifdef H5
+				if (this.echartsReady && window && window.echarts) return true;
+				if (typeof window === 'undefined') return false;
+				if (window.echarts) {
+					this.echartsReady = true;
+					return true;
+				}
+				const baseUrl = (typeof process !== 'undefined' && process.env && process.env.BASE_URL) ? process.env.BASE_URL : '/';
+				const origin = window.location.origin || '';
+				const candidates = [
+					`${origin}${baseUrl}uni_modules/qiun-data-charts/static/h5/echarts.min.js`,
+					`${origin}/uni_modules/qiun-data-charts/static/h5/echarts.min.js`
+				];
+				let loaded = false;
+				for (const src of candidates) {
+					try {
+						await new Promise((resolve, reject) => {
+							const old = document.getElementById('dashboard-echarts-loader');
+							if (old && old.parentNode) old.parentNode.removeChild(old);
+							const script = document.createElement('script');
+							script.id = 'dashboard-echarts-loader';
+							script.src = src;
+							script.async = true;
+							script.onload = resolve;
+							script.onerror = reject;
+							document.head.appendChild(script);
+						});
+						if (window.echarts) {
+							loaded = true;
+							break;
+						}
+					} catch (e) {}
+				}
+				if (!loaded) return false;
+				this.echartsReady = !!window.echarts;
+				return this.echartsReady;
+				// #endif
+			},
+			disposeEcharts() {
+				(this.echartsInstances || []).forEach((ins) => {
+					try { ins && ins.dispose && ins.dispose(); } catch (e) {}
+				});
+				this.echartsInstances = [];
+			},
+			buildEchartOption(title, categories, series, rangeType) {
+				const isToday = rangeType === 'today';
+				const total = Array.isArray(categories) ? categories.length : 0;
+				const windowSize = isToday ? 12 : 7;
+				let startPercent = 0;
+				if (total > windowSize && total > 0) {
+					startPercent = Number((((total - windowSize) / total) * 100).toFixed(2));
+				}
+				return {
+					tooltip: {
+						trigger: 'axis',
+						confine: true
+					},
+					legend: { top: 0, textStyle: { fontSize: 12 } },
+					grid: { left: 42, right: 16, top: 34, bottom: 52 },
+					xAxis: {
+						type: 'category',
+						data: categories || [],
+						axisLabel: { rotate: isToday ? 0 : 28, fontSize: 11 }
+					},
+					yAxis: { type: 'value', splitLine: { lineStyle: { type: 'dashed' } } },
+					dataZoom: [
+						{
+							type: 'inside',
+							start: startPercent,
+							end: 100
+						},
+						{
+							type: 'slider',
+							height: 16,
+							bottom: 8,
+							start: startPercent,
+							end: 100
+						}
+					],
+					series: (series || []).map((x) => ({
+						name: x.name,
+						type: 'line',
+						smooth: false,
+						showSymbol: false,
+						lineStyle: { width: 2 },
+						data: x.data || []
+					}))
+				};
+			},
+			async renderEcharts() {
+				const ok = await this.ensureEchartsReady();
+				if (!ok) return;
+				// #ifdef H5
+				await this.$nextTick();
+				this.disposeEcharts();
+				const refs = [
+					{ el: this.$refs.flowChart, model: this.trendCharts.flow, title: '已绑定商户机具每日总流水' },
+					{ el: this.$refs.bindChart, model: this.trendCharts.bindRechargeUsers, title: '每日新增绑定商户 / 每日充值商户' },
+					{ el: this.$refs.rechargeChart, model: this.trendCharts.rechargeRefund, title: '每日充值金额 / 每日退款笔数' },
+					{ el: this.$refs.exchangeChart, model: this.trendCharts.exchange, title: '每日积分兑换数量 / 兑换到账金额' }
+				];
+				refs.forEach((r) => {
+					if (!r.el || !window.echarts) return;
+					const dom = r.el.$el || r.el;
+					if (!dom) return;
+					const ins = window.echarts.init(dom);
+					ins.setOption(this.buildEchartOption(r.title, r.model.categories, r.model.series, this.trendRangeType), true);
+					this.echartsInstances.push(ins);
+				});
+				if (!this._resizeHandler) {
+					this._resizeHandler = () => {
+						(this.echartsInstances || []).forEach((ins) => {
+							try { ins.resize(); } catch (e) {}
+						});
+					};
+					window.addEventListener('resize', this._resizeHandler);
+				}
+				if (!this._chartResizeObserver && typeof window !== 'undefined' && window.ResizeObserver) {
+					this._chartResizeObserver = new window.ResizeObserver(() => {
+						(this.echartsInstances || []).forEach((ins) => {
+							try { ins.resize(); } catch (e) {}
+						});
+					});
+					const obsTargets = [this.$refs.flowChart, this.$refs.bindChart, this.$refs.rechargeChart, this.$refs.exchangeChart]
+						.map((x) => (x && (x.$el || x)))
+						.filter(Boolean);
+					obsTargets.forEach((el) => {
+						try { this._chartResizeObserver.observe(el); } catch (e) {}
+					});
+				}
+				// #endif
+			},
+			async loadTrendCharts() {
+				try {
+					const res = await this.$request('adminDashboardTrend30d', { rangeType: this.trendRangeType }, { functionName: 'merchant' });
+					if (!res || res.code !== 0) return;
+					const d = res.data || {};
+					const categories = d.categories || [];
+					const s = d.series || {};
+					this.trendSummary = Object.assign({ totalFlow: 0 }, d.summary || {});
+					this.trendCharts.flow = this.buildLineData(categories, [
+						{ name: '每日总流水(元)', data: s.dailyFlow || [] }
+					]);
+					this.trendCharts.bindRechargeUsers = this.buildLineData(categories, [
+						{ name: '新增绑定商户数', data: s.newBindMerchantCount || [] },
+						{ name: '充值商户数', data: s.rechargeMerchantCount || [] }
+					]);
+					this.trendCharts.rechargeRefund = this.buildLineData(categories, [
+						{ name: '充值金额(元)', data: s.rechargeAmount || [] },
+						{ name: '退款金额(元)', data: s.refundAmount || [] }
+					]);
+					this.trendCharts.exchange = this.buildLineData(categories, [
+						{ name: '积分兑换数量', data: s.exchangeCount || [] },
+						{ name: '兑换到账金额(元)', data: s.exchangeNetAmount || [] }
+					]);
+					await this.renderEcharts();
+				} catch (e) {}
+			}
+		},
+		computed: {
+			trendRangeLabel() {
+				return this.trendRangeLabelText();
 			}
 		}
 	}
@@ -206,9 +501,11 @@
 }
 
 .dashboard-page {
-		min-height: 420px;
-		padding: 12px 8px 28px;
-	}
+	min-height: 420px;
+	padding: 12px 8px 28px;
+	max-width: 1480px;
+	margin: 0 auto;
+}
 
 	.title-wrap {
 		margin-bottom: 12px;
@@ -248,33 +545,32 @@
 		color: #334155;
 	}
 
-	.panel-wrap {
-		margin-top: 16px;
-		padding: 20px 20px 22px;
-		border-radius: 14px;
-		background: #fff;
-		border: 1px solid rgba(148, 163, 184, 0.22);
-		box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
-	}
+.panel-wrap {
+	margin-top: 16px;
+	padding: 18px 18px 20px;
+	border-radius: 14px;
+	background: #fff;
+	border: 1px solid rgba(148, 163, 184, 0.22);
+	box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+}
 
-	.cards-row {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 12px;
-	}
+.cards-row {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(240px, 1fr));
+	gap: 12px;
+}
 
-	.stat-card {
-		width: calc(25% - 14px);
-		min-width: 220px;
-		display: flex;
-		align-items: center;
-		padding: 14px 14px;
-		border-radius: 12px;
-		background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%);
-		border: 1px solid rgba(148, 163, 184, 0.2);
-		box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
-		transition: box-shadow 0.2s ease, transform 0.2s ease;
-	}
+.stat-card {
+	display: flex;
+	align-items: center;
+	padding: 14px 14px;
+	border-radius: 12px;
+	background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%);
+	border: 1px solid rgba(148, 163, 184, 0.2);
+	box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+	transition: box-shadow 0.2s ease, transform 0.2s ease;
+	min-height: 88px;
+}
 
 	.stat-card:hover {
 		box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
@@ -297,13 +593,14 @@
 	.icon-box.purple { background: linear-gradient(145deg, #a78bfa, #7c3aed); }
 	.icon-box.blue { background: linear-gradient(145deg, #38bdf8, #2563eb); }
 
-	.card-value {
-		font-size: 32px;
-		line-height: 1.1;
-		color: #0f172a;
-		font-weight: 700;
-		font-variant-numeric: tabular-nums;
-	}
+.card-value {
+	font-size: clamp(22px, 2.1vw, 32px);
+	line-height: 1.1;
+	color: #0f172a;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	word-break: break-word;
+}
 
 	.card-label {
 		margin-top: 6px;
@@ -337,12 +634,13 @@
 		opacity: 0.95;
 	}
 
-	.bottom-row {
-		margin-top: 16px;
-		display: flex;
-		gap: 12px;
-		align-items: stretch;
-	}
+.bottom-row {
+	margin-top: 16px;
+	display: grid;
+	grid-template-columns: 320px 1fr;
+	gap: 12px;
+	align-items: stretch;
+}
 
 	.summary-card {
 		flex: 1;
@@ -367,21 +665,116 @@
 		color: #64748b;
 	}
 
+	.chart-panel {
+		margin-top: 16px;
+	}
+.panel-head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	margin-bottom: 12px;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+	.mb0 {
+		margin-bottom: 0;
+	}
+	.range-tabs {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-wrap: wrap;
+	}
+	.range-tab {
+		padding: 4px 10px;
+		border-radius: 999px;
+		font-size: 12px;
+		color: #475569;
+		background: #f1f5f9;
+		border: 1px solid #cbd5e1;
+		cursor: pointer;
+		user-select: none;
+	}
+	.range-tab.active {
+		color: #1d4ed8;
+		background: #dbeafe;
+		border-color: #93c5fd;
+		font-weight: 600;
+	}
+.chart-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(360px, 1fr));
+	gap: 14px;
+}
+.chart-card {
+	background: #fff;
+	border: 1px solid rgba(148, 163, 184, 0.22);
+	border-radius: 12px;
+	padding: 12px;
+	min-height: 360px;
+}
+	.chart-title {
+		font-size: 14px;
+		font-weight: 600;
+		color: #334155;
+		margin-bottom: 8px;
+	}
+.chart-head {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	justify-content: flex-start;
+	gap: 4px;
+	margin-bottom: 8px;
+}
+	.chart-head .chart-title {
+		margin-bottom: 0;
+	}
+.chart-summary {
+	font-size: 12px;
+	font-weight: 600;
+	color: #1d4ed8;
+	white-space: normal;
+	line-height: 1.45;
+	width: 100%;
+}
+.chart-summary--multi {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	white-space: normal;
+	line-height: 1.45;
+}
+	.echart-box {
+		width: 100%;
+		height: 292px;
+	}
+
 	@media screen and (max-width: 1200px) {
-		.stat-card {
-			width: calc(50% - 9px);
+		.cards-row {
+			grid-template-columns: repeat(2, minmax(240px, 1fr));
+		}
+		.chart-grid {
+			grid-template-columns: 1fr;
+		}
+		.bottom-row {
+			grid-template-columns: 1fr;
+		}
+		.returns-card {
+			width: 100%;
 		}
 	}
 
 	@media screen and (max-width: 768px) {
-		.stat-card {
-			width: 100%;
+		.cards-row {
+			grid-template-columns: 1fr;
 		}
-		.bottom-row {
-			flex-direction: column;
+		.panel-wrap {
+			padding: 14px 12px 16px;
 		}
-		.returns-card {
-			width: 100%;
+		.chart-card {
+			min-height: 340px;
 		}
 	}
 </style>

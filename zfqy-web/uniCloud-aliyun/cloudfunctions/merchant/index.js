@@ -1191,9 +1191,11 @@ async function buildTradeBillListData(data) {
 		const ts = Number(row.pay_date || row.create_date || 0);
 		const amount = Number(row.total_fee || 0) / 100;
 		const platformNo = row.transaction_id || row.out_trade_no || row.order_no || row._id;
+		const bizNo = safeText(row.out_trade_no || row.order_no || row.transaction_id || row._id || '', 80);
 		return {
 			recordKey: `pay:${row._id}`,
 			source: 'h5_recharge',
+			bizNo,
 			salesman: merchant?.salesman || '-',
 			firstCharge: '否',
 			tradeUser: merchant?.wx_nickname || row.nickname || '-',
@@ -1219,6 +1221,7 @@ async function buildTradeBillListData(data) {
 			return {
 				recordKey: `refund:${row._id}`,
 				source: 'h5_refund_reset',
+				bizNo: refundNo,
 				salesman: merchant?.salesman || '-',
 				firstCharge: '否',
 				tradeUser: merchant?.wx_nickname || row.target_name || '-',
@@ -1242,6 +1245,7 @@ async function buildTradeBillListData(data) {
 			return {
 				recordKey: `recharge:${row._id}`,
 				source: 'h5_quota_recharge',
+				bizNo: rechargeNo,
 				salesman: merchant?.salesman || '-',
 				firstCharge: '否',
 				tradeUser: merchant?.wx_nickname || row.target_name || '-',
@@ -1264,6 +1268,7 @@ async function buildTradeBillListData(data) {
 		return {
 			recordKey: `offline:${row._id}`,
 			source: 'offline_first_recharge',
+			bizNo: offlineOrderNo,
 			salesman: merchant?.salesman || '-',
 			firstCharge: '是',
 			tradeUser: merchant?.wx_nickname || row.target_name || '-',
@@ -1281,6 +1286,25 @@ async function buildTradeBillListData(data) {
 	});
 
 	let merged = [...payList, ...offlineList];
+	// 交易账单展示去重：同一次充值仅保留一条（优先支付订单，其次日志）。
+	// 以业务单号 bizNo 为主键，避免同一 out_trade_no 在 uni-pay-orders 与 operation-logs 重复展示。
+	const dedupeMap = new Map();
+	const sourceRank = { h5_recharge: 3, h5_quota_recharge: 2, offline_first_recharge: 2, h5_refund_reset: 1 };
+	for (const item of merged) {
+		const key = safeText(item.bizNo || item.platformNo || item.recordKey || '', 120);
+		if (!key) continue;
+		const old = dedupeMap.get(key);
+		if (!old) {
+			dedupeMap.set(key, item);
+			continue;
+		}
+		const oldRank = Number(sourceRank[old.source] || 0);
+		const newRank = Number(sourceRank[item.source] || 0);
+		if (newRank > oldRank || (newRank === oldRank && Number(item._ts || 0) > Number(old._ts || 0))) {
+			dedupeMap.set(key, item);
+		}
+	}
+	merged = Array.from(dedupeMap.values());
 	if (salesmanKeyword) merged = merged.filter((x) => String(x.salesman || '').toLowerCase().includes(String(salesmanKeyword).toLowerCase()));
 	if (firstCharge !== '') merged = merged.filter((x) => x.firstCharge === (String(firstCharge) === '1' ? '是' : '否'));
 	if (userKeyword) merged = merged.filter((x) => String(x.tradeUser || '').toLowerCase().includes(String(userKeyword).toLowerCase()));
@@ -1340,6 +1364,493 @@ async function tradeBillDelete(data, event) {
 	} catch (error) {
 		console.error('tradeBillDelete failed:', error);
 		return { code: 500, message: '删除失败' };
+	}
+}
+
+const ADMIN_DASHBOARD_TREND_CACHE_MS = 60000;
+let adminDashboardTrendCache = { at: 0, key: '', data: null };
+
+function shDayKey(ts) {
+	const fmt = new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'Asia/Shanghai',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit'
+	});
+	return fmt.format(new Date(Number(ts || 0)));
+}
+
+function shHourParts(ts) {
+	const parts = new Intl.DateTimeFormat('en-CA', {
+		timeZone: 'Asia/Shanghai',
+		year: 'numeric',
+		month: '2-digit',
+		day: '2-digit',
+		hour: '2-digit',
+		hour12: false
+	}).formatToParts(new Date(Number(ts || 0)));
+	let y = '';
+	let m = '';
+	let d = '';
+	let h = '';
+	for (const p of parts) {
+		if (p.type === 'year') y = p.value;
+		else if (p.type === 'month') m = p.value;
+		else if (p.type === 'day') d = p.value;
+		else if (p.type === 'hour') h = p.value;
+	}
+	return { dayKey: `${y}-${m}-${d}`, hour: h || '00' };
+}
+
+function adminTrendRange(typeRaw) {
+	const type = safeText(typeRaw || '30d', 20) || '30d';
+	const now = new Date();
+	if (type === 'today') {
+		const dayKey = shDayKey(now.getTime());
+		const startTs = new Date(`${dayKey}T00:00:00+08:00`).getTime();
+		const endTs = nowTs();
+		const keys = [];
+		const labels = [];
+		for (let i = 0; i < 24; i += 1) {
+			const h = String(i).padStart(2, '0');
+			keys.push(`${dayKey} ${h}`);
+			labels.push(`${h}:00`);
+		}
+		return { type, bucket: 'hour', startTs, endTs, keys, labels };
+	}
+	if (type === 'week') {
+		const keys = [];
+		const labels = [];
+		for (let i = 6; i >= 0; i -= 1) {
+			const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+			const day = shDayKey(d.getTime());
+			keys.push(day);
+			labels.push(day.slice(5));
+		}
+		return {
+			type,
+			bucket: 'day',
+			startTs: new Date(`${keys[0]}T00:00:00+08:00`).getTime(),
+			endTs: nowTs(),
+			keys,
+			labels
+		};
+	}
+	if (type === 'month') {
+		const cur = shDayKey(now.getTime());
+		const firstDay = `${cur.slice(0, 8)}01`;
+		const keys = [];
+		const labels = [];
+		let p = new Date(`${firstDay}T00:00:00+08:00`).getTime();
+		const nowMs = now.getTime();
+		while (p <= nowMs) {
+			const dk = shDayKey(p);
+			keys.push(dk);
+			labels.push(dk.slice(5));
+			p += 24 * 60 * 60 * 1000;
+		}
+		return {
+			type,
+			bucket: 'day',
+			startTs: new Date(`${firstDay}T00:00:00+08:00`).getTime(),
+			endTs: nowTs(),
+			keys,
+			labels
+		};
+	}
+	const keys = [];
+	const labels = [];
+	for (let i = 29; i >= 0; i -= 1) {
+		const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+		const day = shDayKey(d.getTime());
+		keys.push(day);
+		labels.push(day.slice(5));
+	}
+	return {
+		type: '30d',
+		bucket: 'day',
+		startTs: new Date(`${keys[0]}T00:00:00+08:00`).getTime(),
+		endTs: nowTs(),
+		keys,
+		labels
+	};
+}
+
+function bucketKeyByRange(ts, range) {
+	if (!range || !range.bucket) return shDayKey(ts);
+	if (range.bucket === 'hour') {
+		const p = shHourParts(ts);
+		return `${p.dayKey} ${p.hour}`;
+	}
+	return shDayKey(ts);
+}
+
+async function adminDashboardTrend30d(data = {}) {
+	try {
+		const now = nowTs();
+		const range = adminTrendRange(data?.rangeType);
+		const startDay = range.keys[0];
+		const endDay = range.keys[range.keys.length - 1];
+		const cacheKey = `${range.type}_${startDay}_${endDay}`;
+		if (
+			adminDashboardTrendCache.data &&
+			adminDashboardTrendCache.key === cacheKey &&
+			now - Number(adminDashboardTrendCache.at || 0) < ADMIN_DASHBOARD_TREND_CACHE_MS
+		) {
+			return { code: 0, message: 'ok', data: adminDashboardTrendCache.data };
+		}
+		const startTs = Number(range.startTs || 0);
+		const endTs = Number(range.endTs || now);
+		const _ = db.command;
+		const $ = db.command.aggregate;
+		const [tradeRes, bindRes, payRes, logRes, wdRes] = await Promise.all([
+			machineTradeCollection
+				.where(
+					_.and([
+						{ create_time: _.gte(startTs) },
+						{ create_time: _.lte(endTs) },
+						{ amount: _.gt(0) },
+						{ stats_eligible: _.neq(false) },
+						{ is_deleted: _.neq(true) },
+						{ user_id: _.exists(true) },
+						{ user_id: _.neq('') }
+					])
+				)
+				.field({ create_time: true, amount: true })
+				.limit(50000)
+				.get(),
+			merchantCollection
+				.where(
+					_.and([
+						{ bind_time: _.gte(startTs) },
+						{ bind_time: _.lte(endTs) },
+						{ user_id: _.exists(true) },
+						{ user_id: _.neq('') },
+						{ device_id: _.exists(true) },
+						{ device_id: _.neq('') }
+					])
+				)
+				.field({ _id: true, user_id: true, bind_time: true })
+				.limit(20000)
+				.get(),
+			uniPayOrderCollection
+				.where(
+					_.and([
+						{ type: 'h5_quota_recharge' },
+						{ status: 1 },
+						{ user_order_success: true },
+						{ is_deleted: _.neq(true) },
+						_.or([
+							_.and([{ pay_date: _.gte(startTs) }, { pay_date: _.lte(endTs) }]),
+							_.and([{ create_date: _.gte(startTs) }, { create_date: _.lte(endTs) }])
+						])
+					])
+				)
+				.field({ out_trade_no: true, order_no: true, user_id: true, total_fee: true, pay_date: true, create_date: true })
+				.limit(50000)
+				.get(),
+			operationLogCollection
+				.where(
+					_.and([
+						{ create_time: _.gte(startTs) },
+						{ create_time: _.lte(endTs) },
+						{ is_deleted: _.neq(true) },
+						{ action: 'h5_refund_reset' }
+					])
+				)
+				.field({
+					action: true,
+					create_time: true,
+					refund_final_amount: true,
+					refund_amount: true,
+					platform_no: true
+				})
+				.limit(50000)
+				.get(),
+			withdrawCollection
+				.where(
+					_.and([
+						{ is_deleted: _.neq(true) },
+						{ is_paid: true },
+						{ arrival_status: 'received' },
+						_.or([
+							_.and([{ arrival_time: _.gte(startTs) }, { arrival_time: _.lte(endTs) }]),
+							_.and([{ pay_time: _.gte(startTs) }, { pay_time: _.lte(endTs) }]),
+							_.and([{ create_time: _.gte(startTs) }, { create_time: _.lte(endTs) }])
+						])
+					])
+				)
+				.field({ create_time: true, pay_time: true, arrival_time: true, withdraw_no: true, payable: true, amount: true, fee_tax: true })
+				.limit(50000)
+				.get()
+		]);
+		let allTimeTotalFlow = 0;
+		let allTimeRechargeAmount = 0;
+		let allTimeRefundAmount = 0;
+		let allTimeBindMerchantCount = 0;
+		let allTimeRechargeMerchantCount = 0;
+		let allTimeExchangeCount = 0;
+		let allTimeExchangeNetAmount = 0;
+		try {
+			const allAgg = await machineTradeCollection
+				.aggregate()
+				.match(
+					_.and([
+						{ amount: _.gt(0) },
+						{ stats_eligible: _.neq(false) },
+						{ is_deleted: _.neq(true) },
+						{ user_id: _.exists(true) },
+						{ user_id: _.neq('') }
+					])
+				)
+				.group({
+					_id: null,
+					total: $.sum('$amount')
+				})
+				.end();
+			allTimeTotalFlow = Number((((allAgg.data || [])[0] || {}).total || 0).toFixed(2));
+		} catch (eAgg) {
+			allTimeTotalFlow = 0;
+		}
+		try {
+			const bindCountRes = await merchantCollection
+				.where(
+					_.and([
+						{ user_id: _.exists(true) },
+						{ user_id: _.neq('') },
+						{ device_id: _.exists(true) },
+						{ device_id: _.neq('') }
+					])
+				)
+				.count();
+			allTimeBindMerchantCount = Number(bindCountRes.total || bindCountRes.result?.total || 0);
+		} catch (eAgg) {
+			allTimeBindMerchantCount = 0;
+		}
+		try {
+			const rechargeAgg = await uniPayOrderCollection
+				.aggregate()
+				.match(
+					_.and([
+						{ type: 'h5_quota_recharge' },
+						{ status: 1 },
+						{ user_order_success: true },
+						{ is_deleted: _.neq(true) },
+						{ out_trade_no: _.exists(true) },
+						{ out_trade_no: _.neq('') }
+					])
+				)
+				.group({
+					_id: '$out_trade_no',
+					amount: $.max('$total_fee')
+				})
+				.group({
+					_id: null,
+					total: $.sum('$amount')
+				})
+				.end();
+			allTimeRechargeAmount = Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
+		} catch (eAgg) {
+			allTimeRechargeAmount = 0;
+		}
+		try {
+			const rechargeMerchantAgg = await uniPayOrderCollection
+				.aggregate()
+				.match(
+					_.and([
+						{ type: 'h5_quota_recharge' },
+						{ status: 1 },
+						{ user_order_success: true },
+						{ is_deleted: _.neq(true) },
+						{ user_id: _.exists(true) },
+						{ user_id: _.neq('') }
+					])
+				)
+				.group({ _id: '$user_id' })
+				.group({ _id: null, total: $.sum(1) })
+				.end();
+			allTimeRechargeMerchantCount = Number((((rechargeMerchantAgg.data || [])[0] || {}).total || 0));
+		} catch (eAgg) {
+			allTimeRechargeMerchantCount = 0;
+		}
+		try {
+			const refundAgg = await operationLogCollection
+				.aggregate()
+				.match(
+					_.and([
+						{ action: 'h5_refund_reset' },
+						{ is_deleted: _.neq(true) },
+						{ platform_no: _.exists(true) },
+						{ platform_no: _.neq('') }
+					])
+				)
+				.group({
+					_id: '$platform_no',
+					amount: $.max('$refund_final_amount')
+				})
+				.group({
+					_id: null,
+					total: $.sum('$amount')
+				})
+				.end();
+			allTimeRefundAmount = Number((((refundAgg.data || [])[0] || {}).total || 0).toFixed(2));
+		} catch (eAgg) {
+			allTimeRefundAmount = 0;
+		}
+		try {
+			const exchangeAgg = await withdrawCollection
+				.aggregate()
+				.match(
+					_.and([
+						{ is_deleted: _.neq(true) },
+						{ is_paid: true },
+						{ arrival_status: 'received' }
+					])
+				)
+				.group({
+					_id: null,
+					totalCount: $.sum(1),
+					totalNet: $.sum('$payable')
+				})
+				.end();
+			allTimeExchangeCount = Number((((exchangeAgg.data || [])[0] || {}).totalCount || 0));
+			allTimeExchangeNetAmount = Number(Number((((exchangeAgg.data || [])[0] || {}).totalNet || 0)).toFixed(2));
+		} catch (eAgg) {
+			allTimeExchangeCount = 0;
+			allTimeExchangeNetAmount = 0;
+		}
+
+		const dayFlow = {};
+		const dayBind = {};
+		const dayRechargeMerchants = {};
+		const rangeBindMerchants = new Set();
+		const rangeRechargeMerchants = new Set();
+		const dayRechargeAmount = {};
+		const dayRefundAmount = {};
+		const dayExchangeCount = {};
+		const dayExchangeAmount = {};
+		range.keys.forEach((d) => {
+			dayFlow[d] = 0;
+			dayBind[d] = 0;
+			dayRechargeMerchants[d] = new Set();
+			dayRechargeAmount[d] = 0;
+			dayRefundAmount[d] = 0;
+			dayExchangeCount[d] = 0;
+			dayExchangeAmount[d] = 0;
+		});
+
+		(tradeRes.data || []).forEach((row) => {
+			const d = bucketKeyByRange(row.create_time, range);
+			if (!dayFlow[d] && dayFlow[d] !== 0) return;
+			dayFlow[d] += Number(row.amount || 0);
+		});
+
+		const bindSeenByDay = {};
+		(bindRes.data || []).forEach((row) => {
+			const d = bucketKeyByRange(row.bind_time, range);
+			if (!dayBind[d] && dayBind[d] !== 0) return;
+			if (!bindSeenByDay[d]) bindSeenByDay[d] = new Set();
+			const mk = String(row.user_id || row._id || '');
+			if (!mk || bindSeenByDay[d].has(mk)) return;
+			bindSeenByDay[d].add(mk);
+			rangeBindMerchants.add(mk);
+			dayBind[d] += 1;
+		});
+
+		const rechargeSeen = new Set();
+		const refundSeen = new Set();
+		(payRes.data || []).forEach((row, idx) => {
+			const ts = Number(row.pay_date || row.create_date || 0);
+			const d = bucketKeyByRange(ts, range);
+			if (!(d in dayRechargeAmount)) return;
+			const bizNo = safeText(row.out_trade_no || row.order_no || '', 80) || `rc_${idx}`;
+			if (rechargeSeen.has(bizNo)) return;
+			rechargeSeen.add(bizNo);
+			dayRechargeAmount[d] += Number((Number(row.total_fee || 0) / 100).toFixed(2));
+			const uid = String(row.user_id || '');
+			if (uid) {
+				dayRechargeMerchants[d].add(uid);
+				rangeRechargeMerchants.add(uid);
+			}
+		});
+		(logRes.data || []).forEach((row, idx) => {
+			const d = bucketKeyByRange(row.create_time, range);
+			if (!(d in dayRechargeAmount)) return;
+			if (row.action === 'h5_refund_reset') {
+				const bizNo = safeText(row.platform_no || '', 80) || `rf_${idx}`;
+				if (refundSeen.has(bizNo)) return;
+				refundSeen.add(bizNo);
+				dayRefundAmount[d] += Number(row.refund_final_amount || row.refund_amount || 0);
+			}
+		});
+
+		const withdrawSeen = new Set();
+		(wdRes.data || []).forEach((row, idx) => {
+			const tsForBucket = Number(row.arrival_time || row.pay_time || row.create_time || 0);
+			const d = bucketKeyByRange(tsForBucket, range);
+			if (!(d in dayExchangeCount)) return;
+			const wk = safeText(row.withdraw_no || '', 80) || `wd_${idx}`;
+			if (withdrawSeen.has(wk)) return;
+			withdrawSeen.add(wk);
+			dayExchangeCount[d] += 1;
+			const net = Number(row.payable != null ? row.payable : Number(row.amount || 0) - Number(row.fee_tax || 0));
+			dayExchangeAmount[d] += Number.isFinite(net) ? net : 0;
+		});
+
+		const categories = [];
+		const dailyFlow = [];
+		const newBindMerchantCount = [];
+		const rechargeMerchantCount = [];
+		const rechargeAmount = [];
+		const refundAmount = [];
+		const exchangeCount = [];
+		const exchangeNetAmount = [];
+		range.keys.forEach((d, idx) => {
+			categories.push(range.labels[idx] || d);
+			dailyFlow.push(Number(Number(dayFlow[d] || 0).toFixed(2)));
+			newBindMerchantCount.push(Number(dayBind[d] || 0));
+			rechargeMerchantCount.push((dayRechargeMerchants[d] && dayRechargeMerchants[d].size) || 0);
+			rechargeAmount.push(Number(Number(dayRechargeAmount[d] || 0).toFixed(2)));
+			refundAmount.push(Number(Number(dayRefundAmount[d] || 0).toFixed(2)));
+			exchangeCount.push(Number(dayExchangeCount[d] || 0));
+			exchangeNetAmount.push(Number(Number(dayExchangeAmount[d] || 0).toFixed(2)));
+		});
+
+		const payload = {
+			categories,
+			summary: {
+				totalFlow: Number(
+					(tradeRes.data || []).reduce((sum, row) => sum + Number(row.amount || 0), 0).toFixed(2)
+				),
+				allTimeTotalFlow: Number(Number(allTimeTotalFlow || 0).toFixed(2)),
+				totalBindMerchantCount: Number(rangeBindMerchants.size || 0),
+				totalRechargeMerchantCount: Number(rangeRechargeMerchants.size || 0),
+				allTimeBindMerchantCount: Number(allTimeBindMerchantCount || 0),
+				allTimeRechargeMerchantCount: Number(allTimeRechargeMerchantCount || 0),
+				totalRechargeAmount: Number(rechargeAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
+				totalRefundAmount: Number(refundAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
+				allTimeRechargeAmount: Number(Number(allTimeRechargeAmount || 0).toFixed(2)),
+				allTimeRefundAmount: Number(Number(allTimeRefundAmount || 0).toFixed(2)),
+				totalExchangeCount: Number(exchangeCount.reduce((sum, n) => sum + Number(n || 0), 0)),
+				totalExchangeNetAmount: Number(exchangeNetAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
+				allTimeExchangeCount: Number(allTimeExchangeCount || 0),
+				allTimeExchangeNetAmount: Number(Number(allTimeExchangeNetAmount || 0).toFixed(2))
+			},
+			series: {
+				dailyFlow,
+				newBindMerchantCount,
+				rechargeMerchantCount,
+				rechargeAmount,
+				refundAmount,
+				exchangeCount,
+				exchangeNetAmount
+			}
+		};
+		adminDashboardTrendCache = { at: now, key: cacheKey, data: payload };
+		return { code: 0, message: 'ok', data: payload };
+	} catch (e) {
+		console.error('adminDashboardTrend30d failed', e);
+		return { code: 500, message: '获取首页趋势数据失败' };
 	}
 }
 
@@ -2927,7 +3438,14 @@ async function rechargeGiftShipmentUpdate(data, event) {
 }
 
 async function applyRechargeByOrder(orderDoc) {
-	const custom = orderDoc.custom || {};
+	let sourceOrder = orderDoc || {};
+	const orderId = safeText(orderDoc?._id, 80);
+	if (orderId) {
+		const latestOrderRes = await uniPayOrderCollection.doc(orderId).get();
+		const latestOrder = latestOrderRes.data && latestOrderRes.data[0];
+		if (latestOrder) sourceOrder = latestOrder;
+	}
+	const custom = sourceOrder.custom || {};
 	if (custom.recharge_applied) return;
 	if (!custom.merchant_id) return;
 	const merchant = await getMerchantByIdOrUserId(custom.merchant_id);
@@ -3003,7 +3521,7 @@ async function applyRechargeByOrder(orderDoc) {
 		content: `H5额度充值: ${custom.package_title || ''}, 免门槛权益额度+${grantDelta}元(交易量配置+${volAdd})`,
 		operator_source: 'h5',
 		operator: 'wxpay_notify',
-		platform_no: orderDoc.out_trade_no || orderDoc.order_no || '',
+		platform_no: sourceOrder.out_trade_no || sourceOrder.order_no || '',
 		package_id: custom.package_id || '',
 		package_title: custom.package_title || '',
 		package_price: Number(custom.paid_amount || 0),
@@ -3015,13 +3533,13 @@ async function applyRechargeByOrder(orderDoc) {
 		refunded: false,
 		create_time: now
 	});
-	if (orderDoc._id) {
+	if (sourceOrder._id) {
 		try {
-			await maybeCreateRechargeGiftShipment(orderDoc, merchant, now);
+			await maybeCreateRechargeGiftShipment(sourceOrder, merchant, now);
 		} catch (e) {
 			console.error('maybeCreateRechargeGiftShipment failed', e);
 		}
-		await uniPayOrderCollection.doc(orderDoc._id).update({
+		await uniPayOrderCollection.doc(sourceOrder._id).update({
 			custom: {
 				...custom,
 				recharge_applied: true,
@@ -3115,11 +3633,7 @@ async function getMerchantByIdOrUserId(key) {
 function compactMerchantInfo(row) {
 	const quotaBalance = normalizeWithdrawQuotaBalance(row);
 	const pendingBalance = normalizePendingBalance(row);
-	let rechargeAmount = Number(row.recharge_amount != null ? row.recharge_amount : row.recharge_total_yuan || 0);
-	if ((!Number.isFinite(rechargeAmount) || rechargeAmount <= 0) && Number(row.recharge_package_price || 0) > 0) {
-		// 兼容历史数据：累计充值字段缺失时，回退到当前套餐价格展示，避免误显示 0.00
-		rechargeAmount = Number(row.recharge_package_price || 0);
-	}
+	const rechargeAmount = Number(row.recharge_amount != null ? row.recharge_amount : row.recharge_total_yuan || 0);
 	return {
 		id: row._id,
 		userId: row.user_id || row._id,
@@ -3137,6 +3651,49 @@ function compactMerchantInfo(row) {
 		membershipName: safeText(row.membership_name || '', 40) || '普通会员',
 		rechargeAmount: Number(Number(rechargeAmount || 0).toFixed(2))
 	};
+}
+
+async function ensureMerchantRechargeAmountAccurate(merchant) {
+	try {
+		if (!merchant || !merchant._id) return merchant;
+		const current = Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0);
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		if (!merchantUserId) return merchant;
+		const logRes = await operationLogCollection
+			.where({
+				user_id: merchantUserId,
+				action: 'h5_quota_recharge',
+				refunded: false
+			})
+			.field({ package_price: true, platform_no: true, create_time: true })
+			.limit(1000)
+			.get();
+		const rows = (logRes.data || []).slice().sort((a, b) => Number(a.create_time || 0) - Number(b.create_time || 0));
+		const seenTradeNo = new Set();
+		let trackedByLogs = 0;
+		rows.forEach((x, idx) => {
+			const tradeNo = safeText(x.platform_no || '', 80) || `idx_${idx}`;
+			if (seenTradeNo.has(tradeNo)) return;
+			seenTradeNo.add(tradeNo);
+			trackedByLogs += Number(x.package_price || 0);
+		});
+		const tracked = Number(trackedByLogs.toFixed(2));
+		if (!(Number.isFinite(tracked) && tracked > 0)) return merchant;
+		if (Math.abs(current - tracked) < 0.0001) return merchant;
+		await merchantCollection.doc(merchant._id).update({
+			recharge_amount: tracked,
+			recharge_total_yuan: tracked,
+			update_time: nowTs()
+		});
+		return {
+			...merchant,
+			recharge_amount: tracked,
+			recharge_total_yuan: tracked
+		};
+	} catch (e) {
+		console.error('ensureMerchantRechargeAmountAccurate failed', e);
+		return merchant;
+	}
 }
 
 function rawWithdrawQuotaBalance(row) {
@@ -3975,6 +4532,7 @@ async function h5MineInfo(data) {
 		}
 		merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		merchant = await ensureMerchantRechargeAmountAccurate(merchant);
 		const [boundMachines, biz, curAgreement, openTicket] = await Promise.all([
 			listBoundMachinesByMerchant(merchant),
 			getBizSettings(),
@@ -4566,8 +5124,9 @@ function h5WithdrawOutsideHoursMessage() {
 async function h5WithdrawInfo(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		merchant = await ensureMerchantRechargeAmountAccurate(merchant);
 		const now = nowTs();
 		const withdrawRole = resolveH5WithdrawRole(merchant);
 		const isRechargeMember = withdrawRole === 'recharge_member';
@@ -9197,6 +9756,8 @@ exports.main = async (event, context) => {
 			return await tradeBillList(actualData);
 		case 'tradeBillDelete':
 			return await tradeBillDelete(actualData, event);
+		case 'adminDashboardTrend30d':
+			return await adminDashboardTrend30d(actualData);
 		case 'financeMerchantFlowList':
 			return await financeMerchantFlowList(actualData);
 		case 'withdrawExportCsv':
