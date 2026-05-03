@@ -1,0 +1,7 @@
+{
+	"name": "merchant-data-correct-cron",
+	"version": "1.0.0",
+	"description": "每日定时执行商户数据矫正（与后台按钮同源逻辑）",
+	"main": "index.js",
+	"dependencies": {}
+}

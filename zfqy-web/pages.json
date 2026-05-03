@@ -809,6 +809,12 @@
 					"style": {
 						"navigationBarTitleText": "星驿推送数据"
 					}
+				},
+				{
+					"path": "logs/index",
+					"style": {
+						"navigationBarTitleText": "日志管理"
+					}
 				}
 			]
 		}

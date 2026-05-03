@@ -790,5 +790,17 @@
 		"enable": true,
 		"create_date": 1777113000102,
 		"_id": "operations_third_party_pushes"
+	},
+	{
+		"menu_id": "operations_logs",
+		"name": "日志管理",
+		"icon": "",
+		"url": "/pages/operations/logs/index",
+		"sort": 1830,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000103,
+		"_id": "operations_logs"
 	}
 ]

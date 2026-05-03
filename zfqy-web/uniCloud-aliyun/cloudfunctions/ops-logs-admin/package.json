@@ -1,0 +1,7 @@
+{
+	"name": "ops-logs-admin",
+	"version": "1.0.0",
+	"description": "运维：后台操作/星驿推送/机器人推送日志只读查询",
+	"main": "index.js",
+	"dependencies": {}
+}
