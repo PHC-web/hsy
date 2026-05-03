@@ -12,7 +12,6 @@
 			<text class="nav-title">售后反馈</text>
 			<view class="nav-end-wrap">
 				<text v-if="ticket" class="nav-end" @click="onCloseFeedback">结束反馈</text>
-				<text v-else-if="showRefundNavButton" class="nav-end nav-end--refund" @click="openRefundPage">退款</text>
 				<text v-else class="nav-end nav-end--placeholder">结束反馈</text>
 			</view>
 		</view>
@@ -95,7 +94,7 @@
 </template>
 
 <script>
-import { h5FeedbackGetOpen, h5FeedbackSend, h5FeedbackClose, h5HomeDashboard } from '@/pages/h5/common/api';
+import { h5FeedbackGetOpen, h5FeedbackSend, h5FeedbackClose } from '@/pages/h5/common/api';
 import { getSession } from '@/pages/h5/common/session';
 
 export default {
@@ -104,7 +103,6 @@ export default {
 			loading: true,
 			ticket: null,
 			messages: [],
-			canShowRefundButton: false,
 			draftText: '',
 			pendingImages: [],
 			pendingVideoPath: '',
@@ -121,15 +119,10 @@ export default {
 			if (this.pendingVideoPath) return false;
 			if (this.pendingImages.length) return false;
 			return !t;
-		},
-		showRefundNavButton() {
-			// 反馈进行中隐藏；仅充值会员显示
-			return !this.ticket && this.canShowRefundButton;
 		}
 	},
 	onShow() {
 		this.loadThread();
-		this.loadRefundEligibility();
 		if (!this.nowTimer) {
 			this.nowTimer = setInterval(() => {
 				this.nowTick = Date.now();
@@ -165,17 +158,6 @@ export default {
 				this.scrollToBottom();
 			} finally {
 				this.loading = false;
-			}
-		},
-		async loadRefundEligibility() {
-			try {
-				const res = await h5HomeDashboard();
-				if (res.code !== 0) return;
-				const data = (res.data && res.data.data) || res.data || {};
-				const role = String(data.withdrawContext?.role || '').trim();
-				this.canShowRefundButton = role === 'recharge_member';
-			} catch (e) {
-				this.canShowRefundButton = false;
 			}
 		},
 		scrollToBottom() {
@@ -236,11 +218,6 @@ export default {
 			}
 			this.confirmRefundAction(() => {
 				uni.navigateTo({ url: path });
-			});
-		},
-		openRefundPage() {
-			this.confirmRefundAction(() => {
-				uni.navigateTo({ url: '/pages/h5/recharge-refund/index?from=feedback' });
 			});
 		},
 		confirmRefundAction(onConfirm) {

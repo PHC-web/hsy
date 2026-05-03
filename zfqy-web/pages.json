@@ -727,7 +727,7 @@
 				{
 					"path": "recharge/index",
 					"style": {
-						"navigationBarTitleText": "额度预存",
+						"navigationBarTitleText": "额度包",
 						"topWindow": false,
 						"leftWindow": false
 					}
@@ -791,6 +791,23 @@
 						"navigationStyle": "custom",
 						"topWindow": false,
 						"leftWindow": false
+					}
+				}
+			]
+		},
+		{
+			"root": "pages/operations",
+			"pages": [
+				{
+					"path": "h5-simulator/index",
+					"style": {
+						"navigationBarTitleText": "H5商户页面模拟"
+					}
+				},
+				{
+					"path": "third-party-pushes/index",
+					"style": {
+						"navigationBarTitleText": "星驿推送数据"
 					}
 				}
 			]

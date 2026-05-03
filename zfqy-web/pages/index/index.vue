@@ -65,7 +65,7 @@
 
 			<view class="panel-wrap chart-panel">
 				<view class="panel-head">
-					<view class="panel-title mb0">趋势统计</view>
+					<view class="panel-title mb0">数据统计</view>
 					<view class="range-tabs">
 						<view
 							v-for="opt in rangeOptions"
@@ -114,6 +114,16 @@
 						</view>
 						<view ref="exchangeChart" class="echart-box"></view>
 					</view>
+					<view class="chart-card chart-card--full">
+						<view class="chart-head">
+							<view class="chart-title">交易类型统计</view>
+							<view class="chart-summary chart-summary--multi">
+								<view>{{ trendRangeLabel }}交易次数：{{ trendSummary.totalTradeCount || 0 }} ｜ {{ trendRangeLabel }}交易金额：{{ toMoney(trendSummary.totalTradeAmount) }}</view>
+								<view>历史累计交易次数：{{ trendSummary.allTimeTradeCount || 0 }} ｜ 历史累计交易金额：{{ toMoney(trendSummary.allTimeTradeAmount) }}</view>
+							</view>
+						</view>
+						<view ref="tradeTypeChart" class="echart-box"></view>
+					</view>
 				</view>
 			</view>
 		</view>
@@ -158,7 +168,8 @@
 					flow: { categories: [], series: [] },
 					bindRechargeUsers: { categories: [], series: [] },
 					rechargeRefund: { categories: [], series: [] },
-					exchange: { categories: [], series: [] }
+					exchange: { categories: [], series: [] },
+					tradeType: { categories: [], countSeries: [], amountSeries: [] }
 				},
 				trendSummary: {
 					totalFlow: 0,
@@ -174,13 +185,17 @@
 					totalExchangeCount: 0,
 					totalExchangeNetAmount: 0,
 					allTimeExchangeCount: 0,
-					allTimeExchangeNetAmount: 0
+					allTimeExchangeNetAmount: 0,
+					totalTradeCount: 0,
+					allTimeTradeCount: 0,
+					totalTradeAmount: 0,
+					allTimeTradeAmount: 0
 				},
 				echartsReady: false,
 				echartsInstances: [],
 				_resizeHandler: null,
 				_chartResizeObserver: null
-			}
+			};
 		},
 		onLoad() {
 			// #ifdef H5
@@ -415,6 +430,79 @@
 					}))
 				};
 			},
+			buildTradeTypeOption(model, rangeType) {
+				const categories = model.categories || [];
+				const countSeries = Array.isArray(model.countSeries) ? model.countSeries : [];
+				const amountSeries = Array.isArray(model.amountSeries) ? model.amountSeries : [];
+				const isToday = rangeType === 'today';
+				const total = Array.isArray(categories) ? categories.length : 0;
+				const windowSize = isToday ? 12 : 7;
+				let startPercent = 0;
+				if (total > windowSize && total > 0) {
+					startPercent = Number((((total - windowSize) / total) * 100).toFixed(2));
+				}
+				const countLegend = [];
+				const amountLegend = [];
+				const cleanLabel = (v) => String(v || '').replace(/\([^)]*\)/g, '').trim();
+				const series = [];
+				countSeries.forEach((x) => {
+					const name = `${cleanLabel(x.label || x.type)}次数`;
+					countLegend.push(name);
+					series.push({
+						name,
+						type: 'bar',
+						yAxisIndex: 0,
+						barMaxWidth: 16,
+						data: Array.isArray(x.data) ? x.data : []
+					});
+				});
+				amountSeries.forEach((x) => {
+					const name = `${cleanLabel(x.label || x.type)}金额`;
+					amountLegend.push(name);
+					series.push({
+						name,
+						type: 'line',
+						yAxisIndex: 1,
+						smooth: false,
+						showSymbol: false,
+						lineStyle: { width: 2 },
+						data: Array.isArray(x.data) ? x.data : []
+					});
+				});
+				return {
+					tooltip: { trigger: 'axis', confine: true },
+					legend: [
+						{ top: 0, textStyle: { fontSize: 12 }, data: countLegend },
+						{ top: 24, textStyle: { fontSize: 12 }, data: amountLegend }
+					],
+					grid: { left: 42, right: 52, top: 106, bottom: 62 },
+					xAxis: {
+						type: 'category',
+						data: categories || [],
+						axisLabel: { fontSize: 12 }
+					},
+					yAxis: [
+						{ type: 'value', name: '次数', splitLine: { lineStyle: { type: 'dashed' } } },
+						{ type: 'value', name: '金额(元)', splitLine: { show: false } }
+					],
+					dataZoom: [
+						{
+							type: 'inside',
+							start: startPercent,
+							end: 100
+						},
+						{
+							type: 'slider',
+							height: 16,
+							bottom: 10,
+							start: startPercent,
+							end: 100
+						}
+					]
+					,
+					series
+				};
+			},
 			async renderEcharts() {
 				const ok = await this.ensureEchartsReady();
 				if (!ok) return;
@@ -425,14 +513,19 @@
 					{ el: this.$refs.flowChart, model: this.trendCharts.flow, title: '已绑定商户机具每日总流水' },
 					{ el: this.$refs.bindChart, model: this.trendCharts.bindRechargeUsers, title: '每日新增绑定商户 / 每日充值商户' },
 					{ el: this.$refs.rechargeChart, model: this.trendCharts.rechargeRefund, title: '每日充值金额 / 每日退款笔数' },
-					{ el: this.$refs.exchangeChart, model: this.trendCharts.exchange, title: '每日积分兑换数量 / 兑换到账金额' }
+					{ el: this.$refs.exchangeChart, model: this.trendCharts.exchange, title: '每日积分兑换数量 / 兑换到账金额' },
+					{ el: this.$refs.tradeTypeChart, model: this.trendCharts.tradeType, title: '不同交易类型次数及金额', custom: 'tradeType' }
 				];
 				refs.forEach((r) => {
 					if (!r.el || !window.echarts) return;
 					const dom = r.el.$el || r.el;
 					if (!dom) return;
 					const ins = window.echarts.init(dom);
-					ins.setOption(this.buildEchartOption(r.title, r.model.categories, r.model.series, this.trendRangeType), true);
+					if (r.custom === 'tradeType') {
+						ins.setOption(this.buildTradeTypeOption(r.model, this.trendRangeType), true);
+					} else {
+						ins.setOption(this.buildEchartOption(r.title, r.model.categories, r.model.series, this.trendRangeType), true);
+					}
 					this.echartsInstances.push(ins);
 				});
 				if (!this._resizeHandler) {
@@ -449,7 +542,7 @@
 							try { ins.resize(); } catch (e) {}
 						});
 					});
-					const obsTargets = [this.$refs.flowChart, this.$refs.bindChart, this.$refs.rechargeChart, this.$refs.exchangeChart]
+					const obsTargets = [this.$refs.flowChart, this.$refs.bindChart, this.$refs.rechargeChart, this.$refs.exchangeChart, this.$refs.tradeTypeChart]
 						.map((x) => (x && (x.$el || x)))
 						.filter(Boolean);
 					obsTargets.forEach((el) => {
@@ -481,6 +574,27 @@
 						{ name: '积分兑换数量', data: s.exchangeCount || [] },
 						{ name: '兑换到账金额(元)', data: s.exchangeNetAmount || [] }
 					]);
+					const tradeTypeStats = Array.isArray(d.tradeTypeStats) ? d.tradeTypeStats : [];
+					const typeLabelMap = {};
+					tradeTypeStats.forEach((x) => {
+						const k = String(x.type || '');
+						if (k) typeLabelMap[k] = x.label || k;
+					});
+					const countSeriesRaw = Array.isArray(s.tradeTypeCountSeries) ? s.tradeTypeCountSeries : [];
+					const amountSeriesRaw = Array.isArray(s.tradeTypeAmountSeries) ? s.tradeTypeAmountSeries : [];
+					this.trendCharts.tradeType = {
+						categories,
+						countSeries: countSeriesRaw.map((x) => ({
+							type: x.type,
+							label: x.label || typeLabelMap[String(x.type || '')] || String(x.type || ''),
+							data: Array.isArray(x.data) ? x.data : []
+						})),
+						amountSeries: amountSeriesRaw.map((x) => ({
+							type: x.type,
+							label: x.label || typeLabelMap[String(x.type || '')] || String(x.type || ''),
+							data: Array.isArray(x.data) ? x.data : []
+						}))
+					};
 					await this.renderEcharts();
 				} catch (e) {}
 			}
@@ -490,7 +604,7 @@
 				return this.trendRangeLabelText();
 			}
 		}
-	}
+	};
 </script>
 
 <style>
@@ -713,6 +827,9 @@
 	padding: 12px;
 	min-height: 360px;
 }
+.chart-card--full {
+	grid-column: 1 / -1;
+}
 	.chart-title {
 		font-size: 14px;
 		font-weight: 600;
@@ -750,6 +867,9 @@
 		width: 100%;
 		height: 292px;
 	}
+.chart-card--full .echart-box {
+	height: 460px;
+}
 
 	@media screen and (max-width: 1200px) {
 		.cards-row {

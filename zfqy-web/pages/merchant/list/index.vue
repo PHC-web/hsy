@@ -51,7 +51,12 @@
 								<image class="avatar" :src="item.avatar || defaultAvatar" mode="aspectFill" @click="previewImg(item.avatar || defaultAvatar)" />
 							</uni-td>
 							<uni-td align="center">
-								<image class="agreement" :src="item.agreement || defaultAgreement" mode="aspectFill" @click="previewImg(item.agreement || defaultAgreement)" />
+								<text
+									v-if="item.agreementSigned"
+									class="agreement-status agreement-status--signed"
+									@click="previewAgreement(item)"
+								>已签署</text>
+								<text v-else class="agreement-status agreement-status--unsigned">未签署</text>
 							</uni-td>
 							<uni-td align="center">
 								<view class="cell-multiline">{{ formatDeviceDisplay(item.deviceDisplay) }}</view>
@@ -263,8 +268,7 @@ export default {
 			previewDragOriginX: 0,
 			previewDragOriginY: 0,
 			offlinePackages: [],
-			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E',
-			defaultAgreement: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M15 12h14l4 4v20H15V12Zm14 1.5V17h3.5L29 13.5ZM18 20h12v2H18v-2Zm0 5h12v2H18v-2Zm0 5h9v2h-9v-2Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
+			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
 			,
 			pointsInsightLoading: false,
 			pointsInsight: {
@@ -402,6 +406,29 @@ export default {
 				return;
 			}
 			uni.previewImage({ urls: [url], current: url });
+		},
+		async previewAgreement(item) {
+			if (!item || !item.id || !item.agreementSigned) return;
+			uni.showLoading({ title: '加载协议图片...', mask: true });
+			try {
+				const ret = await this.$request(
+					'merchantAgreementImage',
+					{ merchantId: item.id },
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '加载失败', icon: 'none' });
+					return;
+				}
+				const url = String(ret.data?.agreementImg || '').trim();
+				if (!url) {
+					uni.showToast({ title: '协议图片不存在', icon: 'none' });
+					return;
+				}
+				this.previewImg(url);
+			} finally {
+				uni.hideLoading();
+			}
 		},
 		onPreviewImageLoad() {
 			this.resetPreviewTransform();
@@ -790,16 +817,30 @@ export default {
 	flex-shrink: 0;
 }
 
-.avatar,
-.agreement {
+.avatar {
 	width: 34px;
 	height: 34px;
 	border-radius: 10px;
 	background: #f3f4f6;
 }
 
-.agreement {
-	border-radius: 8px;
+.agreement-status {
+	font-size: 13px;
+	font-weight: 600;
+	white-space: nowrap;
+	word-break: keep-all;
+	display: inline-block;
+	min-width: 52px;
+}
+
+.agreement-status--unsigned {
+	color: #f56c6c;
+	cursor: default;
+}
+
+.agreement-status--signed {
+	color: #409eff;
+	cursor: pointer;
 }
 
 .cell-multiline {

@@ -599,6 +599,7 @@ async function getFreezeBillList(data) {
 // 刷卡记录列表（多条件筛选 + 品牌/商户关联）
 async function getCardRecordList(data) {
 	try {
+		const _ = db.command;
 		const {
 			page = 1,
 			pageSize = 10,
@@ -621,7 +622,10 @@ async function getCardRecordList(data) {
 			tradeTypeList
 		} = data || {};
 
-		let query = tradeCollection.where({ is_deleted: db.command.neq(true) });
+		const whereParts = [{ is_deleted: _.neq(true) }];
+		const pushWhere = (cond) => {
+			if (cond) whereParts.push(cond);
+		};
 
 		const brandKeyArr = Array.isArray(brandIds) && brandIds.length
 			? [...new Set(brandIds.map((id) => String(id).trim()).filter(Boolean))]
@@ -629,44 +633,44 @@ async function getCardRecordList(data) {
 		if (brandKeyArr.length) {
 			const brandWhere = brandKeyArr.length === 1
 				? { brand_id: brandKeyArr[0] }
-				: { brand_id: db.command.in(brandKeyArr) };
+				: { brand_id: _.in(brandKeyArr) };
 			const machines = await machineCollection.where({ ...brandWhere, is_deleted: false }).field({ device_id: true }).get();
 			const deviceIds = (machines.data || []).map(m => m.device_id);
 			if (deviceIds.length === 0) {
 				return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
 			}
-			query = query.where({ device_id: db.command.in(deviceIds) });
+			pushWhere({ device_id: _.in(deviceIds) });
 		}
 
 		if (deviceId) {
-			query = query.where({ device_id: new RegExp(String(deviceId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
+			pushWhere({ device_id: new RegExp(String(deviceId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
 		}
 		if (tradeNo) {
-			query = query.where({ trade_no: new RegExp(String(tradeNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
+			pushWhere({ trade_no: new RegExp(String(tradeNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
 		}
 		const muidArr = Array.isArray(merchantUserIds) && merchantUserIds.length
 			? [...new Set(merchantUserIds.map((id) => String(id).trim()).filter(Boolean))]
 			: (String(merchantUserId || '').trim() ? [String(merchantUserId).trim()] : []);
 		if (muidArr.length === 1) {
-			query = query.where({ user_id: muidArr[0] });
+			pushWhere({ user_id: muidArr[0] });
 		} else if (muidArr.length > 1) {
-			query = query.where({ user_id: db.command.in(muidArr) });
+			pushWhere({ user_id: _.in(muidArr) });
 		}
 		// 强约束：仅统计“当前仍处于已绑定状态”的机具流水，且绑定用户与流水 user_id 一致。
 		const boundMachineWhere = {
 			is_deleted: false,
 			is_bound: 1,
-			bind_user_id: db.command.neq('')
+			bind_user_id: _.neq('')
 		};
 		if (brandKeyArr.length === 1) {
 			boundMachineWhere.brand_id = brandKeyArr[0];
 		} else if (brandKeyArr.length > 1) {
-			boundMachineWhere.brand_id = db.command.in(brandKeyArr);
+			boundMachineWhere.brand_id = _.in(brandKeyArr);
 		}
 		if (muidArr.length === 1) {
 			boundMachineWhere.bind_user_id = muidArr[0];
 		} else if (muidArr.length > 1) {
-			boundMachineWhere.bind_user_id = db.command.in(muidArr);
+			boundMachineWhere.bind_user_id = _.in(muidArr);
 		}
 		const boundMachineRes = await machineCollection
 			.where(boundMachineWhere)
@@ -678,22 +682,22 @@ async function getCardRecordList(data) {
 		if (!boundDeviceIds.length || !boundUserIds.length) {
 			return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
 		}
-		query = query.where({ device_id: db.command.in(boundDeviceIds) });
-		query = query.where({ user_id: db.command.in(boundUserIds) });
+		pushWhere({ device_id: _.in(boundDeviceIds) });
+		pushWhere({ user_id: _.in(boundUserIds) });
 		const actArr = Array.isArray(isActivatedList)
 			? [...new Set(isActivatedList.map((x) => String(x)))]
 			: [];
 		if (actArr.length === 1) {
 			if (actArr[0] === '1') {
-				query = query.where({ is_activated: true });
+				pushWhere({ is_activated: true });
 			} else if (actArr[0] === '0') {
-				query = query.where({ is_activated: false });
+				pushWhere({ is_activated: false });
 			}
 		} else if (actArr.length === 0) {
 			if (isActivated === '1') {
-				query = query.where({ is_activated: true });
+				pushWhere({ is_activated: true });
 			} else if (isActivated === '0') {
-				query = query.where({ is_activated: false });
+				pushWhere({ is_activated: false });
 			}
 		}
 		const cbArr = Array.isArray(isCashbackList)
@@ -701,21 +705,21 @@ async function getCardRecordList(data) {
 			: [];
 		if (cbArr.length === 1) {
 			if (cbArr[0] === '1') {
-				query = query.where({ cashback: db.command.gt(0) });
+				pushWhere({ cashback: _.gt(0) });
 			} else if (cbArr[0] === '0') {
-				query = query.where(db.command.or([{ cashback: 0 }, { cashback: null }]));
+				pushWhere(_.or([{ cashback: 0 }, { cashback: null }]));
 			}
 		} else if (cbArr.length === 0) {
 			if (isCashback === '1') {
-				query = query.where({ cashback: db.command.gt(0) });
+				pushWhere({ cashback: _.gt(0) });
 			} else if (isCashback === '0') {
-				query = query.where(db.command.or([{ cashback: 0 }, { cashback: null }]));
+				pushWhere(_.or([{ cashback: 0 }, { cashback: null }]));
 			}
 		}
 		if (releaseAmount !== '' && releaseAmount !== undefined) {
 			const num = Number(releaseAmount);
 			if (Number.isFinite(num) && num > 0) {
-				query = query.where({ release_amount: db.command.gte(num) });
+				pushWhere({ release_amount: _.gte(num) });
 			}
 		}
 		const rsArr = Array.isArray(riskStatusList)
@@ -723,83 +727,78 @@ async function getCardRecordList(data) {
 			: [];
 		if (rsArr.length === 1) {
 			if (rsArr[0] === 'risk') {
-				query = query.where(
-					db.command.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }])
-				);
+				pushWhere(_.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }]));
 			} else if (rsArr[0] === 'release') {
-				query = query.where(
-					db.command.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }])
-				);
+				pushWhere(_.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }]));
 			} else if (rsArr[0] === 'no') {
-				query = query.where({ is_risk_trade: db.command.neq(true) });
+				pushWhere({ is_risk_trade: _.neq(true) });
 			}
 		} else if (rsArr.length > 1) {
 			const ors = [];
 			for (const r of rsArr) {
 				if (r === 'risk') {
-					ors.push(db.command.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }]));
+					ors.push(_.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }]));
 				} else if (r === 'release') {
-					ors.push(db.command.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }]));
+					ors.push(_.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }]));
 				} else if (r === 'no') {
-					ors.push({ is_risk_trade: db.command.neq(true) });
+					ors.push({ is_risk_trade: _.neq(true) });
 				}
 			}
 			if (ors.length) {
-				query = query.where(db.command.or(ors));
+				pushWhere(_.or(ors));
 			}
 		} else if (riskStatus === 'risk') {
-			query = query.where(
-				db.command.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }])
-			);
+			pushWhere(_.or([{ risk_control_status: 'risk' }, { risk_audit_status: 'pending' }]));
 		} else if (riskStatus === 'release') {
-			query = query.where(
-				db.command.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }])
-			);
+			pushWhere(_.or([{ risk_control_status: 'release' }, { risk_audit_status: 'approved' }]));
 		} else if (riskStatus === 'no') {
-			query = query.where({ is_risk_trade: db.command.neq(true) });
+			pushWhere({ is_risk_trade: _.neq(true) });
 		}
 		if (timeStart) {
-			query = query.where({ create_time: db.command.gte(Number(timeStart)) });
+			pushWhere({ create_time: _.gte(Number(timeStart)) });
 		}
 		if (timeEnd) {
-			query = query.where({ create_time: db.command.lte(Number(timeEnd)) });
+			pushWhere({ create_time: _.lte(Number(timeEnd)) });
 		}
 		const ttArr = Array.isArray(tradeTypeList)
 			? [...new Set(tradeTypeList.map((x) => String(x)))]
 			: [];
 		if (ttArr.length === 1) {
-			query = query.where({ trade_type: ttArr[0] });
+			pushWhere({ trade_type: ttArr[0] });
 		} else if (ttArr.length > 1) {
-			query = query.where({ trade_type: db.command.in(ttArr) });
+			pushWhere({ trade_type: _.in(ttArr) });
 		} else if (tradeType === 'virtual') {
-			query = query.where({ trade_type: 'virtual' });
+			pushWhere({ trade_type: 'virtual' });
 		} else if (tradeType === 'real') {
-			query = query.where({ trade_type: 'real' });
+			pushWhere({ trade_type: 'real' });
 		}
 
 		// 刷卡记录页仅统计“已绑定商户机具”的流水：
 		// 1) stats_eligible 必须显式为 true
 		// 2) user_id 必须非空（未绑定机具流水 user_id 为空，不参与本页统计）
 		// 3) 交易用户展示字段至少有一项非空（避免历史脏数据把未绑定流水统计进来）
-		query = query.where({ stats_eligible: true });
-		query = query.where(
-			db.command.and([
-				{ user_id: db.command.neq('') },
-				{ user_id: db.command.neq(null) }
+		pushWhere({ stats_eligible: true });
+		pushWhere(
+			_.and([
+				{ user_id: _.neq('') },
+				{ user_id: _.neq(null) }
 			])
 		);
-		query = query.where(
-			db.command.or([
-				{ user_name: db.command.neq('') },
-				{ user_mobile: db.command.neq('') }
+		pushWhere(
+			_.or([
+				{ user_name: _.neq('') },
+				{ user_mobile: _.neq('') }
 			])
 		);
-		query = query.where(
-			db.command.or([
-				{ is_risk_trade: db.command.neq(true) },
+		pushWhere(
+			_.or([
+				{ is_risk_trade: _.neq(true) },
 				{ risk_audit_status: 'approved' }
 			])
 		);
+
+		const finalWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
+		const query = tradeCollection.where(finalWhere);
 
 		const countRes = await query.count();
 		const total = countRes.total;
@@ -871,8 +870,21 @@ async function getCardRecordList(data) {
 			};
 		});
 
-		const sumRes = await query.field({ amount: true }).limit(5000).get();
-		const totalAmount = (sumRes.data || []).reduce((s, t) => s + Number(t.amount || 0), 0);
+		// 用与列表完全一致的 where 条件分批求和，避免聚合 match 在部分环境下口径不一致。
+		let totalAmount = 0;
+		const sumPageSize = 500;
+		for (let offset = 0; offset < total; offset += sumPageSize) {
+			const sumChunkRes = await tradeCollection
+				.where(finalWhere)
+				.field({ amount: true })
+				.skip(offset)
+				.limit(sumPageSize)
+				.get();
+			const rows = sumChunkRes.data || [];
+			totalAmount += rows.reduce((s, r) => s + Number(r.amount || 0), 0);
+			if (rows.length < sumPageSize) break;
+		}
+		totalAmount = Number(totalAmount.toFixed(2));
 
 		return {
 			code: 0,

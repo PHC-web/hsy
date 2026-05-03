@@ -86,12 +86,12 @@
 				</view>
 				<view class="glass prestore-card" @click="goPrestore">
 					<view class="prestore-main">
-						<text class="prestore-title">额度预存</text>
-						<text class="prestore-sub">快捷进入预存页面，升级档位与额度</text>
+						<text class="prestore-title">额度包</text>
+						<text class="prestore-sub">快捷进入升级页面，升级档位与额度</text>
 						<view class="prestore-packages">
 							<view v-for="pkg in prestorePackages" :key="pkg.id || pkg.price" class="prestore-pkg-row">
 								<text class="prestore-pkg-tag">{{ pkg.membershipName || '会员' }}</text>
-								<text class="prestore-pkg-text">{{ pkg.title }}：{{ pkg.benefitTip || '查看详情请进入预存页' }}</text>
+								<text class="prestore-pkg-text">{{ pkg.title }}：{{ pkg.benefitTip || '查看详情请进入额度包' }}</text>
 							</view>
 							<text v-if="hasGiftPackage" class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（指定档位专享）</text>
 						</view>
@@ -285,8 +285,7 @@ export default {
 				this.agreementPdfImages = [];
 				this.agreementPdfError = '';
 			}
-			const agreementImg = String((mData.merchant && mData.merchant.agreementImg) || this.mine.agreementImg || '').trim();
-			if (this.agreement.needSign || !agreementImg) {
+			if (this.agreement.needSign) {
 				this.prestorePendingOpen = true;
 				this.openAgreementPopup();
 				return;

@@ -3,6 +3,7 @@
 const POINTS_PER_BLOCK = 38;
 const POINTS_PER_MONTH = 7.6;
 const CLAIM_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
+const MIN_PACKET_AMOUNT = 0.01;
 
 function monthNoFromTs(ts) {
 	const d = new Date(Number(ts));
@@ -108,6 +109,8 @@ async function existingDedupKeys(db, merchantUserId) {
 async function upsertPacket(db, doc, dedupSet) {
 	const dk = doc.dedup_key;
 	if (!dk || dedupSet.has(dk)) return;
+	const amt = Number(doc.amount || 0);
+	if (!(amt >= MIN_PACKET_AMOUNT)) return;
 	await db.collection('hsy-income-packets').add(doc);
 	dedupSet.add(dk);
 }

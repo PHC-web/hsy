@@ -1,6 +1,7 @@
 'use strict';
 const db = uniCloud.database();
 const brandCollection = db.collection('hsy-brand');
+const machineCollection = db.collection('hsy-machine');
 const operationLogCollection = db.collection('hsy-operation-logs');
 const agreementCollection = db.collection('hsy-agreements');
 const merchantCollection = db.collection('hsy-merchant-users');
@@ -196,6 +197,76 @@ async function agreementList(data) {
 	}
 }
 
+/**
+ * 按 hsy-machine 实时统计各品牌的入库/绑定/激活台数（与机具列表 is_deleted 规则一致）
+ */
+async function fetchBrandMachineStatsMap(brandIds) {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const ids = [...new Set((brandIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+	const map = {};
+	if (!ids.length) return map;
+
+	const notDeleted = _.or([{ is_deleted: false }, { is_deleted: _.exists(false) }]);
+
+	const countTriplet = async (bid) => {
+		const base = _.and([notDeleted, { brand_id: bid }]);
+		const [c1, c2, c3] = await Promise.all([
+			machineCollection.where(base).count(),
+			machineCollection.where(_.and([base, { is_bound: 1 }])).count(),
+			machineCollection.where(_.and([base, { is_activated: true }])).count()
+		]);
+		return {
+			inStockCount: Number(c1.total || 0),
+			bindCount: Number(c2.total || 0),
+			activatedCount: Number(c3.total || 0)
+		};
+	};
+
+	try {
+		const aggRes = await machineCollection
+			.aggregate()
+			.match(_.and([notDeleted, { brand_id: _.in(ids) }]))
+			.addFields({
+				bindNum: $.cond({
+					if: $.eq(['$is_bound', 1]),
+					then: 1,
+					else: 0
+				}),
+				actNum: $.cond({
+					if: $.eq(['$is_activated', true]),
+					then: 1,
+					else: 0
+				})
+			})
+			.group({
+				_id: '$brand_id',
+				inStockCount: $.sum(1),
+				bindCount: $.sum('$bindNum'),
+				activatedCount: $.sum('$actNum')
+			})
+			.end();
+		for (const row of aggRes.data || []) {
+			const key = String(row._id == null ? '' : row._id);
+			if (!key) continue;
+			map[key] = {
+				inStockCount: Number(row.inStockCount || 0),
+				bindCount: Number(row.bindCount || 0),
+				activatedCount: Number(row.activatedCount || 0)
+			};
+		}
+		return map;
+	} catch (e) {
+		console.error('fetchBrandMachineStatsMap aggregate failed, fallback to count:', e);
+		await Promise.all(
+			ids.map(async (bid) => {
+				map[bid] = await countTriplet(bid);
+			})
+		);
+		return map;
+	}
+}
+
 async function agreementSignList(data) {
 	try {
 		const agreementId = safeText(data?.agreementId, 80);
@@ -303,23 +374,33 @@ async function getBrandList(data) {
 			.limit(pageSize)
 			.orderBy('add_time', 'desc')
 			.get();
-		
-		// 格式化数据
-		const brandList = result.data.map(item => ({
-			id: item.brand_id,
-			brandName: item.brand_name,
-			activationCondition: `满￥${item.activation_condition.toFixed(2)}`,
-			commission: `ZTO￥${item.activation_salary.toFixed(2)}`,
-			inStockCount: item.in_stock_count,
-			bindCount: item.bind_count,
-			activatedCount: item.activated_count,
-			returnMachine: item.return_machine,
-			returnPayment: item.return_payment,
-			status: item.status,
-			statusTime: formatTime(item.status_time),
-			addTime: formatTime(item.add_time),
-			_id: item._id
-		}));
+
+		const statsMap = await fetchBrandMachineStatsMap(result.data.map((x) => x.brand_id));
+
+		// 格式化数据（入库/绑定/激活台数来自机具表实时统计）
+		const brandList = result.data.map(item => {
+			const sid = String(item.brand_id || '');
+			const st = statsMap[sid] || {
+				inStockCount: 0,
+				bindCount: 0,
+				activatedCount: 0
+			};
+			return {
+				id: item.brand_id,
+				brandName: item.brand_name,
+				activationCondition: `满￥${item.activation_condition.toFixed(2)}`,
+				commission: `ZTO￥${item.activation_salary.toFixed(2)}`,
+				inStockCount: st.inStockCount,
+				bindCount: st.bindCount,
+				activatedCount: st.activatedCount,
+				returnMachine: item.return_machine,
+				returnPayment: item.return_payment,
+				status: item.status,
+				statusTime: formatTime(item.status_time),
+				addTime: formatTime(item.add_time),
+				_id: item._id
+			};
+		});
 		
 		return {
 			code: 0,

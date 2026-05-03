@@ -15,11 +15,21 @@ const commfeesCol = db.collection('hsy-push-commfees');
 const logsCol = db.collection('hsy-push-logs');
 const machineCol = db.collection('hsy-machine');
 const machineTradesCol = db.collection('hsy-machine-trades');
+const merchantCol = db.collection('hsy-merchant-users');
 const brandCol = db.collection('hsy-brand');
 const systemSettingCol = db.collection('hsy-system-settings');
+const robotPushLogCol = db.collection('hsy-robot-push-logs');
 
 const SUCCESS_CODE = '00000';
 const NOW_TS = () => String(Math.floor(Date.now() / 1000));
+const WECOM_ROBOT_WEBHOOK = String(
+	process.env.WECOM_ROBOT_WEBHOOK ||
+		'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=3f69eeb7-e0bc-4ec9-afea-028566bda416'
+);
+
+function safeText(v, maxLen = 300) {
+	return String(v == null ? '' : v).trim().slice(0, maxLen);
+}
 
 function successRes() {
 	return {
@@ -92,6 +102,14 @@ const SFFD_TEXT = {
 
 function normalizeEnumKey(v) {
 	return String(v == null ? '' : v).trim();
+}
+
+/** 第三方请求体顶层 timestamp（秒，可为小数）→ 整数秒，便于列表展示与筛选 */
+function normalizePushBodyTimestamp(ts) {
+	if (ts == null || ts === '') return null;
+	const n = Number(ts);
+	if (!Number.isFinite(n)) return null;
+	return Math.floor(n);
 }
 
 function mapPaychannelText(v) {
@@ -263,6 +281,64 @@ function parseXingyiAmount(txnamt) {
 	return Number.isFinite(n) ? n : 0;
 }
 
+async function sendWecomRobotText(content) {
+	const text = safeText(content, 1800);
+	if (!WECOM_ROBOT_WEBHOOK || !text) return;
+	let ok = false;
+	let errMsg = '';
+	let respData = null;
+	const payload = { msgtype: 'text', text: { content: text } };
+	try {
+		const resp = await uniCloud.httpclient.request(WECOM_ROBOT_WEBHOOK, {
+			method: 'POST',
+			dataType: 'json',
+			contentType: 'application/json',
+			data: JSON.stringify(payload),
+			timeout: 3000
+		});
+		respData = resp?.data || null;
+		if (typeof respData === 'string') {
+			try {
+				respData = JSON.parse(respData);
+			} catch (e) {}
+		}
+		ok = Number(respData?.errcode || 0) === 0;
+		if (!ok) errMsg = safeText(respData?.errmsg || `errcode=${respData?.errcode}`, 300);
+	} catch (e) {
+		errMsg = safeText(e?.message || 'request failed', 300);
+		console.error('third-party-push sendWecomRobotText failed', e);
+	} finally {
+		try {
+			await robotPushLogCol.add({
+				channel: 'wecom_robot',
+				webhook: safeText(WECOM_ROBOT_WEBHOOK, 500),
+				content: text,
+				success: !!ok,
+				errmsg: errMsg,
+				request: JSON.stringify(payload),
+				response: JSON.stringify(respData || {}),
+				create_time: Date.now(),
+				is_deleted: false
+			});
+		} catch (logErr) {
+			console.error('third-party-push robotPushLog add failed', logErr);
+		}
+	}
+}
+
+async function getMerchantDisplayNameByUserId(userId, fallbackName) {
+	const uid = safeText(userId, 80);
+	if (!uid) return safeText(fallbackName, 80) || '未知商户';
+	try {
+		const r = await merchantCol.where(db.command.or([{ user_id: uid }, { _id: uid }])).limit(1).get();
+		const m = r.data && r.data[0];
+		if (m) return safeText(m.wx_nickname, 80) || safeText(m.mobile, 30) || uid;
+	} catch (e) {
+		console.error('getMerchantDisplayNameByUserId failed', e);
+	}
+	return safeText(fallbackName, 80) || uid || '未知商户';
+}
+
 /**
  * 机具编号 termphyno 与后台 hsy-machine.device_id 一致且未删除则视为在库
  */
@@ -339,6 +415,17 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		salesman: machine.salesman || '管理员',
 		create_time: createTime
 	});
+
+	if (risk.is_risk && risk.risk_audit_status === 'pending' && amount > 0) {
+		try {
+			const merchantName = await getMerchantDisplayNameByUserId(machine.bind_user_id, machine.bind_user_name);
+			const payType = safeText(pchText || '支付', 40);
+			const amtText = Number(amount).toFixed(2);
+			await sendWecomRobotText(`商户「${merchantName}」有一笔¥${amtText}的${payType}支付存在风险，请及时审核！`);
+		} catch (e) {
+			console.error('risk wecom notify failed', e);
+		}
+	}
 
 	await machineCol.where({ device_id: deviceId, is_deleted: false }).update({
 		total_transaction: newTotal,
@@ -426,6 +513,7 @@ async function handleTYY0001(body) {
 	const doc = {
 		firstagentid: firstagentid || '',
 		receive_time: now,
+		push_timestamp: normalizePushBodyTimestamp(timestamp),
 		logno: d.logno,
 		ologno: d.ologno,
 		mercid: d.mercid,
@@ -491,6 +579,7 @@ async function handleTYY0002(body) {
 	const doc = {
 		firstagentid: firstagentid || '',
 		receive_time: now,
+		push_timestamp: normalizePushBodyTimestamp(timestamp),
 		agentid: d.agentid,
 		mercid: d.mercid,
 		mercname: d.mercname,
@@ -528,6 +617,7 @@ async function handleTYY0003(body) {
 	const doc = {
 		firstagentid: firstagentid || '',
 		receive_time: now,
+		push_timestamp: normalizePushBodyTimestamp(timestamp),
 		termno: d.termno,
 		termphyno: d.termphyno,
 		agentid: d.agentid,
@@ -573,6 +663,7 @@ async function handleTYY0004(body) {
 	const doc = {
 		firstagentid: firstagentid || '',
 		receive_time: now,
+		push_timestamp: normalizePushBodyTimestamp(timestamp),
 		push_id: String(d.id),
 		mercid: d.mercid,
 		policyid: d.policyid,

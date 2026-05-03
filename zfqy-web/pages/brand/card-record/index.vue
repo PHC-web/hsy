@@ -509,14 +509,15 @@ export default {
 }
 .table-container-wrapper {
 	flex: 1;
-	overflow: hidden;
+	overflow-x: auto;
+	overflow-y: visible;
 	min-height: 0;
 }
 .table-container {
 	background: #fff;
 	border-radius: 4px;
 	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-	overflow: hidden;
+	overflow: visible;
 	height: 100%;
 	display: flex;
 	flex-direction: column;
@@ -560,5 +561,27 @@ export default {
 	font-size: 12px;
 	color: #2b6bff;
 	display: block;
+}
+
+::v-deep .uni-table-th {
+	white-space: nowrap;
+	overflow: visible !important;
+	position: relative;
+	z-index: 2;
+}
+
+::v-deep .uni-table {
+	overflow: visible !important;
+}
+
+::v-deep .uni-table-th .uni-table-filter {
+	z-index: 50 !important;
+}
+
+/* 首列筛选面板默认 right:0 会向左溢出，导致被左侧布局裁剪 */
+::v-deep .uni-table tr > .uni-table-th:first-child .dropdown-popup-right,
+::v-deep .uni-table .uni-table-th:first-child .dropdown-popup-right {
+	left: 0 !important;
+	right: auto !important;
 }
 </style>

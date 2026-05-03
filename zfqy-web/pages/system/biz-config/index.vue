@@ -91,6 +91,10 @@
 						<text class="label">退款窗口(天)</text>
 						<uni-easyinput v-model="form.refundCycle.windowDays" type="number" placeholder="如 3" />
 					</view>
+					<view class="field">
+						<text class="label">锁定期违约金比例(%)</text>
+						<uni-easyinput v-model="form.refundPenaltyRate" type="number" placeholder="0~100，默认50" />
+					</view>
 				</view>
 			</view>
 
@@ -158,6 +162,7 @@ const defaultForm = () => ({
 	},
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
+	refundPenaltyRate: 50,
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	testMerchantIdsText: '',

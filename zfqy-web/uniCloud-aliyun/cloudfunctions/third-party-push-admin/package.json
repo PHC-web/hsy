@@ -1,0 +1,7 @@
+{
+	"name": "third-party-push-admin",
+	"version": "1.0.0",
+	"description": "运维查询星驿 TYY0001～TYY0004 推送入库数据（只读）",
+	"main": "index.js",
+	"dependencies": {}
+}

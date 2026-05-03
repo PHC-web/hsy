@@ -324,8 +324,7 @@ function pickRefundEntryToken(data = {}) {
 }
 
 function shouldBypassRefundEntryToken(data = {}) {
-	// 关闭退款页窗口/token有效性拦截：所有入口默认放行
-	return true;
+	return false;
 }
 
 async function validateRefundEntryToken(merchantId, token) {
@@ -343,6 +342,13 @@ async function validateRefundEntryToken(merchantId, token) {
 		return { ok: false, code: 403, message: '退款入口已失效，请联系在线客服重新发送入口。' };
 	}
 	const now = nowTs();
+	const exp = Number(row.expire_time || 0);
+	if (exp > 0 && now > exp) {
+		try {
+			await refundEntryTokenCollection.doc(row._id).update({ status: 'expired', update_time: now });
+		} catch (e) {}
+		return { ok: false, code: 403, message: '退款入口已过期，请联系在线客服重新发送入口。' };
+	}
 	let needRefundAudit = false;
 	try {
 		const mRes = await merchantCollection.doc(mid).get();
@@ -442,7 +448,7 @@ async function listMerchants(data) {
 				.field({
 					user_id: true,
 					wx_avatar: true,
-					agreement_img: true,
+					agreement_signed_at: true,
 					device_id: true,
 					brand_name: true,
 					wx_nickname: true,
@@ -465,6 +471,7 @@ async function listMerchants(data) {
 					silver_member_start_at: true,
 					silver_member_end_at: true,
 					membership_name: true,
+					agreement_version: true,
 					recharge_package_quota: true,
 					recharge_package_reward: true,
 					estimated_free_quota: true,
@@ -497,7 +504,7 @@ async function listMerchants(data) {
 			id: item._id,
 			userId: item.user_id || item._id,
 			avatar: item.wx_avatar || '',
-			agreement: item.agreement_img || '',
+			agreementSigned: !!(item.agreement_signed_at || item.agreement_version),
 			deviceNo: item.device_id,
 			deviceDisplay: `${item.device_id || '-'}\n${item.brand_name || '-'}`,
 			wxUser: `${item.wx_nickname || '-'}\n${item.mobile || '-'}`,
@@ -527,6 +534,28 @@ async function listMerchants(data) {
 	} catch (error) {
 		console.error('获取商户列表失败:', error);
 		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function merchantAgreementImage(data = {}) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const img = String(merchant.agreement_img || '').trim();
+		if (!img) return { code: 404, message: '该商户未签署协议或签署图片不存在' };
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				merchantId: merchant._id,
+				agreementImg: img,
+				agreementSignedAt: formatTime(merchant.agreement_signed_at)
+			}
+		};
+	} catch (e) {
+		console.error('merchantAgreementImage failed', e);
+		return { code: 500, message: '加载协议图片失败' };
 	}
 }
 
@@ -1516,7 +1545,7 @@ async function adminDashboardTrend30d(data = {}) {
 						{ user_id: _.neq('') }
 					])
 				)
-				.field({ create_time: true, amount: true })
+				.field({ create_time: true, amount: true, trade_type: true, paychannel: true, paychannel_text: true })
 				.limit(50000)
 				.get(),
 			merchantCollection
@@ -1591,6 +1620,24 @@ async function adminDashboardTrend30d(data = {}) {
 		let allTimeRechargeMerchantCount = 0;
 		let allTimeExchangeCount = 0;
 		let allTimeExchangeNetAmount = 0;
+		let allTimeTradeTypeStats = {};
+		const trendTradeTypeDefs = [
+			{ key: '06', label: '贷记卡(06)' },
+			{ key: '31', label: '白条(31)' },
+			{ key: '05', label: '借记卡(05)' },
+			{ key: '04', label: '银联未优惠(04)' },
+			{ key: '02', label: '微信(02)' },
+			{ key: '01', label: '支付宝(01)' },
+			{ key: 'other', label: '其他(虚拟的)' }
+		];
+		const trendTradeTypeKeySet = new Set(trendTradeTypeDefs.map((x) => x.key));
+		const normalizeTrendTradeType = (row = {}) => {
+			const isVirtual = String(row.trade_type || '') === 'virtual';
+			if (isVirtual) return 'other';
+			const code = safeText(row.paychannel || '', 8);
+			if (trendTradeTypeKeySet.has(code)) return code;
+			return 'other';
+		};
 		try {
 			const allAgg = await machineTradeCollection
 				.aggregate()
@@ -1719,6 +1766,35 @@ async function adminDashboardTrend30d(data = {}) {
 			allTimeExchangeCount = 0;
 			allTimeExchangeNetAmount = 0;
 		}
+		try {
+			const allTimeTradeWhere = _.and([
+				{ amount: _.gt(0) },
+				{ stats_eligible: _.neq(false) },
+				{ is_deleted: _.neq(true) },
+				{ user_id: _.exists(true) },
+				{ user_id: _.neq('') }
+			]);
+			const allCountRes = await machineTradeCollection.where(allTimeTradeWhere).count();
+			const allTotal = Number(allCountRes.total || allCountRes.result?.total || 0);
+			const batchSize = 5000;
+			for (let offset = 0; offset < allTotal; offset += batchSize) {
+				const batchRes = await machineTradeCollection
+					.where(allTimeTradeWhere)
+					.field({ trade_type: true, paychannel: true, amount: true })
+					.skip(offset)
+					.limit(batchSize)
+					.get();
+				(batchRes.data || []).forEach((row) => {
+					const k = normalizeTrendTradeType(row);
+					if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
+					allTimeTradeTypeStats[k].count += 1;
+					allTimeTradeTypeStats[k].amount += Number(row.amount || 0);
+				});
+				if ((batchRes.data || []).length < batchSize) break;
+			}
+		} catch (eAgg) {
+			allTimeTradeTypeStats = {};
+		}
 
 		const dayFlow = {};
 		const dayBind = {};
@@ -1729,6 +1805,9 @@ async function adminDashboardTrend30d(data = {}) {
 		const dayRefundAmount = {};
 		const dayExchangeCount = {};
 		const dayExchangeAmount = {};
+		const dayTradeTypeCount = {};
+		const dayTradeTypeAmount = {};
+		const rangeTradeTypeStats = {};
 		range.keys.forEach((d) => {
 			dayFlow[d] = 0;
 			dayBind[d] = 0;
@@ -1737,12 +1816,22 @@ async function adminDashboardTrend30d(data = {}) {
 			dayRefundAmount[d] = 0;
 			dayExchangeCount[d] = 0;
 			dayExchangeAmount[d] = 0;
+			dayTradeTypeCount[d] = {};
+			dayTradeTypeAmount[d] = {};
 		});
 
 		(tradeRes.data || []).forEach((row) => {
 			const d = bucketKeyByRange(row.create_time, range);
 			if (!dayFlow[d] && dayFlow[d] !== 0) return;
 			dayFlow[d] += Number(row.amount || 0);
+			const typeKey = normalizeTrendTradeType(row);
+			if (!rangeTradeTypeStats[typeKey]) rangeTradeTypeStats[typeKey] = { count: 0, amount: 0 };
+			rangeTradeTypeStats[typeKey].count += 1;
+			rangeTradeTypeStats[typeKey].amount += Number(row.amount || 0);
+			if (!dayTradeTypeCount[d][typeKey]) dayTradeTypeCount[d][typeKey] = 0;
+			if (!dayTradeTypeAmount[d][typeKey]) dayTradeTypeAmount[d][typeKey] = 0;
+			dayTradeTypeCount[d][typeKey] += 1;
+			dayTradeTypeAmount[d][typeKey] += Number(row.amount || 0);
 		});
 
 		const bindSeenByDay = {};
@@ -1816,8 +1905,38 @@ async function adminDashboardTrend30d(data = {}) {
 			exchangeNetAmount.push(Number(Number(dayExchangeAmount[d] || 0).toFixed(2)));
 		});
 
+		const tradeTypeCodes = trendTradeTypeDefs.map((x) => x.key);
+		const tradeTypeLabelByKey = trendTradeTypeDefs.reduce((m, x) => {
+			m[x.key] = x.label;
+			return m;
+		}, {});
+		const tradeTypeCountSeries = tradeTypeCodes.map((code) => ({
+			type: code,
+			label: tradeTypeLabelByKey[code] || code,
+			data: range.keys.map((d) => Number((dayTradeTypeCount[d] && dayTradeTypeCount[d][code]) || 0))
+		}));
+		const tradeTypeAmountSeries = tradeTypeCodes.map((code) => ({
+			type: code,
+			label: tradeTypeLabelByKey[code] || code,
+			data: range.keys.map((d) => Number(Number((dayTradeTypeAmount[d] && dayTradeTypeAmount[d][code]) || 0).toFixed(2)))
+		}));
+
 		const payload = {
 			categories,
+			tradeTypeStats: [
+				...tradeTypeCodes.map((code) => ({ key: code, label: tradeTypeLabelByKey[code] || code }))
+			].map((item) => {
+				const cur = rangeTradeTypeStats[item.key] || {};
+				const all = allTimeTradeTypeStats[item.key] || {};
+				return {
+					type: item.key,
+					label: item.label,
+					count: Number(cur.count || 0),
+					amount: Number(Number(cur.amount || 0).toFixed(2)),
+					allTimeCount: Number(all.count || 0),
+					allTimeAmount: Number(Number(all.amount || 0).toFixed(2))
+				};
+			}),
 			summary: {
 				totalFlow: Number(
 					(tradeRes.data || []).reduce((sum, row) => sum + Number(row.amount || 0), 0).toFixed(2)
@@ -1834,7 +1953,13 @@ async function adminDashboardTrend30d(data = {}) {
 				totalExchangeCount: Number(exchangeCount.reduce((sum, n) => sum + Number(n || 0), 0)),
 				totalExchangeNetAmount: Number(exchangeNetAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
 				allTimeExchangeCount: Number(allTimeExchangeCount || 0),
-				allTimeExchangeNetAmount: Number(Number(allTimeExchangeNetAmount || 0).toFixed(2))
+				allTimeExchangeNetAmount: Number(Number(allTimeExchangeNetAmount || 0).toFixed(2)),
+				totalTradeCount: Number((tradeRes.data || []).length || 0),
+				allTimeTradeCount: Number(Object.values(allTimeTradeTypeStats).reduce((sum, x) => sum + Number(x.count || 0), 0)),
+				totalTradeAmount: Number(
+					(tradeRes.data || []).reduce((sum, row) => sum + Number(row.amount || 0), 0).toFixed(2)
+				),
+				allTimeTradeAmount: Number(Object.values(allTimeTradeTypeStats).reduce((sum, x) => sum + Number(x.amount || 0), 0).toFixed(2))
 			},
 			series: {
 				dailyFlow,
@@ -1843,7 +1968,9 @@ async function adminDashboardTrend30d(data = {}) {
 				rechargeAmount,
 				refundAmount,
 				exchangeCount,
-				exchangeNetAmount
+				exchangeNetAmount,
+				tradeTypeCountSeries,
+				tradeTypeAmountSeries
 			}
 		};
 		adminDashboardTrendCache = { at: now, key: cacheKey, data: payload };
@@ -3630,10 +3757,12 @@ async function getMerchantByIdOrUserId(key) {
 	return null;
 }
 
-function compactMerchantInfo(row) {
+function compactMerchantInfo(row, options = {}) {
+	const includeAgreementImg = !!options.includeAgreementImg;
 	const quotaBalance = normalizeWithdrawQuotaBalance(row);
 	const pendingBalance = normalizePendingBalance(row);
 	const rechargeAmount = Number(row.recharge_amount != null ? row.recharge_amount : row.recharge_total_yuan || 0);
+	const hasAgreementSigned = !!String(row.agreement_img || '').trim();
 	return {
 		id: row._id,
 		userId: row.user_id || row._id,
@@ -3642,7 +3771,8 @@ function compactMerchantInfo(row) {
 		mobile: row.mobile || '',
 		deviceId: row.device_id || '',
 		brandName: row.brand_name || '',
-		agreementImg: row.agreement_img || '',
+		agreementImg: includeAgreementImg ? (row.agreement_img || '') : '',
+		agreementSigned: hasAgreementSigned,
 		agreementSignedAt: formatTime(row.agreement_signed_at),
 		agreementVersion: row.agreement_version || '',
 		availableReward: quotaBalance,
@@ -4555,7 +4685,7 @@ async function h5MineInfo(data) {
 			code: 0,
 			message: 'ok',
 			data: {
-				merchant: compactMerchantInfo(merchant),
+				merchant: compactMerchantInfo(merchant, { includeAgreementImg: false }),
 				device: {
 					boundCount: boundDeviceIds.length,
 					display: deviceDisplay
@@ -4615,6 +4745,7 @@ const DEFAULT_BIZ_SETTINGS = {
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
+	refundPenaltyRate: 50,
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	servicePhone: '400-668-5796'
@@ -4674,6 +4805,7 @@ function sanitizeBizSettings(raw = {}) {
 		cycleDays: Math.max(1, Number(rc.cycleDays || DEFAULT_BIZ_SETTINGS.refundCycle.cycleDays)),
 		windowDays: Math.max(1, Number(rc.windowDays || DEFAULT_BIZ_SETTINGS.refundCycle.windowDays))
 	};
+	const refundPenaltyRate = Math.max(0, Math.min(100, Number(raw.refundPenaltyRate != null ? raw.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)));
 	const riskRates = {};
 	const rr = raw.riskRates || {};
 	Object.keys(rr).forEach((k) => {
@@ -4694,6 +4826,7 @@ function sanitizeBizSettings(raw = {}) {
 		refundTransferAudit,
 		optimizeConfig,
 		refundCycle,
+		refundPenaltyRate,
 		riskRates,
 		testMerchantIds,
 		servicePhone
@@ -5582,7 +5715,7 @@ async function h5HomeDashboard(data) {
 			message: 'ok',
 			data: {
 				serverTime: now,
-				merchant: compactMerchantInfo(merchant),
+				merchant: compactMerchantInfo(merchant, { includeAgreementImg: false }),
 				device: {
 					boundCount,
 					display: deviceDisplay
@@ -5622,7 +5755,8 @@ async function h5HomeDashboard(data) {
 				refundCycle: {
 					cycleDays: Number(cycleCfg.cycleDays || 180),
 					windowDays: Number(cycleCfg.windowDays || 3)
-				}
+				},
+				refundPenaltyRate: Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)
 			}
 		};
 		h5HomeDashboardCache.set(cacheSign, { at: now, payload: JSON.parse(JSON.stringify(out)) });
@@ -7011,9 +7145,10 @@ async function resolveH5RefundOrderContext(merchant, event) {
 			now
 		};
 	}
+	const refundPenaltyRate = Math.max(0, Math.min(100, Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)));
 	let penaltyAmount = 0;
 	if (countdown.phase === 'lock') {
-		penaltyAmount = Number((refundAmount * 0.5).toFixed(2));
+		penaltyAmount = Number((refundAmount * refundPenaltyRate / 100).toFixed(2));
 	}
 	const finalRefundAmount = Number((refundAmount - penaltyAmount).toFixed(2));
 	const targetRefundFen = Math.round(finalRefundAmount * 100);
@@ -7898,35 +8033,36 @@ async function h5PendingReturnPoints(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		const now = nowTs();
-		let bindTs = Number(merchant.bind_time || 0);
-		const boundMachines = await listBoundMachinesByMerchant(merchant);
-		for (const mach of boundMachines) {
-			if (mach && mach.bind_time) bindTs = Math.max(bindTs, Number(mach.bind_time || 0));
-		}
-		const _ = db.command;
-		const tradeParts = [
-			{ user_id: merchantUserId },
-			{ trade_type: _.in(['real', 'virtual']) },
-			{ stats_eligible: _.neq(false) },
-			{ amount: _.gt(0) },
-			{ is_deleted: _.neq(true) },
-			_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
-		];
-		if (bindTs) tradeParts.push({ create_time: _.gte(bindTs) });
-		const tradeWhere = _.and(tradeParts);
 		const tRes = await machineTradeCollection
-			.where(tradeWhere)
-			.field({ amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true })
-			.limit(8000)
+			.where({
+				user_id: merchantUserId,
+				trade_type: db.command.in(['real', 'virtual']),
+				amount: db.command.gt(0)
+			})
+			.field({ amount: true, cashback: true, release_amount: true, create_time: true })
+			.orderBy('create_time', 'asc')
+			.limit(20000)
 			.get();
-		const { buckets, curYm } = computePendingReturnBucketsForTrades(tRes.data || [], now);
+		const curYm = subsidyEngine.monthNoFromTs(now);
+		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(tRes.data || [], now, 10000);
+		const buckets = {};
+		Object.keys(sourceSlicesByYm || {}).forEach((srcYm) => {
+			const slices = Array.isArray(sourceSlicesByYm[srcYm]) ? sourceSlicesByYm[srcYm] : [];
+			const monthPoints = Number(slices.reduce((s, x) => s + Number(x || 0), 0).toFixed(4));
+			if (!(monthPoints > 0)) return;
+			for (let k = 1; k <= 4; k += 1) {
+				const targetYm = addCalendarMonthsYm(srcYm, k);
+				if (String(targetYm).localeCompare(String(curYm)) < 0) continue;
+				buckets[targetYm] = Number(((buckets[targetYm] || 0) + monthPoints).toFixed(4));
+			}
+		});
 		const months = Object.keys(buckets).sort();
 		const list = months.map((ym) => {
 			const pts = buckets[ym];
 			return {
 				month: ym,
 				monthLabel: ymToDisplayLabel(ym),
-				points: Number(pts.toFixed(2))
+				points: Number(pts.toFixed(4))
 			};
 		});
 		let totalUpcoming = 0;
@@ -7938,10 +8074,10 @@ async function h5PendingReturnPoints(data) {
 			data: {
 				currentMonth: curYm,
 				list,
-				totalUpcoming: Number(totalUpcoming.toFixed(2)),
+				totalUpcoming: Number(totalUpcoming.toFixed(4)),
 				futureDeferredFrozenYuan,
 				ruleNote:
-					'统计说明：300元以下（含300）流水首期返现100%仅计入当月；300元以上流水按5期（每期约20%）计入交易当月及后续月份。仅展示当前月及未来月份；已过去月份不计入。实际可领额度以「收益」页待领取记录为准。'
+					'统计说明：待返积分按「积分明细」同口径计算，展示来源月分片在当前月及未来月份的应返积分；已过去月份不计入。实际可领额度以「收益」页待领取记录为准。'
 			}
 		};
 	} catch (e) {
@@ -7978,7 +8114,7 @@ async function syncCouponInstancesForMerchant(merchant, now) {
 		const need = Number(row.monthly_threshold_yuan || 0);
 		if (!(need > 0) || flowThisMonth + 1e-6 < need) continue;
 		const amount = Number(row.reward_yuan || 0);
-		if (!(amount > 0)) continue;
+		if (!(amount >= 0.01)) continue;
 		const dedupKey = `coupon_inst_${row._id}`;
 		const exist = await incomePacketCollection.where({ merchant_user_id: merchantUserId, dedup_key: dedupKey }).limit(1).get();
 		if (exist.data && exist.data.length) continue;
@@ -8197,6 +8333,7 @@ async function h5IncomeList(data) {
 			if (x.expire_time && x.expire_time < now) return false;
 			if (!Number(x.claim_open_time || 0)) return false;
 			if (x.claim_open_time && x.claim_open_time > now) return false;
+			if (Number(x.amount || 0) < 0.01) return false;
 			return true;
 		});
 		let pendingTotal = 0;
@@ -8216,12 +8353,14 @@ async function h5IncomeList(data) {
 			.orderBy('claimed_time', 'desc')
 			.limit(50)
 			.get();
-		const detailList = (claimedRes.data || []).map((x) => ({
-			id: x._id,
-			title: x.title || '手续费补贴',
-			amount: Number(x.amount || 0).toFixed(2),
-			timeText: formatTime(x.claimed_time || x.update_time)
-		}));
+		const detailList = (claimedRes.data || [])
+			.filter((x) => Number(x.amount || 0) >= 0.01)
+			.map((x) => ({
+				id: x._id,
+				title: x.title || '手续费补贴',
+				amount: Number(x.amount || 0).toFixed(2),
+				timeText: formatTime(x.claimed_time || x.update_time)
+			}));
 		let subsidyTicker = [];
 		try {
 			const recentClaimed = await incomePacketCollection
@@ -8312,6 +8451,7 @@ async function claimPackets(merchant, packetIds) {
 		const need = row.unlock_flow_yuan != null ? Number(row.unlock_flow_yuan) : null;
 		if (need != null && Number.isFinite(need) && flowThisMonth + 1e-6 < need) continue;
 		const amt = Number(row.amount || 0);
+		if (amt < 0.01) continue;
 		claimedAmount += amt;
 		claimedIds.push(row._id);
 		await incomePacketCollection.doc(row._id).update({
@@ -9072,7 +9212,7 @@ async function feedbackAdminSendRefundEntry(data, context) {
 			return { code: 400, message: '当前未开启该商户对应的退款审核，无需发送退款入口' };
 		}
 		const now = nowTs();
-		const expireAt = 0;
+		const expireAt = now + 3 * 24 * 60 * 60 * 1000;
 		const operator = await getAdminDisplayName(context);
 		const token = `${randomStr(24)}${randomStr(12)}${String(now).slice(-6)}`;
 		await refundEntryTokenCollection.where({
@@ -9100,8 +9240,7 @@ async function feedbackAdminSendRefundEntry(data, context) {
 		const entryUrl = buildRefundEntryUrl(token);
 		const text =
 			`已为您发送退款入口：\n${entryUrl}\n` +
-			`当前商户退款流程需管理员审核，入口在审核开启期间可持续使用；` +
-			`若后续关闭退款审核，入口将自动失效。`;
+			`当前商户退款流程需管理员审核；该入口有效期为3天，过期后将自动失效。`;
 		await feedbackMessageCollection.add({
 			feedback_id: fid,
 			role: 'admin',
@@ -9734,6 +9873,8 @@ exports.main = async (event, context) => {
 			return await updateSwitch(actualData);
 		case 'merchantPointsMonthlyInsight':
 			return await merchantPointsMonthlyInsight(actualData);
+		case 'merchantAgreementImage':
+			return await merchantAgreementImage(actualData);
 		case 'simulateRegister':
 			return await simulateRegister(actualData);
 		case 'offlineFirstRecharge':

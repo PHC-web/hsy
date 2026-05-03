@@ -754,5 +754,41 @@
 		"enable": true,
 		"create_date": 1777113000000,
 		"_id": "finance_merchant_flow"
+	},
+	{
+		"menu_id": "operations_management",
+		"name": "运维管理",
+		"icon": "admin-icons-safety",
+		"url": "",
+		"sort": 1800,
+		"parent_id": "",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000100,
+		"_id": "operations_management"
+	},
+	{
+		"menu_id": "operations_h5_simulator",
+		"name": "H5页面模拟",
+		"icon": "",
+		"url": "/pages/operations/h5-simulator/index",
+		"sort": 1810,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000101,
+		"_id": "operations_h5_simulator"
+	},
+	{
+		"menu_id": "operations_third_party_pushes",
+		"name": "星驿推送数据",
+		"icon": "",
+		"url": "/pages/operations/third-party-pushes/index",
+		"sort": 1820,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000102,
+		"_id": "operations_third_party_pushes"
 	}
 ]

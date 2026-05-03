@@ -16,8 +16,8 @@
 				<block v-else>
 					<view class="hero h5-glass-panel">
 						<image class="h5-brand-logo h5-brand-logo--hero" :src="h5Logo" mode="aspectFit" />
-						<text class="title">额度预存</text>
-						<text class="sub">选择预存套餐，获取交易补贴额度</text>
+						<text class="title">额度包</text>
+						<text class="sub">选择额度包，获取交易补贴额度</text>
 					</view>
 					<view class="card h5-glass-panel">
 						<view
@@ -105,12 +105,12 @@ export default {
 		},
 		payButtonText() {
 			const picked = this.packages.find((x) => x.id === this.selectedId);
-			if (!picked) return '立即预存';
+			if (!picked) return '立即升级';
 			if (this.currentPackage && Number(picked.price) > Number(this.currentPackage.price)) {
 				return `补差价升级（¥${Number(picked.price) - Number(this.currentPackage.price)}）`;
 			}
 			if (this.currentPackage && Number(picked.price) <= Number(this.currentPackage.price)) return '当前档位不可重复充值';
-			return `立即预存（¥${picked.price}）`;
+			return `立即升级（¥${picked.price}）`;
 		}
 	},
 	onShow() {
@@ -136,7 +136,8 @@ export default {
 				return;
 			}
 			const m = mine.data && mine.data.merchant;
-			if (!m || !String(m.agreementImg || '').trim()) {
+			const agreement = (mine.data && mine.data.agreement) || {};
+			if (!m || !!agreement.needSign) {
 				this.gateText = '需先签署优惠活动计划书';
 				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
 				setTimeout(() => {

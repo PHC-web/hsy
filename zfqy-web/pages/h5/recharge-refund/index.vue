@@ -24,34 +24,13 @@
 						<text class="rule-title">白银会员有效期</text>
 						<text class="rule-item">{{ silverCountdownText }}</text>
 					</view>
-					<view class="countdown-card h5-glass-panel">
-						<view class="cd-head">
-							<text class="cd-title">退款窗口倒计时</text>
-							<view
-								v-if="countdown.phase === 'none'"
-								class="cd-badge cd-badge--action"
-								@click="goRecharge"
-							>
-								<text class="cd-badge-action-txt">额度充值</text>
-								<text class="cd-badge-action-arrow">›</text>
-							</view>
-							<text v-else class="cd-badge">{{ countdownPhaseLabel }}</text>
-						</view>
-						<text class="cd-desc">{{ countdownDesc }}</text>
-						<view v-if="countdownDigits" class="cd-digits">
-							<view v-for="(p, i) in countdownDigits" :key="i" class="cd-seg">
-								<text class="cd-num">{{ p.num }}</text>
-								<text class="cd-unit">{{ p.unit }}</text>
-							</view>
-						</view>
-						<text v-else class="cd-idle">{{ countdownIdleText }}</text>
-					</view>
+					<!-- 退款倒计时模块按需求隐藏 -->
 
 					<view class="rule-card h5-glass-panel">
 						<text class="rule-title">退款规则说明</text>
-						<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
+						<!-- <text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
 						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text> -->
 						<text class="rule-link" @click="onViewAgreement">查看协议</text>
 					</view>
 
@@ -149,6 +128,7 @@ export default {
 			},
 			refundCycleDays: 180,
 			refundWindowDays: 3,
+			refundPenaltyRate: 50,
 			tick: 0,
 			tickTimer: null,
 			statusPollTimer: null
@@ -251,8 +231,7 @@ export default {
 	},
 	onLoad(options) {
 		this.refundEntryToken = String(options?.rt || options?.refundToken || options?.token || '').trim();
-		// 关闭“退款入口无效”拦截：退款页默认允许进入并可发起退款流程
-		this.fromFeedbackEntry = true;
+		this.fromFeedbackEntry = !!this.refundEntryToken;
 	},
 	onShow() {
 		this.ensureRefundEntryAndLoad();
@@ -385,6 +364,7 @@ export default {
 				this.countdown = Object.assign({}, this.countdown, d.countdown || {});
 				this.refundCycleDays = Number(d.refundCycle?.cycleDays || 180);
 				this.refundWindowDays = Number(d.refundCycle?.windowDays || 3);
+				this.refundPenaltyRate = Number(d.refundPenaltyRate != null ? d.refundPenaltyRate : 50);
 				const mineRaw = await h5MineInfo();
 				const mineRes = this.unwrapResult(mineRaw);
 				if (mineRes.code === 0) {
@@ -415,19 +395,25 @@ export default {
 			this.entryError = '';
 			this.stopStatusPoll();
 			this.loading = true;
+			if (!this.fromFeedbackEntry || !this.refundEntryToken) {
+				this.entryError = '退款入口无效，请通过客服发送的退款入口进入。';
+				this.loading = false;
+				return;
+			}
 			try {
 				const raw = await h5RefundEntryValidate({
 					refundEntryToken: this.refundEntryToken,
 					entrySource: 'feedback'
 				});
 				const chk = this.unwrapResult(raw);
-				// 关闭入口无效拦截：即便校验失败也允许进入页面
-				this.entryAllowed = true;
-				if (chk.code === 0 && chk.data && chk.data.refundUi) {
-					this.applyRefundUiFromPayload(chk.data);
-				} else {
+				if (chk.code !== 0) {
+					this.entryError = chk.message || '退款入口已失效，请联系在线客服重新发送。';
 					this.applyRefundUiFromPayload({});
+					return;
 				}
+				this.entryAllowed = true;
+				if (chk.data && chk.data.refundUi) this.applyRefundUiFromPayload(chk.data);
+				else this.applyRefundUiFromPayload({});
 				await this.load();
 			} finally {
 				this.loading = false;
@@ -441,7 +427,8 @@ export default {
 				return;
 			}
 			const m = mineRes.data && mineRes.data.merchant;
-			if (!m || !String(m.agreementImg || '').trim()) {
+			const agreement = (mineRes.data && mineRes.data.agreement) || {};
+			if (!m || !!agreement.needSign) {
 				uni.showToast({ title: '请先在「我的」中签署优惠活动计划书', icon: 'none' });
 				uni.navigateTo({ url: '/pages/h5/mine/index' });
 				return;
@@ -539,7 +526,7 @@ export default {
 			const isWindow = this.countdown.phase === 'window';
 			const content = isWindow
 				? '退款后将不享有会员权益，确认退款？'
-				: `充值后${this.refundCycleDays}天内无法进行全额退款，现在退款需收取50%违约金，是否要进行退款？`;
+				: `充值后${this.refundCycleDays}天内无法进行全额退款，现在退款需收取${this.refundPenaltyRate}%违约金，是否要进行退款？`;
 			uni.showModal({
 				title: '确认退款重置',
 				content,

@@ -45,7 +45,7 @@
 						</view>
 					</view>
 					<view class="acct-item">
-						<text class="k">预估免额度</text>
+						<text class="k">额度包</text>
 						<text class="v">{{ account.estimatedFreeQuota }} 交易量</text>
 					</view>
 					<view class="acct-item acct-item--link" @click.stop="toggleAccountPoints">
@@ -65,7 +65,7 @@
 
 				<view class="menu-card h5-glass-panel">
 					<view class="menu-item" @click="goRecharge">
-						<text class="menu-title">额度预存</text>
+						<text class="menu-title">额度包</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					
@@ -74,7 +74,15 @@
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goRules">
-						<text class="menu-title">规则说明</text>
+						<text class="menu-title">活动规则与时间</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goRules">
+						<text class="menu-title">参与步骤与领奖说明</text>
+						<text class="menu-arrow">›</text>
+					</view>
+					<view class="menu-item" @click="goTransferProof">
+						<text class="menu-title">转账场景证明</text>
 						<text class="menu-arrow">›</text>
 					</view>
 					<view class="menu-item" @click="goPendingReturn">
@@ -98,10 +106,6 @@
 						<text class="menu-title">码牌绑定</text>
 						<text class="menu-arrow">›</text>
 					</view>
-					<!-- <view class="menu-item" @click="onViewAgreement">
-						<text class="menu-title">查看协议</text>
-						<text class="menu-arrow">›</text>
-					</view> -->
 					<view class="menu-item" @click="goFeedback">
 						<text class="menu-title">售后反馈</text>
 						<view class="menu-right">
@@ -165,24 +169,6 @@
 					<button size="mini" @click="openAgreementFile">查看原始协议文件</button>
 				</view> -->
 				<signature-pad @signed="onSigned" />
-			</view>
-		</uni-popup>
-		<uni-popup ref="agreementViewPopup" type="bottom">
-			<view class="agreement-view-sheet agreement-sheet--dark">
-				<view class="sheet-head">
-					<text class="sheet-title">我的协议</text>
-				</view>
-				<scroll-view scroll-y class="agreement-view-scroll">
-					<image
-						class="agreement-preview-image"
-						:src="mine.agreementImg || ''"
-						mode="widthFix"
-						@click="previewAgreementImage"
-					/>
-				</scroll-view>
-				<view class="agreement-view-actions">
-					<button class="agreement-view-btn agreement-view-btn--only" type="primary" size="mini" @click="closeAgreementViewer">关闭</button>
-				</view>
 			</view>
 		</uni-popup>
 	</view>
@@ -419,6 +405,9 @@ export default {
 		goRules() {
 			uni.navigateTo({ url: '/pages/h5/rules/index' });
 		},
+		goTransferProof() {
+			uni.navigateTo({ url: '/pages/h5/transfer-proof/index' });
+		},
 		goCoupons() {
 			uni.navigateTo({ url: '/pages/h5/coupons/index' });
 		},
@@ -442,21 +431,6 @@ export default {
 		onAcctCardClick() {
 			if (!this.agreementNeedSign) return;
 			this.openAgreementPopup();
-		},
-		onViewAgreement() {
-			if (this.agreementNeedSign) {
-				this.openAgreementPopup();
-				return;
-			}
-			this.$refs.agreementViewPopup.open();
-		},
-		previewAgreementImage() {
-			const src = String(this.mine.agreementImg || '').trim();
-			if (!src) return;
-			uni.previewImage({ urls: [src], current: src });
-		},
-		closeAgreementViewer() {
-			this.$refs.agreementViewPopup.close();
 		},
 		onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
@@ -684,7 +658,6 @@ export default {
 					return;
 				}
 				uni.showToast({ title: '签署成功', icon: 'success' });
-				this.$refs.agreementViewPopup.close();
 				this.$refs.agreementPopup.close();
 				await this.loadMine(true);
 			} finally {
@@ -1029,45 +1002,6 @@ export default {
 	border-bottom: none;
 	backdrop-filter: blur(24px);
 	-webkit-backdrop-filter: blur(24px);
-}
-
-.agreement-view-sheet {
-	border-radius: 20px 20px 0 0;
-	padding: 16px 16px 12px;
-	margin: 0;
-	max-height: 88vh;
-	box-sizing: border-box;
-}
-
-.agreement-view-scroll {
-	max-height: 62vh;
-	margin-top: 10px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	border-radius: 12px;
-	padding: 10px;
-	box-sizing: border-box;
-	background: rgba(0, 0, 0, 0.2);
-}
-
-.agreement-preview-image {
-	display: block;
-	width: 100%;
-	border-radius: 8px;
-	background: #fff;
-}
-
-.agreement-view-actions {
-	display: flex;
-	justify-content: center;
-	gap: 10px;
-	margin-top: 12px;
-}
-
-.agreement-view-btn {
-	margin: 0;
-}
-.agreement-view-btn--only {
-	min-width: 120px;
 }
 
 .sheet-title {
