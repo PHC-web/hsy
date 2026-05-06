@@ -61,26 +61,27 @@
 			// #ifdef H5
 			menus: {
 				immediate: true,
-				handler(newVal,oldVal) {
-					const item = this.menus.find(m => m.value === this.$route.path)
-					// 设置面包屑
-					if(item){
+				handler(newVal) {
+					const item = this.findMenuForRoute(this.$route.path)
+					if (item && Array.isArray(newVal) && newVal.length) {
+						this.famliy = []
 						this.getMenuAncestor(item.menu_id, newVal)
-						item && this.setRoutes && this.setRoutes(this.famliy)
+						this.setRoutes && this.setRoutes(this.famliy)
 					}
 				}
 			},
 			// #endif
 			$route: {
-				immediate: false,
+				immediate: true,
 				handler(val, old) {
-					if (val.fullPath !== old.fullPath) {
-						this.famliy = []
-						const menu = this.menus.find(m => m.value === val.path)
-						const menu_id = menu && menu.menu_id
-						this.getMenuAncestor(menu_id, this.menus)
-						this.setRoutes && this.setRoutes(this.famliy)
-					}
+					if (!val) return
+					if (old && val.fullPath === old.fullPath) return
+					const menu = this.findMenuForRoute(val.path)
+					const menu_id = menu && menu.menu_id
+					if (!menu_id || !this.menus.length) return
+					this.famliy = []
+					this.getMenuAncestor(menu_id, this.menus)
+					this.setRoutes && this.setRoutes(this.famliy)
 				}
 			}
 		},
@@ -136,6 +137,25 @@
 			hasLocalData(value) {
 				return Array.isArray(value) && value.length > 0
 			},
+			/** 菜单 url 常为 `/`，路由 path 常为 `/pages/index/index`，需对齐 */
+			findMenuForRoute(routePath) {
+				const menus = this.menus || []
+				if (!menus.length) return null
+				const p = routePath || ''
+				let item = menus.find((m) => m.value === p)
+				if (item) return item
+				const isHomePath =
+					p === '/' ||
+					p === '/pages/index/index' ||
+					p.endsWith('/pages/index/index')
+				if (isHomePath) {
+					item = menus.find((m) => {
+						const v = m.value || ''
+						return v === '/' || v === '/pages/index/index' || v === 'pages/index/index'
+					})
+				}
+				return item || null
+			},
 			load() {
 				if (this.mixinDatacomLoading == true) {
 					return
@@ -155,25 +175,22 @@
 				})
 			},
 			getMenuAncestor(menuId, menus) {
-				menus.forEach(item => {
-					if (item.menu_id === menuId) {
-						const route = {
-							name: item.text
-						}
-						const path = item.value
-						if (path) {
-							route.to = {
-								path
-							}
-						}
-						this.famliy.unshift(route)
-						const parent_id = item.parent_id
-						if (parent_id) {
-							this.getMenuAncestor(parent_id, menus)
-						}
+				if (!menuId || !Array.isArray(menus)) return
+				const item = menus.find((m) => m.menu_id === menuId)
+				if (!item) return
+				const route = {
+					name: item.text
+				}
+				const path = item.value
+				if (path) {
+					route.to = {
+						path
 					}
-				})
-				// return famliy
+				}
+				this.famliy.unshift(route)
+				if (item.parent_id) {
+					this.getMenuAncestor(item.parent_id, menus)
+				}
 			}
 		},
 	}

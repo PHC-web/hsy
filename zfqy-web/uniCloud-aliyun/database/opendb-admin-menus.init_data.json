@@ -1,12 +1,24 @@
 [
 	{
+		"menu_id": "portal_center",
+		"name": "门户中心",
+		"icon": "uni-icons-list",
+		"url": "/pages/portal/index",
+		"sort": 95,
+		"parent_id": "",
+		"permission": ["console.portal"],
+		"enable": true,
+		"create_date": 1775582942000,
+		"_id": "portal_center"
+	},
+	{
 		"menu_id": "index",
 		"name": "首页",
 		"icon": "uni-icons-home",
 		"url": "/",
 		"sort": 100,
 		"parent_id": "",
-		"permission": [],
+		"permission": ["console.home"],
 		"enable": true,
 		"create_date": 1602662469396,
 		"_id": "index"
@@ -790,6 +802,18 @@
 		"enable": true,
 		"create_date": 1777113000102,
 		"_id": "operations_third_party_pushes"
+	},
+	{
+		"menu_id": "operations_points_records",
+		"name": "积分记录",
+		"icon": "",
+		"url": "/pages/operations/points-records/index",
+		"sort": 1825,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000104,
+		"_id": "operations_points_records"
 	},
 	{
 		"menu_id": "operations_logs",

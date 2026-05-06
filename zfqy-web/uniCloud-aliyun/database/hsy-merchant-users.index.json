@@ -1,0 +1,15 @@
+[
+	{
+		"IndexName": "login_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "login_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	}
+]

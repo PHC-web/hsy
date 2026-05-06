@@ -1,15 +1,14 @@
 'use strict';
 
+const { shanghaiYearMonthFromTs } = require('../common/format-time-cn.js');
+
 const POINTS_PER_BLOCK = 38;
 const POINTS_PER_MONTH = 7.6;
 const CLAIM_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
 const MIN_PACKET_AMOUNT = 0.01;
 
 function monthNoFromTs(ts) {
-	const d = new Date(Number(ts));
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, '0');
-	return `${y}-${m}`;
+	return shanghaiYearMonthFromTs(ts);
 }
 
 function parseYearMonth(ym) {

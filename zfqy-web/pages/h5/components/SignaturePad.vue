@@ -104,13 +104,18 @@ export default {
 	background: #fff;
 }
 .sign-actions {
-	display: flex;
-	justify-content: flex-end;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
 	gap: 10px;
 	margin-top: 10px;
+	width: 100%;
+	box-sizing: border-box;
 }
 .sign-btn {
 	margin: 0;
+	width: 100%;
+	box-sizing: border-box;
+	max-width: 100%;
 }
 </style>
 

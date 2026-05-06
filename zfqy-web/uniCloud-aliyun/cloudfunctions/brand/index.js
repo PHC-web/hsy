@@ -5,6 +5,7 @@ const machineCollection = db.collection('hsy-machine');
 const operationLogCollection = db.collection('hsy-operation-logs');
 const agreementCollection = db.collection('hsy-agreements');
 const merchantCollection = db.collection('hsy-merchant-users');
+const { formatTimeMs: formatTime, shanghaiCompactYmdHms } = require('../common/format-time-cn.js');
 
 exports.main = async (event, context) => {
 	const { action, data, params } = event;
@@ -102,14 +103,7 @@ function safeText(v, max = 200) {
 }
 
 function mkAgreementVersion() {
-	const d = new Date();
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, '0');
-	const day = String(d.getDate()).padStart(2, '0');
-	const hh = String(d.getHours()).padStart(2, '0');
-	const mm = String(d.getMinutes()).padStart(2, '0');
-	const ss = String(d.getSeconds()).padStart(2, '0');
-	return `AG-${y}${m}${day}${hh}${mm}${ss}`;
+	return `AG-${shanghaiCompactYmdHms()}`;
 }
 
 async function agreementCreate(data, event) {
@@ -153,29 +147,62 @@ async function agreementList(data) {
 		const page = Math.max(1, Number(data?.page || 1));
 		const pageSize = Math.min(50, Math.max(1, Number(data?.pageSize || 10)));
 		const title = safeText(data?.title, 80);
-		let query = agreementCollection.where({ is_deleted: false });
-		if (title) query = query.where({ title: new RegExp(title) });
-		const countRes = await query.count();
+		const _ = db.command;
+
+		const agreementWhere = title
+			? _.and([{ is_deleted: false }, { title: new RegExp(title) }])
+			: { is_deleted: false };
+
+		const [countRes, res] = await Promise.all([
+			agreementCollection.where(agreementWhere).count(),
+			agreementCollection
+				.where(agreementWhere)
+				.orderBy('create_time', 'desc')
+				.skip((page - 1) * pageSize)
+				.limit(pageSize)
+				.get()
+		]);
 		const total = Number(countRes.total || 0);
-		const res = await query
-			.skip((page - 1) * pageSize)
-			.limit(pageSize)
-			.orderBy('create_time', 'desc')
-			.get();
-		const allMerchants = await merchantCollection
-			.where({ is_deleted: db.command.neq(true) })
-			.field({ _id: true, agreement_img: true, agreement_version: true })
-			.limit(20000)
-			.get();
-		const merchants = allMerchants.data || [];
-		const merchantTotal = merchants.length;
-		const list = (res.data || []).map((x) => {
-			const signedCount = merchants.filter(
-				(m) => String(m.agreement_version || '') === String(x.version || '') && String(m.agreement_img || '').trim()
-			).length;
+		const rows = res.data || [];
+
+		const merchantBase = { is_deleted: _.neq(true) };
+		const unsignedWhere = _.and([
+			merchantBase,
+			_.or([
+				{ agreement_img: _.exists(false) },
+				{ agreement_img: null },
+				{ agreement_img: '' },
+				{ agreement_img: new RegExp('^\\s*$') }
+			])
+		]);
+
+		const signedCountForVersion = (version) =>
+			merchantCollection
+				.where(
+					_.and([
+						merchantBase,
+						{ agreement_version: String(version || '') },
+						{ agreement_img: new RegExp('\\S') }
+					])
+				)
+				.count();
+
+		const signedPromises = rows.map((x) => signedCountForVersion(x.version));
+		const statsResults = await Promise.all([
+			merchantCollection.where(merchantBase).count(),
+			merchantCollection.where(unsignedWhere).count(),
+			...signedPromises
+		]);
+
+		const merchantTotal = Number(statsResults[0].total || 0);
+		const unsignedGlobal = Number(statsResults[1].total || 0);
+		const signedTotals = statsResults.slice(2).map((r) => Number(r.total || 0));
+
+		const list = rows.map((x, i) => {
+			const signedCount = signedTotals[i] || 0;
 			const needSignCount = x.notify_all_resign
 				? Math.max(0, merchantTotal - signedCount)
-				: merchants.filter((m) => !String(m.agreement_img || '').trim()).length;
+				: unsignedGlobal;
 			return {
 				id: String(x._id || ''),
 				title: x.title || '',
@@ -577,19 +604,6 @@ async function updateBrandStatus(data) {
 			message: '更新失败'
 		};
 	}
-}
-
-// 格式化时间
-function formatTime(timestamp) {
-	if (!timestamp) return '';
-	const date = new Date(timestamp);
-	const year = date.getFullYear();
-	const month = String(date.getMonth() + 1).padStart(2, '0');
-	const day = String(date.getDate()).padStart(2, '0');
-	const hours = String(date.getHours()).padStart(2, '0');
-	const minutes = String(date.getMinutes()).padStart(2, '0');
-	const seconds = String(date.getSeconds()).padStart(2, '0');
-	return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
 // 记录操作日志

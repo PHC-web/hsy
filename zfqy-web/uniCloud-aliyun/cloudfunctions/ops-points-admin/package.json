@@ -1,0 +1,7 @@
+{
+	"name": "ops-points-admin",
+	"version": "1.0.0",
+	"description": "运维：H5 商户积分红包（hsy-income-packets）只读查询",
+	"main": "index.js",
+	"dependencies": {}
+}

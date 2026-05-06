@@ -44,7 +44,7 @@
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag2')">2</uni-th>
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
-							<uni-th align="center" width="120">操作</uni-th>
+							<uni-th align="center" width="140">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
@@ -90,14 +90,34 @@
 							</uni-td>
 							<uni-td align="center">{{ item.loginTime }}</uni-td>
 							<uni-td align="center">
-								<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
+								<view class="cell-actions">
+									<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
+									<button
+										v-if="item.agreementSigned"
+										size="mini"
+										type="warn"
+										plain
+										@click="confirmClearAgreement(item)"
+									>
+										删除协议
+									</button>
+								</view>
 							</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
 			</view>
 			<view class="uni-pagination-box admin-page-pagination">
-				<uni-pagination show-icon show-page-size :page-size="pageInfo.pageSize" v-model="pageInfo.currentPage" :total="pageInfo.total" @change="onPageChanged" @pageSizeChange="onPageSizeChange" />
+				<uni-pagination
+					show-icon
+					show-page-size
+					:page-size="pageInfo.pageSize"
+					:page-size-range="merchantPageSizeRange"
+					v-model="pageInfo.currentPage"
+					:total="pageInfo.total"
+					@change="onPageChanged"
+					@pageSizeChange="onPageSizeChange"
+				/>
 			</view>
 		</view>
 		<!-- #ifndef H5 -->
@@ -146,7 +166,13 @@
 						@load="onPreviewImageLoad"
 					/>
 				</view>
-				<view class="img-preview-tip">滚轮缩放，按住鼠标左键拖动</view>
+				<view class="img-preview-tip">
+					Ctrl+滚轮或双指捏合缩放（以指针为中心）；双指滑动上下浏览；按住左键拖动平移
+				</view>
+				<view v-if="agreementPreviewIp || agreementPreviewDevice" class="img-preview-meta">
+					<text class="img-preview-meta-line">签署 IP：{{ agreementPreviewIp || '—' }}</text>
+					<text class="img-preview-meta-line">设备标识：{{ agreementPreviewDevice || '—' }}</text>
+				</view>
 				<view class="img-preview-actions">
 					<button size="mini" @click="resetPreviewTransform">重置</button>
 					<button size="mini" @click="closeImgPreview">关闭</button>
@@ -228,6 +254,8 @@ export default {
 				loginTimeEnd: ''
 			},
 			tableKey: 1,
+			/** 与 pageInfo.pageSize 初始值一致，避免下拉首项与请求条数不一致 */
+			merchantPageSizeRange: [20, 50, 100, 500],
 			useStatusFilterData: [
 				{ text: '正常', value: '1', checked: false },
 				{ text: '异常', value: '0', checked: false }
@@ -241,7 +269,8 @@ export default {
 			loading: false,
 			pageInfo: {
 				currentPage: 1,
-				pageSize: 10,
+				// 须与 uni-pagination 默认 pageSizeRange 首项一致，否则界面显示「20条/页」实际仍按 10 请求
+				pageSize: 20,
 				total: 0
 			},
 			showExportMenu: false,
@@ -259,6 +288,8 @@ export default {
 				packageId: ''
 			},
 			previewImageUrl: '',
+			agreementPreviewIp: '',
+			agreementPreviewDevice: '',
 			previewScale: 1,
 			previewOffsetX: 0,
 			previewOffsetY: 0,
@@ -267,6 +298,11 @@ export default {
 			previewDragStartY: 0,
 			previewDragOriginX: 0,
 			previewDragOriginY: 0,
+			previewPinchBaseScale: 1,
+			_previewGestureEl: null,
+			_boundGestureStart: null,
+			_boundGestureChange: null,
+			_boundGestureEnd: null,
 			offlinePackages: [],
 			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
 			,
@@ -289,6 +325,9 @@ export default {
 	mounted() {
 		this.loadMembershipLevelFilterData();
 		this.search();
+	},
+	beforeDestroy() {
+		this.detachPreviewGestureListeners();
 	},
 	methods: {
 		async loadMembershipLevelFilterData() {
@@ -380,10 +419,23 @@ export default {
 		},
 		getMouseClient(e) {
 			const evt = e && (e.originalEvent || e);
+			let x = evt?.clientX;
+			let y = evt?.clientY;
+			if ((x == null || y == null) && evt?.changedTouches && evt.changedTouches[0]) {
+				x = evt.changedTouches[0].clientX;
+				y = evt.changedTouches[0].clientY;
+			}
 			return {
-				x: Number(evt?.clientX || 0),
-				y: Number(evt?.clientY || 0)
+				x: Number(x || 0),
+				y: Number(y || 0)
 			};
+		},
+		normalizeWheelDeltaY(evt) {
+			if (!evt) return 0;
+			let dy = Number(evt.deltaY) || 0;
+			if (evt.deltaMode === 1) dy *= 16;
+			else if (evt.deltaMode === 2) dy *= 24;
+			return dy;
 		},
 		getPreviewViewportRect() {
 			const ref = this.$refs.previewViewport;
@@ -397,15 +449,49 @@ export default {
 			this.previewOffsetY = 0;
 			this.previewDragging = false;
 		},
-		previewImg(url) {
+		previewImg(url, opts = {}) {
 			if (!url) return;
+			if (!opts.keepAgreementMeta) {
+				this.agreementPreviewIp = '';
+				this.agreementPreviewDevice = '';
+			}
 			this.resetPreviewTransform();
 			this.previewImageUrl = String(url);
 			if (this.$refs.imgPreviewPopup) {
 				this.$refs.imgPreviewPopup.open();
+				this.$nextTick(() => this.attachPreviewGestureListeners());
 				return;
 			}
 			uni.previewImage({ urls: [url], current: url });
+		},
+		attachPreviewGestureListeners() {
+			// #ifdef H5
+			this.detachPreviewGestureListeners();
+			const ref = this.$refs.previewViewport;
+			const el = ref && (ref.$el || ref);
+			if (!el || typeof el.addEventListener !== 'function') return;
+			this._boundGestureStart = (ev) => this.onPreviewGestureStart(ev);
+			this._boundGestureChange = (ev) => this.onPreviewGestureChange(ev);
+			this._boundGestureEnd = () => this.onPreviewGestureEnd();
+			el.addEventListener('gesturestart', this._boundGestureStart, { passive: false });
+			el.addEventListener('gesturechange', this._boundGestureChange, { passive: false });
+			el.addEventListener('gestureend', this._boundGestureEnd, false);
+			this._previewGestureEl = el;
+			// #endif
+		},
+		detachPreviewGestureListeners() {
+			// #ifdef H5
+			const el = this._previewGestureEl;
+			if (el && this._boundGestureStart) {
+				el.removeEventListener('gesturestart', this._boundGestureStart);
+				el.removeEventListener('gesturechange', this._boundGestureChange);
+				el.removeEventListener('gestureend', this._boundGestureEnd);
+			}
+			this._previewGestureEl = null;
+			this._boundGestureStart = null;
+			this._boundGestureChange = null;
+			this._boundGestureEnd = null;
+			// #endif
 		},
 		async previewAgreement(item) {
 			if (!item || !item.id || !item.agreementSigned) return;
@@ -425,10 +511,41 @@ export default {
 					uni.showToast({ title: '协议图片不存在', icon: 'none' });
 					return;
 				}
-				this.previewImg(url);
+				this.agreementPreviewIp = String(ret.data?.agreementSignedIp || '').trim();
+				this.agreementPreviewDevice = String(ret.data?.agreementSignDevice || '').trim();
+				this.previewImg(url, { keepAgreementMeta: true });
 			} finally {
 				uni.hideLoading();
 			}
+		},
+		confirmClearAgreement(item) {
+			if (!item || !item.id || !item.agreementSigned) return;
+			uni.showModal({
+				title: '删除协议签署',
+				content:
+					'将清空该商户的协议签名、签署时间及签署设备等信息，删除后对方须在 H5 重新签署《优惠活动计划书》。是否继续？',
+				confirmText: '删除',
+				cancelText: '取消',
+				success: async (res) => {
+					if (!res.confirm) return;
+					uni.showLoading({ title: '处理中...', mask: true });
+					try {
+						const ret = await this.$request(
+							'merchantAgreementClear',
+							{ merchantId: item.id },
+							{ functionName: 'merchant' }
+						);
+						if (ret.code !== 0) {
+							uni.showToast({ title: ret.message || '操作失败', icon: 'none' });
+							return;
+						}
+						uni.showToast({ title: ret.message || '已清除', icon: 'success' });
+						await this.search();
+					} finally {
+						uni.hideLoading();
+					}
+				}
+			});
 		},
 		onPreviewImageLoad() {
 			this.resetPreviewTransform();
@@ -437,11 +554,21 @@ export default {
 			const rect = this.getPreviewViewportRect();
 			if (!rect) return;
 			const evt = e && (e.originalEvent || e);
-			const deltaY = Number(evt?.deltaY || 0);
-			const step = deltaY > 0 ? 0.92 : 1.08;
+			if (!evt) return;
+			const deltaY = this.normalizeWheelDeltaY(evt);
+			if (Math.abs(deltaY) < 0.01) return;
+
+			/** Mac 触控板双指滑动为「非 Ctrl」滚轮：上下平移预览；Ctrl+滚轮 / Chrome 捏合为缩放 */
+			const zoomIntent = !!(evt.ctrlKey || evt.metaKey);
+			if (!zoomIntent) {
+				this.previewOffsetY -= deltaY * 0.85;
+				return;
+			}
+
+			const step = Math.exp(-deltaY * 0.0025);
 			const oldScale = this.previewScale;
-			const newScale = Math.max(0.2, Math.min(8, Number((oldScale * step).toFixed(4))));
-			if (newScale === oldScale) return;
+			const newScale = Math.max(0.2, Math.min(8, Number((oldScale * step).toFixed(5))));
+			if (Math.abs(newScale - oldScale) < 1e-6) return;
 			const mouse = this.getMouseClient(e);
 			const mx = mouse.x - rect.left;
 			const my = mouse.y - rect.top;
@@ -450,6 +577,32 @@ export default {
 			this.previewScale = newScale;
 			this.previewOffsetX = mx - contentX * newScale;
 			this.previewOffsetY = my - contentY * newScale;
+		},
+		onPreviewGestureStart(e) {
+			const evt = e && (e.originalEvent || e);
+			if (evt && evt.preventDefault) evt.preventDefault();
+			this.previewPinchBaseScale = this.previewScale;
+		},
+		onPreviewGestureChange(e) {
+			const evt = e && (e.originalEvent || e);
+			if (!evt || evt.scale == null) return;
+			if (evt.preventDefault) evt.preventDefault();
+			const rect = this.getPreviewViewportRect();
+			if (!rect) return;
+			const mouse = this.getMouseClient(e);
+			const mx = mouse.x - rect.left;
+			const my = mouse.y - rect.top;
+			const oldScale = this.previewScale;
+			const newScale = Math.max(0.2, Math.min(8, Number((this.previewPinchBaseScale * evt.scale).toFixed(5))));
+			if (Math.abs(newScale - oldScale) < 1e-6) return;
+			const contentX = (mx - this.previewOffsetX) / oldScale;
+			const contentY = (my - this.previewOffsetY) / oldScale;
+			this.previewScale = newScale;
+			this.previewOffsetX = mx - contentX * newScale;
+			this.previewOffsetY = my - contentY * newScale;
+		},
+		onPreviewGestureEnd() {
+			this.previewPinchBaseScale = this.previewScale;
 		},
 		onPreviewMouseDown(e) {
 			const evt = e && (e.originalEvent || e);
@@ -471,8 +624,11 @@ export default {
 			this.previewDragging = false;
 		},
 		closeImgPreview() {
+			this.detachPreviewGestureListeners();
 			if (this.$refs.imgPreviewPopup) this.$refs.imgPreviewPopup.close();
 			this.previewImageUrl = '';
+			this.agreementPreviewIp = '';
+			this.agreementPreviewDevice = '';
 			this.resetPreviewTransform();
 		},
 		parseTimestampRange(filter) {
@@ -547,8 +703,16 @@ export default {
 			this.search();
 		},
 		onPageSizeChange(size) {
-			const s = typeof size === 'number' ? size : Number(size?.pageSize || size?.size || size || 10);
-			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 10;
+			// uni-pagination 文档写 e={pageSize}，实际 emit 的是数字（pageSizeRange 中的值）
+			let s;
+			if (typeof size === 'number' && Number.isFinite(size)) {
+				s = size;
+			} else if (size && typeof size === 'object') {
+				s = Number(size.pageSize != null ? size.pageSize : size.size);
+			} else {
+				s = Number(size);
+			}
+			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 20;
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
@@ -594,7 +758,9 @@ export default {
 				开关1: x.flag1 ? '启用' : '禁用',
 				开关2: x.flag2 ? '启用' : '禁用',
 				开关3: x.flag3 ? '启用' : '禁用',
-				登录时间: x.loginTime || ''
+				登录时间: x.loginTime || '',
+				协议签署IP: x.agreementSignedIp || '',
+				协议设备标识: x.agreementSignDevice || ''
 			}));
 		},
 		downloadFile(filename, content, mimeType) {
@@ -942,18 +1108,25 @@ export default {
 	border-radius: 10px;
 	padding: 12px;
 	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	min-height: 0;
 }
 
 .img-preview-viewport {
 	width: 100%;
-	height: 76vh;
-	max-height: 76vh;
+	height: calc(90vh - 220px);
+	max-height: calc(90vh - 220px);
+	min-height: 140px;
 	background: #f8fafc;
 	border-radius: 8px;
 	overflow: hidden;
 	position: relative;
 	cursor: grab;
 	user-select: none;
+	touch-action: none;
+	flex-shrink: 0;
 }
 
 .img-preview-viewport:active {
@@ -971,16 +1144,57 @@ export default {
 }
 
 .img-preview-actions {
-	display: flex;
-	justify-content: flex-end;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
 	gap: 8px;
 	margin-top: 10px;
+	flex-shrink: 0;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.img-preview-actions button {
+	width: 100%;
+	max-width: 100%;
+	box-sizing: border-box;
+	margin: 0;
 }
 
 .img-preview-tip {
 	margin-top: 8px;
 	font-size: 12px;
 	color: #6b7280;
+	flex-shrink: 0;
+	line-height: 1.45;
+}
+
+.img-preview-meta {
+	margin-top: 10px;
+	padding: 8px 10px;
+	max-width: 100%;
+	max-height: 96px;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	background: #f8fafc;
+	border: 1px solid #e5e7eb;
+	border-radius: 8px;
+	font-size: 12px;
+	color: #374151;
+	text-align: left;
+	box-sizing: border-box;
+	flex-shrink: 1;
+	min-height: 0;
+}
+
+.img-preview-meta-line {
+	display: block;
+	word-break: break-all;
+	line-height: 1.5;
+	margin-bottom: 4px;
+}
+
+.img-preview-meta-line:last-child {
+	margin-bottom: 0;
 }
 
 .points-insight-modal {
@@ -1061,6 +1275,13 @@ export default {
 	margin-top: 8px;
 	display: flex;
 	justify-content: flex-end;
+}
+
+.cell-actions {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
 }
 </style>
 

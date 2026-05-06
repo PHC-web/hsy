@@ -50,13 +50,38 @@
 
 			<view class="bottom-row">
 				<view class="returns-card">
-					<view class="returns-title">积分提现汇总</view>
-					<view class="returns-rate">{{ toMoney(dashboard.withdrawNetAmount) }}</view>
-					<view class="returns-desc">累计实际到账{{ toMoney(dashboard.withdrawNetAmount) }} / 累计手续费{{ toMoney(dashboard.withdrawFeeAmount) }}</view>
+					<view class="returns-title">资金汇总</view>
+					<view class="returns-metrics">
+						<view class="returns-metric">
+							<view class="returns-metric-label">已提现金额</view>
+							<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmount) }}</view>
+						</view>
+						<view class="returns-metric">
+							<view class="returns-metric-label">总刷卡金额</view>
+							<view class="returns-metric-value">{{ toMoney(dashboard.boundMerchantTradeAmount) }}</view>
+						</view>
+						<view class="returns-metric returns-metric--rate">
+							<view class="returns-metric-label">提现率</view>
+							<view class="returns-metric-value">{{ withdrawRatePercent }}%</view>
+						</view>
+						<view class="returns-metric">
+							<view class="returns-metric-label">总充值金额</view>
+							<view class="returns-metric-value">{{ toMoney(dashboard.totalRechargeAmount) }}</view>
+						</view>
+						<view class="returns-metric">
+							<view class="returns-metric-label">总退款金额</view>
+							<view class="returns-metric-value">{{ toMoney(dashboard.totalRefundAmount) }}</view>
+						</view>
+						<view class="returns-metric returns-metric--rate">
+							<view class="returns-metric-label">退款率</view>
+							<view class="returns-metric-value">{{ refundRatePercent }}%</view>
+						</view>
+					</view>
 				</view>
 
 				<view class="summary-card">
 					<view class="summary-title">数据说明</view>
+					<view class="summary-item">资金汇总：已提现为到账金额；总刷卡与「品牌-刷卡记录」页顶部交易额一致；提现率＝已提现÷总刷卡；退款率＝总退款÷总充值。下方「流水统计」与刷卡记录同一套过滤规则</view>
 					<view class="summary-item">提现：按提现记录汇总，金额保留两位小数</view>
 					<view class="summary-item">激活：今日激活按当天 00:00 后时间统计</view>
 					<view class="summary-item">会员率：会员数 / 用户数</view>
@@ -80,7 +105,7 @@
 					<view class="chart-card">
 						<view class="chart-head">
 							<view class="chart-title">流水统计</view>
-							<view class="chart-summary">{{ trendRangeLabel }}总流水：{{ toMoney(trendSummary.totalFlow) }} ｜ 历史总流水：{{ toMoney(trendSummary.allTimeTotalFlow) }}</view>
+							<view class="chart-summary">{{ trendRangeLabel }}交易额：{{ toMoney(trendSummary.totalFlow) }} ｜ 历史累计交易额：{{ toMoney(trendSummary.allTimeTotalFlow) }}</view>
 						</view>
 						<view ref="flowChart" class="echart-box"></view>
 					</view>
@@ -135,6 +160,8 @@
 </template>
 
 <script>
+	import adminConfig from '@/admin.config.js';
+
 	export default {
 		data() {
 			return {
@@ -154,8 +181,10 @@
 					returnPaid: 0,
 					returnDue: 0,
 					returnRate: '0.00',
-					withdrawNetAmount: 0,
-					withdrawFeeAmount: 0
+					arrivedWithdrawAmount: 0,
+					boundMerchantTradeAmount: 0,
+					totalRechargeAmount: 0,
+					totalRefundAmount: 0
 				},
 				trendRangeType: '30d',
 				rangeOptions: [
@@ -215,6 +244,30 @@
 		},
 		onShow() {
 			if (!this.allowRender) return;
+			const ids = adminConfig.permissionIds || {};
+			const portalUrl = (adminConfig.portal && adminConfig.portal.url) || '/pages/portal/index';
+			const homeIds = ids.adminHome != null ? ids.adminHome : 'console.home';
+			const portalIds = ids.portalHome != null ? ids.portalHome : 'console.portal';
+			const homeList = Array.isArray(homeIds) ? homeIds : [homeIds];
+			const portalList = Array.isArray(portalIds) ? portalIds : [portalIds];
+			const hasPerm = (list) =>
+				typeof this.$hasPermission === 'function' &&
+				list.some((id) => id && this.$hasPermission(id));
+			const canAdminHome =
+				(typeof this.$hasRole === 'function' && this.$hasRole('admin')) || hasPerm.call(this, homeList);
+			if (!canAdminHome) {
+				if (hasPerm.call(this, portalList)) {
+					uni.redirectTo({
+						url: portalUrl,
+						fail: () => {
+							uni.showToast({ title: '跳转门户失败', icon: 'none' });
+						}
+					});
+				} else {
+					uni.showToast({ title: '无控制台访问权限', icon: 'none' });
+				}
+				return;
+			}
 			this.loadDashboard();
 			this.loadTrendCharts();
 		},
@@ -247,6 +300,7 @@
 					const todayStart = new Date();
 					todayStart.setHours(0, 0, 0, 0);
 
+					const summaryPromise = this.$request('adminHomeSummary', {}, { functionName: 'merchant' });
 					const [
 						brandRes,
 						machineRes,
@@ -255,7 +309,8 @@
 						todayActivatedRes,
 						withdrawRes,
 						merchantRes,
-						memberRes
+						memberRes,
+						summaryRes
 					] = await Promise.all([
 						db.collection('hsy-brand').where({ is_deleted: false }).count(),
 						db.collection('hsy-machine').where({ is_deleted: false }).count(),
@@ -277,16 +332,18 @@
 								{ recharge_amount: dbCmd.gt(0) },
 								{ recharge_total_yuan: dbCmd.gt(0) }
 							])
-						).count()
+						).count(),
+						summaryPromise
 					]);
 
 					const withdrawRows = withdrawRes.result?.data || [];
 					const withdrawAmount = withdrawRows.reduce((sum, item) => sum + Number(item.payable || 0), 0);
-					const withdrawFeeAmount = withdrawRows.reduce((sum, item) => sum + Number(item.fee_tax || 0), 0);
 
 					const userCount = merchantRes.result?.total || 0;
 					const memberCount = memberRes.result?.total || 0;
 					const memberRate = userCount ? ((memberCount / userCount) * 100).toFixed(2) : '0.00';
+
+					const sum = summaryRes && summaryRes.code === 0 ? summaryRes.data || {} : {};
 
 					this.dashboard = {
 						brandCount: brandRes.result?.total || 0,
@@ -302,8 +359,10 @@
 						returnPaid: 0,
 						returnDue: 0,
 						returnRate: '0.00',
-						withdrawNetAmount: withdrawAmount,
-						withdrawFeeAmount
+						arrivedWithdrawAmount: Number(sum.arrivedWithdrawAmount || 0),
+						boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
+						totalRechargeAmount: Number(sum.totalRechargeAmount || 0),
+						totalRefundAmount: Number(sum.totalRefundAmount || 0)
 					};
 				} catch (err) {
 					uni.showModal({
@@ -510,7 +569,7 @@
 				await this.$nextTick();
 				this.disposeEcharts();
 				const refs = [
-					{ el: this.$refs.flowChart, model: this.trendCharts.flow, title: '已绑定商户机具每日总流水' },
+					{ el: this.$refs.flowChart, model: this.trendCharts.flow, title: '每日交易额（与刷卡记录一致）' },
 					{ el: this.$refs.bindChart, model: this.trendCharts.bindRechargeUsers, title: '每日新增绑定商户 / 每日充值商户' },
 					{ el: this.$refs.rechargeChart, model: this.trendCharts.rechargeRefund, title: '每日充值金额 / 每日退款笔数' },
 					{ el: this.$refs.exchangeChart, model: this.trendCharts.exchange, title: '每日积分兑换数量 / 兑换到账金额' },
@@ -560,7 +619,7 @@
 					const s = d.series || {};
 					this.trendSummary = Object.assign({ totalFlow: 0 }, d.summary || {});
 					this.trendCharts.flow = this.buildLineData(categories, [
-						{ name: '每日总流水(元)', data: s.dailyFlow || [] }
+						{ name: '每日交易额(元)', data: s.dailyFlow || [] }
 					]);
 					this.trendCharts.bindRechargeUsers = this.buildLineData(categories, [
 						{ name: '新增绑定商户数', data: s.newBindMerchantCount || [] },
@@ -602,6 +661,20 @@
 		computed: {
 			trendRangeLabel() {
 				return this.trendRangeLabelText();
+			},
+			/** 已提现金额 / 总刷卡金额 × 100，分母为 0 时显示 0.00 */
+			withdrawRatePercent() {
+				const w = Number(this.dashboard.arrivedWithdrawAmount || 0);
+				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
+				if (!Number.isFinite(s) || s <= 0) return '0.00';
+				return ((w / s) * 100).toFixed(2);
+			},
+			/** 总退款金额 / 总充值金额 × 100，分母为 0 时显示 0.00 */
+			refundRatePercent() {
+				const r = Number(this.dashboard.totalRefundAmount || 0);
+				const c = Number(this.dashboard.totalRechargeAmount || 0);
+				if (!Number.isFinite(c) || c <= 0) return '0.00';
+				return ((r / c) * 100).toFixed(2);
 			}
 		}
 	};
@@ -723,8 +796,8 @@
 	}
 
 	.returns-card {
-		width: 320px;
-		padding: 16px 18px;
+		min-width: 0;
+		padding: 12px 14px;
 		border-radius: 8px;
 		color: #fff;
 		background: linear-gradient(180deg, #ef3d86 0%, #d81b60 100%);
@@ -732,26 +805,49 @@
 	}
 
 	.returns-title {
-		font-size: 14px;
+		font-size: 13px;
 		opacity: 0.95;
+		margin-bottom: 0;
 	}
 
-	.returns-rate {
-		font-size: 36px;
+	.returns-metrics {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 8px 10px;
+		margin-top: 10px;
+	}
+
+	.returns-metric {
+		min-width: 0;
+		padding: 7px 8px;
+		border-radius: 6px;
+		background: rgba(255, 255, 255, 0.12);
+		border: 1px solid rgba(255, 255, 255, 0.18);
+	}
+
+	.returns-metric--rate .returns-metric-value {
+		font-size: clamp(14px, 1.35vw, 18px);
+	}
+
+	.returns-metric-label {
+		font-size: 11px;
+		line-height: 1.25;
+		opacity: 0.88;
+		margin-bottom: 4px;
+	}
+
+	.returns-metric-value {
+		font-size: clamp(13px, 1.35vw, 17px);
+		font-weight: 700;
 		line-height: 1.2;
-		margin-top: 8px;
-	}
-
-	.returns-desc {
-		margin-top: 8px;
-		font-size: 12px;
-		opacity: 0.95;
+		font-variant-numeric: tabular-nums;
+		word-break: break-word;
 	}
 
 .bottom-row {
 	margin-top: 16px;
 	display: grid;
-	grid-template-columns: 320px 1fr;
+	grid-template-columns: minmax(320px, 1.05fr) 1fr;
 	gap: 12px;
 	align-items: stretch;
 }
@@ -883,6 +979,18 @@
 		}
 		.returns-card {
 			width: 100%;
+		}
+	}
+
+	@media screen and (max-width: 680px) {
+		.returns-metrics {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
+	}
+
+	@media screen and (max-width: 420px) {
+		.returns-metrics {
+			grid-template-columns: 1fr;
 		}
 	}
 

@@ -4,6 +4,12 @@
 			"path": "pages/index/index"
 		},
 		{
+			"path": "pages/portal/index",
+			"style": {
+				"navigationBarTitleText": "门户中心"
+			}
+		},
+		{
 			"path": "pages/demo/icons/icons",
 			"style": {
 				"navigationBarTitleText": "图标"
@@ -815,6 +821,12 @@
 					"style": {
 						"navigationBarTitleText": "日志管理"
 					}
+				},
+				{
+					"path": "points-records/index",
+					"style": {
+						"navigationBarTitleText": "积分记录"
+					}
 				}
 			]
 		}
@@ -846,7 +858,7 @@
 	"uniIdRouter": {
 		"loginPage": "uni_modules/uni-id-pages/pages/login/login-withpwd",
 		"needLogin": [
-			"^/?(pages\\/index\\/index|pages\\/(system|uni-stat|brand|merchant|finance|wechat)\\/.*)$"
+			"^/?(pages\\/index\\/index|pages\\/(system|uni-stat|brand|merchant|finance|wechat|operations)\\/.*)$"
 		],
 		"resToLogin": true
 	}

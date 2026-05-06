@@ -6,20 +6,10 @@ const operationLogCollection = db.collection('hsy-operation-logs');
 const tradeCollection = db.collection('hsy-machine-trades');
 const merchantCollection = db.collection('hsy-merchant-users');
 const incomePacketCollection = db.collection('hsy-income-packets');
+const withdrawCollection = db.collection('hsy-withdraw-records');
+const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('../common/format-time-cn.js');
 
-// 格式化时间
-function formatTime(timestamp) {
-	if (!timestamp) return '';
-	// 云函数运行环境可能为 UTC，这里固定按东八区输出，避免后台显示少 8 小时。
-	const date = new Date(Number(timestamp) + 8 * 60 * 60 * 1000);
-	const year = date.getUTCFullYear();
-	const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-	const day = String(date.getUTCDate()).padStart(2, '0');
-	const hours = String(date.getUTCHours()).padStart(2, '0');
-	const minutes = String(date.getUTCMinutes()).padStart(2, '0');
-	const seconds = String(date.getUTCSeconds()).padStart(2, '0');
-	return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
-}
+const monthNo = shanghaiYearMonthFromTs;
 
 function generateTradeNo() {
 	const ts = Date.now();
@@ -27,11 +17,62 @@ function generateTradeNo() {
 	return `MOCK${ts}${rnd}`;
 }
 
-function monthNo(ts) {
-	const d = new Date(Number(ts));
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, '0');
-	return `${y}-${m}`;
+/** 与商户管理「待提现」一致：优先 withdraw_pending_balance，否则 account_points */
+function rawPendingBalance(row) {
+	if (!row) return 0;
+	if (row.withdraw_pending_balance != null && row.withdraw_pending_balance !== '') {
+		return Number(row.withdraw_pending_balance || 0);
+	}
+	return Number(row.account_points || 0);
+}
+function normalizePendingBalance(row) {
+	return Math.max(0, Number(Number(rawPendingBalance(row)).toFixed(2)));
+}
+/**
+ * 与商户管理「已提现」、H5 已到账统计一致：arrival_status=received 的 amount 求和
+ */
+async function batchComputeReceivedWithdrawAmountForMerchants(merchantDocs) {
+	const amountByUid = new Map();
+	const rows = Array.isArray(merchantDocs) ? merchantDocs : [];
+	if (!rows.length) return amountByUid;
+	const uids = [...new Set(rows.map((m) => String(m.user_id || m._id || '')).filter(Boolean))];
+	if (!uids.length) return amountByUid;
+
+	for (const uid of uids) amountByUid.set(uid, 0);
+	const _ = db.command;
+	const pageSize = 5000;
+	let skip = 0;
+	let guard = 0;
+	while (guard < 30) {
+		const ret = await withdrawCollection
+			.where(
+				_.and([
+					{ is_deleted: false },
+					{ merchant_user_id: _.in(uids) },
+					{ arrival_status: 'received' }
+				])
+			)
+			.field({ merchant_user_id: true, amount: true })
+			.skip(skip)
+			.limit(pageSize)
+			.get();
+		const list = ret.data || [];
+		if (!list.length) break;
+		for (const row of list) {
+			const uid = String(row.merchant_user_id || '');
+			if (!uid) continue;
+			const prev = Number(amountByUid.get(uid) || 0);
+			amountByUid.set(uid, Number((prev + Number(row.amount || 0)).toFixed(4)));
+		}
+		if (list.length < pageSize) break;
+		skip += pageSize;
+		guard += 1;
+	}
+
+	for (const [uid, sum] of amountByUid.entries()) {
+		amountByUid.set(uid, Number(Number(sum || 0).toFixed(2)));
+	}
+	return amountByUid;
 }
 
 // 记录操作日志
@@ -247,97 +288,124 @@ async function getMachineList(data) {
 			.orderBy('in_stock_time', 'desc')
 			.get();
 		
-		// 格式化数据
-		const machineList = await Promise.all((result.data || []).map(async (item) => {
-			let frozen = Number(item.frozen_amount || 0);
-			let pendingAmt = Number(item.pending_amount || 0);
-			let withdrawnAmt = Number(item.withdrawn_amount || 0);
-			const bindStart = Number(item.bind_time || 0);
-			if (item.is_bound === 1 && item.bind_user_id) {
-				try {
-					let merchant = null;
-					// 先按机具号找，兼容 bind_user_id 历史口径不一致的问题
-					const merchantByDevice = await merchantCollection
-						.where({ device_id: String(item.device_id) })
-						.limit(1)
-						.get();
-					merchant = merchantByDevice.data && merchantByDevice.data[0];
-					if (!merchant) {
-						const merchantRes = await merchantCollection
-							.where(
-								db.command.or([
-									{ user_id: String(item.bind_user_id) },
-									{ _id: String(item.bind_user_id) }
-								])
-							)
+		// 与商户管理一致：先解析本页绑定的商户，再批量算「已到账提现」
+		const rows = result.data || [];
+		const resolved = await Promise.all(
+			rows.map(async (item) => {
+				let merchant = null;
+				if (item.is_bound === 1 && item.bind_user_id) {
+					try {
+						const merchantByDevice = await merchantCollection
+							.where({ device_id: String(item.device_id) })
 							.limit(1)
 							.get();
-						merchant = merchantRes.data && merchantRes.data[0];
-					}
-					if (merchant) {
-						pendingAmt = Number(merchant.pending_withdraw || 0);
-						withdrawnAmt = Number(merchant.withdrawn || 0);
-						// 顺手回写机具，避免历史数据不同步导致页面显示0
-						if (
-							Number(item.pending_amount || 0) !== pendingAmt ||
-							Number(item.withdrawn_amount || 0) !== withdrawnAmt
-						) {
-							await machineCollection.doc(item._id).update({
-								pending_amount: Number(pendingAmt.toFixed(4)),
-								withdrawn_amount: Number(withdrawnAmt.toFixed(4))
-							});
+						merchant = merchantByDevice.data && merchantByDevice.data[0];
+						if (!merchant) {
+							const merchantRes = await merchantCollection
+								.where(
+									db.command.or([
+										{ user_id: String(item.bind_user_id) },
+										{ _id: String(item.bind_user_id) }
+									])
+								)
+								.limit(1)
+								.get();
+							merchant = merchantRes.data && merchantRes.data[0];
 						}
+					} catch (e) {
+						console.error('resolve merchant for machine list failed:', e);
 					}
-
-					const tradeRes = await tradeCollection.where({
-						device_id: item.device_id,
-						is_deleted: db.command.neq(true),
-						amount: db.command.gt(0),
-						create_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
-					}).field({ cashback: true, amount: true }).limit(5000).get();
-					let freezeTotal = 0;
-					(tradeRes.data || []).forEach((t) => {
-						const c = t.cashback != null ? Number(t.cashback || 0) : Number(t.amount || 0) * 0.0038;
-						if (Number.isFinite(c) && c > 0) freezeTotal += c;
-					});
-					const claimRes = await incomePacketCollection.where({
-						merchant_user_id: String(item.bind_user_id),
-						status: 'claimed',
-						is_deleted: false,
-						claimed_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
-					}).field({ amount: true }).limit(5000).get();
-					let releaseTotal = 0;
-					(claimRes.data || []).forEach((p) => {
-						releaseTotal += Number(p.amount || 0);
-					});
-					frozen = Math.max(0, Number((freezeTotal - releaseTotal).toFixed(4)));
-				} catch (e) {
-					console.error('calc frozen_amount failed:', e);
 				}
-			}
-			return ({
-			id: item.device_id,
-			deviceId: item.device_id,
-			brandId: item.brand_id,
-			brandName: item.brand_name,
-			speakerId: item.speaker_id || '-',
-			isBound: item.is_bound,
-			isBoundText: item.is_bound === 0 ? '未绑定' : (item.is_bound === 1 ? '已绑定' : '已解绑'),
-			bindTime: formatTime(item.bind_time),
-			bindUserId: item.bind_user_id || '',
-			bindUserName: item.bind_user_name || '',
-			bindUserMobile: item.bind_user_mobile || '',
-			isActivated: item.is_activated,
-			isActivatedText: item.is_activated ? '已激活' : '未激活',
-			activatedTime: formatTime(item.activated_time),
-			totalTransaction: `￥${item.total_transaction.toFixed(2)}`,
-			pendingWithdrawn: `￥${Number(pendingAmt || 0).toFixed(2)}/${Number(withdrawnAmt || 0).toFixed(2)}`,
-			frozenAmount: `￥${Number(frozen || 0).toFixed(2)}`,
-			merchant: item.merchant || '管理员',
-			salesman: item.salesman || '管理员',
-			inStockTime: formatTime(item.in_stock_time)
-		});
-		}));
+				return { item, merchant };
+			})
+		);
+		const merchantDocs = resolved.map((r) => r.merchant).filter(Boolean);
+		const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(merchantDocs);
+
+		// 格式化数据
+		const machineList = await Promise.all(
+			resolved.map(async ({ item, merchant }) => {
+				let frozen = Number(item.frozen_amount || 0);
+				let pendingAmt = Number(item.pending_amount || 0);
+				let withdrawnAmt = Number(item.withdrawn_amount || 0);
+				const bindStart = Number(item.bind_time || 0);
+				if (item.is_bound === 1 && item.bind_user_id) {
+					try {
+						if (merchant) {
+							const uid = String(merchant.user_id || merchant._id || '');
+							pendingAmt = normalizePendingBalance(merchant);
+							withdrawnAmt = Number(
+								(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(merchant.withdrawn || 0)) || 0
+							);
+							if (
+								Number(item.pending_amount || 0) !== pendingAmt ||
+								Number(item.withdrawn_amount || 0) !== withdrawnAmt
+							) {
+								await machineCollection.doc(item._id).update({
+									pending_amount: Number(pendingAmt.toFixed(4)),
+									withdrawn_amount: Number(withdrawnAmt.toFixed(4))
+								});
+							}
+						}
+
+						const tradeRes = await tradeCollection
+							.where({
+								device_id: item.device_id,
+								is_deleted: db.command.neq(true),
+								amount: db.command.gt(0),
+								create_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
+							})
+							.field({ cashback: true, amount: true })
+							.limit(5000)
+							.get();
+						let freezeTotal = 0;
+						(tradeRes.data || []).forEach((t) => {
+							const c = t.cashback != null ? Number(t.cashback || 0) : Number(t.amount || 0) * 0.0038;
+							if (Number.isFinite(c) && c > 0) freezeTotal += c;
+						});
+						const claimRes = await incomePacketCollection
+							.where({
+								merchant_user_id: String(item.bind_user_id),
+								status: 'claimed',
+								is_deleted: false,
+								claimed_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
+							})
+							.field({ amount: true })
+							.limit(5000)
+							.get();
+						let releaseTotal = 0;
+						(claimRes.data || []).forEach((p) => {
+							releaseTotal += Number(p.amount || 0);
+						});
+						frozen = Math.max(0, Number((freezeTotal - releaseTotal).toFixed(4)));
+					} catch (e) {
+						console.error('calc frozen_amount failed:', e);
+					}
+				}
+				return {
+					id: item.device_id,
+					deviceId: item.device_id,
+					brandId: item.brand_id,
+					brandName: item.brand_name,
+					speakerId: item.speaker_id || '-',
+					isBound: item.is_bound,
+					isBoundText: item.is_bound === 0 ? '未绑定' : item.is_bound === 1 ? '已绑定' : '已解绑',
+					bindTime: formatTime(item.bind_time),
+					bindUserId: item.bind_user_id || '',
+					bindUserName: item.bind_user_name || '',
+					bindUserMobile: item.bind_user_mobile || '',
+					isActivated: item.is_activated,
+					isActivatedText: item.is_activated ? '已激活' : '未激活',
+					activatedTime: formatTime(item.activated_time),
+					totalTransaction: `￥${item.total_transaction.toFixed(2)}`,
+					pendingWithdrawn: `￥${Number(pendingAmt || 0).toFixed(2)}/${Number(withdrawnAmt || 0).toFixed(2)}`,
+					frozenAmount: `￥${Number(frozen || 0).toFixed(2)}`,
+					merchant: item.merchant || '管理员',
+					salesman: item.salesman || '管理员',
+					inStockTime: formatTime(item.in_stock_time)
+				};
+			})
+		);
 		
 		return {
 			code: 0,

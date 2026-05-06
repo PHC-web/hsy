@@ -174,8 +174,42 @@ export async function h5RefreshHomeCache() {
 	return { dashboard, mine };
 }
 
+/** 协议签署：客户端设备指纹（持久）+ 机型摘要，供云端写入 agreement_sign_device */
+export function collectAgreementSignClientMeta() {
+	try {
+		const si = uni.getSystemInfoSync();
+		const key = 'h5_agreement_device_fp_v1';
+		let fp = '';
+		try {
+			fp = uni.getStorageSync(key) || '';
+		} catch (e) {}
+		if (!fp || typeof fp !== 'string') {
+			fp = `fp_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+			try {
+				uni.setStorageSync(key, fp);
+			} catch (e) {}
+		}
+		const detail = [
+			si.uniPlatform || si.platform,
+			si.model || si.deviceModel || '',
+			si.system || '',
+			si.brand || ''
+		]
+			.filter(Boolean)
+			.join(' | ')
+			.slice(0, 240);
+		return {
+			agreementDeviceFingerprint: String(fp).slice(0, 64),
+			agreementDeviceDetail: detail
+		};
+	} catch (e) {
+		return { agreementDeviceFingerprint: '', agreementDeviceDetail: '' };
+	}
+}
+
 export function h5SignAgreement(payload) {
-	return merchantCall('h5SignAgreement', merchantIdentity(payload));
+	const meta = collectAgreementSignClientMeta();
+	return merchantCall('h5SignAgreement', merchantIdentity(Object.assign({}, meta, payload)));
 }
 
 export function h5IncomeList() {

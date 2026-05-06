@@ -122,21 +122,30 @@
 				<view class="sheet-head">
 					<text class="sheet-title">{{ agreement.title || '开户优惠活动计划书签署' }}</text>
 				</view>
-				<scroll-view scroll-y class="agreement-text">
+				<scroll-view
+					ref="agreementScrollRef"
+					scroll-y
+					class="agreement-text"
+					@wheel="onAgreementPdfWheel"
+				>
 					<view v-if="!agreementDocUrl" class="agreement-doc-empty">
 						<text class="p">未配置最新协议文件，请在后台协议管理中设置当前协议。</text>
 					</view>
 					<view v-else-if="agreementPdfLoading" class="agreement-doc-loading">
 						<text class="p">正在加载最新协议内容...</text>
 					</view>
-					<view v-else-if="agreementPdfImages.length" class="agreement-doc-images">
-						<image
-							v-for="(src, idx) in agreementPdfImages"
-							:key="`home_pdf_img_${idx}`"
-							class="agreement-doc-image"
-							:src="src"
-							mode="widthFix"
-						/>
+					<view v-else-if="agreementPdfImages.length" class="agreement-pdf-zoom-wrap">
+						<view class="agreement-zoom-inner" :style="agreementZoomStyle">
+							<view class="agreement-doc-images">
+								<image
+									v-for="(src, idx) in agreementPdfImages"
+									:key="`home_pdf_img_${idx}`"
+									class="agreement-doc-image"
+									:src="src"
+									mode="widthFix"
+								/>
+							</view>
+						</view>
 					</view>
 					<view v-else class="agreement-doc-empty">
 						<text class="p">{{ agreementPdfError || '协议内容暂时无法在当前环境内预览，请点击下方按钮查看原文件。' }}</text>
@@ -155,6 +164,7 @@
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
 import { h5HomeDashboardCached, h5MineInfoCached, h5SignAgreement } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
+import { trimPdfAgreementPage, agreementPdfPageJoinGapPx } from '@/pages/h5/common/trim-image-whitespace';
 
 export default {
 	components: { SignaturePad },
@@ -181,7 +191,9 @@ export default {
 			agreementPdfError: '',
 			pdfjsReady: false,
 			pdfjsLoading: false,
-			prestorePendingOpen: false
+			prestorePendingOpen: false,
+			/** 协议 PDF 预览：Ctrl/Cmd+滚轮缩放（相对指针中心），避免浏览器整页缩放跑偏 */
+			agreementPdfZoom: { scale: 1, tx: 0, ty: 0 }
 		};
 	},
 	computed: {
@@ -215,6 +227,16 @@ export default {
 		},
 		agreementDocUrl() {
 			return String(this.agreement.pdfFileId || '').trim();
+		},
+		agreementZoomStyle() {
+			const { scale, tx, ty } = this.agreementPdfZoom || {};
+			const s = Number.isFinite(scale) && scale > 0 ? scale : 1;
+			const x = Number.isFinite(tx) ? tx : 0;
+			const y = Number.isFinite(ty) ? ty : 0;
+			return {
+				transform: `translate(${x}px, ${y}px) scale(${s})`,
+				transformOrigin: '0 0'
+			};
 		}
 	},
 	onShow() {
@@ -293,8 +315,34 @@ export default {
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		},
 		async openAgreementPopup() {
+			this.agreementPdfZoom = { scale: 1, tx: 0, ty: 0 };
 			this.$refs.agreementPopup.open();
 			await this.ensureAgreementPreviewReady();
+		},
+		onAgreementPdfWheel(e) {
+			// #ifdef H5
+			if (!this.agreementPdfImages.length) return;
+			if (!(e.ctrlKey || e.metaKey)) return;
+			if (e.cancelable) e.preventDefault();
+			const wrap = this.$refs.agreementScrollRef;
+			const el = wrap && (wrap.$el || wrap);
+			if (!el || typeof el.getBoundingClientRect !== 'function') return;
+			const rect = el.getBoundingClientRect();
+			const st = el.scrollTop || 0;
+			const sl = el.scrollLeft || 0;
+			const x = e.clientX - rect.left + sl;
+			const y = e.clientY - rect.top + st;
+			const z = this.agreementPdfZoom || { scale: 1, tx: 0, ty: 0 };
+			const factor = e.deltaY > 0 ? 0.9 : 1.1;
+			const newScale = Math.min(3, Math.max(0.35, (Number(z.scale) || 1) * factor));
+			const mx = (x - (Number(z.tx) || 0)) / (Number(z.scale) || 1);
+			const my = (y - (Number(z.ty) || 0)) / (Number(z.scale) || 1);
+			this.agreementPdfZoom = {
+				scale: newScale,
+				tx: x - mx * newScale,
+				ty: y - my * newScale
+			};
+			// #endif
 		},
 		async ensurePdfJsReady() {
 			// #ifndef H5
@@ -394,10 +442,10 @@ export default {
 				const pageImages = (this.agreementPdfImages || []).filter((x) => String(x || '').trim());
 				if (!pageImages.length) return signatureImage;
 				const loadedPages = [];
-				for (const src of pageImages) {
+				for (let pi = 0; pi < pageImages.length; pi += 1) {
 					try {
-						const img = await this.loadImageElement(src);
-						loadedPages.push(img);
+						const img = await this.loadImageElement(pageImages[pi]);
+						loadedPages.push(trimPdfAgreementPage(img, { pageIndex: pi }));
 					} catch (e) {}
 				}
 				if (!loadedPages.length) return signatureImage;
@@ -409,15 +457,20 @@ export default {
 				}
 				const pageMaxWidth = Math.max(...loadedPages.map((x) => Number(x.width || 0)));
 				const contentWidth = Math.max(1000, pageMaxWidth);
+				const pdfPageGap = agreementPdfPageJoinGapPx(contentWidth);
 				const sidePad = 24;
 				const signBlockHeight = 220;
 				let totalHeight = 0;
 				const draws = [];
-				for (const img of loadedPages) {
+				for (let pi = 0; pi < loadedPages.length; pi += 1) {
+					const img = loadedPages[pi];
 					const ratio = contentWidth / Number(img.width || contentWidth);
 					const drawH = Math.max(1, Math.round(Number(img.height || 1) * ratio));
 					draws.push({ img, y: totalHeight, w: contentWidth, h: drawH });
 					totalHeight += drawH;
+					if (pi < loadedPages.length - 1) {
+						totalHeight += pdfPageGap;
+					}
 				}
 				totalHeight += signBlockHeight;
 				const canvas = document.createElement('canvas');
@@ -436,7 +489,7 @@ export default {
 				ctx.strokeRect(sidePad, blockTop + 12, canvas.width - sidePad * 2, signBlockHeight - 24);
 				ctx.fillStyle = '#0f172a';
 				ctx.font = '600 28px sans-serif';
-				ctx.fillText('用户签字确认', sidePad + 20, blockTop + 56);
+				ctx.fillText('乙方签名确认', sidePad + 20, blockTop + 56);
 				ctx.font = '500 22px sans-serif';
 				const ds = new Date();
 				const dateText = `签署日期：${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, '0')}-${String(ds.getDate()).padStart(2, '0')} ${String(ds.getHours()).padStart(2, '0')}:${String(ds.getMinutes()).padStart(2, '0')}`;
@@ -977,7 +1030,11 @@ export default {
 .agreement-sheet {
 	border-radius: 18px 18px 0 0;
 	padding: 12px 12px calc(8px + env(safe-area-inset-bottom));
-	max-height: 82vh;
+	max-height: 88vh;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	box-sizing: border-box;
 }
 .agreement-sheet--dark {
 	background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
@@ -986,18 +1043,34 @@ export default {
 .sheet-head {
 	padding: 4px 0 10px;
 	text-align: center;
+	flex-shrink: 0;
 }
 .sheet-title {
 	font-size: 15px;
 	font-weight: 700;
 }
 .agreement-text {
-	height: 42vh;
+	flex: 1 1 auto;
+	min-height: 0;
+	height: calc(88vh - 300px);
+	max-height: calc(88vh - 300px);
 	background: rgba(15, 23, 42, 0.45);
 	border: 1px solid rgba(148, 163, 184, 0.25);
 	border-radius: 10px;
 	padding: 10px;
 	box-sizing: border-box;
+}
+.agreement-sheet .sign-wrap {
+	flex-shrink: 0;
+}
+.agreement-pdf-zoom-wrap {
+	min-height: 100%;
+}
+.agreement-zoom-inner {
+	display: inline-block;
+	min-width: 100%;
+	vertical-align: top;
+	will-change: transform;
 }
 .agreement-doc-loading,
 .agreement-doc-empty {
