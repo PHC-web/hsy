@@ -91,9 +91,9 @@
 						<view class="prestore-packages">
 							<view v-for="pkg in prestorePackages" :key="pkg.id || pkg.price" class="prestore-pkg-row">
 								<text class="prestore-pkg-tag">{{ pkg.membershipName || '会员' }}</text>
-								<text class="prestore-pkg-text">{{ pkg.title }}：{{ pkg.benefitTip || '查看详情请进入额度包' }}</text>
+								<text class="prestore-pkg-text">{{ pkg.benefitTip || '查看详情请进入额度包' }}</text>
 							</view>
-							<text v-if="hasGiftPackage" class="prestore-gift">赠送：碰一碰音响或扫码全能POS机（指定档位专享）</text>
+							<text v-if="hasGiftPackage" class="prestore-gift">赠送：碰一碰音响或扫码全能POS机{{ giftExclusiveSuffix }}</text>
 						</view>
 					</view>
 					<text class="prestore-arrow">›</text>
@@ -117,14 +117,17 @@
 				<text class="loading-text">加载中...</text>
 			</view>
 		</view>
+		<h5-agreement-sign-sheet ref="navAgreementSheet" />
 	</view>
 </template>
 
 <script>
 import { h5HomeDashboardCached } from '@/pages/h5/common/api';
+import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
+	components: { H5AgreementSignSheet },
 	data() {
 		return {
 			loading: false,
@@ -167,6 +170,23 @@ export default {
 		},
 		hasGiftPackage() {
 			return (this.prestorePackages || []).some((x) => x && x.giftChoiceRequired);
+		},
+		/** 含实物赠品的档位对应的会员名称，如（钻石会员专享）或（白金会员、钻石会员专享） */
+		giftExclusiveSuffix() {
+			const pkgs = (this.prestorePackages || []).filter((x) => x && x.giftChoiceRequired);
+			if (!pkgs.length) return '';
+			const tierLabel = (p) => {
+				const n = String(p.membershipName || '').trim();
+				if (n) return n;
+				const price = Number(p.price || 0);
+				if (price >= 1000) return '钻石会员';
+				if (price >= 800) return '铂金会员';
+				if (price >= 600) return '白金会员';
+				return '';
+			};
+			const names = [...new Set(pkgs.map(tierLabel).filter(Boolean))];
+			if (!names.length) return '（专享）';
+			return `（${names.join('、')}专享）`;
 		}
 	},
 	onShow() {
@@ -220,8 +240,13 @@ export default {
 		goMine() {
 			uni.redirectTo({ url: '/pages/h5/mine/index' });
 		},
-		goPrestore() {
+		async goPrestore() {
 			if (this.pending || this.loading) return;
+			const sheet = this.$refs.navAgreementSheet;
+			if (sheet) {
+				const ok = await sheet.ensureSigned();
+				if (!ok) return;
+			}
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		}
 	}

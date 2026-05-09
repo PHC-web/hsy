@@ -179,17 +179,19 @@
 				<signature-pad @signed="onSigned" />
 			</view>
 		</uni-popup>
+		<h5-agreement-sign-sheet ref="navAgreementSheet" @signed="onNavAgreementSigned" />
 	</view>
 </template>
 
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
+import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { h5HomeDashboardCached, h5MineInfoCached, h5SignAgreement } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 import { trimPdfAgreementPage, agreementPdfPageJoinGapPx } from '@/pages/h5/common/trim-image-whitespace';
 
 export default {
-	components: { SignaturePad },
+	components: { SignaturePad, H5AgreementSignSheet },
 	data() {
 		return {
 			loading: false,
@@ -443,7 +445,8 @@ export default {
 		goCoupons() {
 			uni.navigateTo({ url: '/pages/h5/coupons/index' });
 		},
-		goExchange() {
+		async goExchange() {
+			if (!(await this.ensureNavAgreement())) return;
 			uni.navigateTo({ url: '/pages/h5/exchange/index' });
 		},
 		goPendingReturn() {
@@ -455,14 +458,10 @@ export default {
 		goFeedback() {
 			uni.navigateTo({ url: '/pages/h5/feedback/index' });
 		},
-		onAvailableRewardClick() {
+		async onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
 			if (ar <= 0) return;
-			if (this.agreementNeedSign) {
-				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.openAgreementPopup();
-				return;
-			}
+			if (!(await this.ensureNavAgreement())) return;
 			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
 		},
 		toggleAccountPoints() {
@@ -472,12 +471,8 @@ export default {
 			}
 			this.onAccountPointsExchangeClick();
 		},
-		onAccountPointsExchangeClick() {
-			if (this.agreementNeedSign) {
-				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.openAgreementPopup();
-				return;
-			}
+		async onAccountPointsExchangeClick() {
+			if (!(await this.ensureNavAgreement())) return;
 			uni.navigateTo({ url: '/pages/h5/withdraw/index' });
 		},
 		async openAgreementPopup() {
@@ -724,8 +719,17 @@ export default {
 		goIncome() {
 			uni.redirectTo({ url: '/pages/h5/income/index' });
 		},
-		goRecharge() {
+		async goRecharge() {
+			if (!(await this.ensureNavAgreement())) return;
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
+		},
+		async ensureNavAgreement() {
+			const sheet = this.$refs.navAgreementSheet;
+			if (!sheet) return true;
+			return await sheet.ensureSigned();
+		},
+		onNavAgreementSigned() {
+			this.loadMine(true);
 		},
 		goPayNotify() {
 			uni.navigateTo({ url: '/pages/h5/notify/pay/index' });

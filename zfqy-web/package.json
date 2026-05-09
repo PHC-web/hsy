@@ -6,7 +6,8 @@
   "description": "基于uni-app & uniCloud的后台管理项目模板（管理后台开发必备神器）",
   "main": "main.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "duplicate-h5-admin": "node scripts/duplicate-h5-to-admin.cjs"
   },
   "repository": "https://github.com/dcloudio/uni-admin.git",
   "keywords": [
