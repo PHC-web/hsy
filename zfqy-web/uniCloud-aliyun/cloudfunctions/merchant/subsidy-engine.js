@@ -1,6 +1,6 @@
 'use strict';
 
-const { shanghaiYearMonthFromTs } = require('../common/format-time-cn.js');
+const { shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 
 const POINTS_PER_BLOCK = 38;
 const POINTS_PER_MONTH = 7.6;

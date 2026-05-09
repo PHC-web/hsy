@@ -40,6 +40,7 @@
 							<uni-th align="center" width="100">应退(元)</uni-th>
 							<uni-th align="center" width="100">违约金(元)</uni-th>
 							<uni-th align="center" width="100">实退(元)</uni-th>
+							<uni-th align="center" width="90">拆单进度</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">创建时间</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="stateFilterData" @filter-change="headerFilterChange($event, 'state')">转款状态</uni-th>
 							<uni-th align="center" width="90">审核状态</uni-th>
@@ -52,6 +53,7 @@
 							<uni-td align="right" class="cell-money">{{ item.refundAmountText }}</uni-td>
 							<uni-td align="right" class="cell-money">{{ item.penaltyAmountText }}</uni-td>
 							<uni-td align="right" class="cell-money">{{ item.finalRefundAmountText }}</uni-td>
+							<uni-td align="center">{{ item.transferSliceProgressText || '-' }}</uni-td>
 							<uni-td align="center" class="cell-time">{{ item.createTime || '-' }}</uni-td>
 							<uni-td align="center">
 								<text :class="stateTagClass(item.batchState)">{{ item.batchStateText }}</text>
@@ -99,7 +101,15 @@
 									>
 										标记失败
 									</button>
-									<text v-else class="op-done">{{ opHint(item) }}</text>
+									<button
+										v-if="showDevRevokeApprove(item)"
+										size="mini"
+										class="op-btn op-btn--dev"
+										@click="devRevokeApprove(item)"
+									>
+										撤销同意(开发)
+									</button>
+									<text v-if="showRefundOpHint(item)" class="op-done">{{ opHint(item) }}</text>
 								</view>
 							</uni-td>
 						</uni-tr>
@@ -160,6 +170,8 @@ export default {
 				nonMemberRequired: false
 			},
 			bizConfigRaw: null,
+			/** 与「系统业务参数」中「允许撤销审核同意」同步 */
+			refundApproveRevokeDevEnabled: false,
 			pollTimer: null,
 			pollBusy: false
 		};
@@ -235,6 +247,7 @@ export default {
 					memberRequired: !!ra.memberRequired,
 					nonMemberRequired: !!ra.nonMemberRequired
 				};
+				this.refundApproveRevokeDevEnabled = !!(res.data && res.data.refundApproveRevokeDevEnabled);
 			} catch (e) {}
 		},
 		async onAuditSwitchChange(field, e) {
@@ -344,6 +357,49 @@ export default {
 			if (item.batchState === 'SUCCESS' || item.applied) return '已完成';
 			if (item.batchState === 'FAILED') return '失败/可重试';
 			return item.auditStatusText || '—';
+		},
+		/** 与上方「同意/不同意/修复/标记失败」互斥：这些出现时不再显示底部状态字 */
+		showRefundOpHint(item) {
+			if (!item) return false;
+			if (item.auditRequired && item.auditStatus === 'pending' && item.batchState === 'PENDING_AUDIT') return false;
+			if (item.auditStatus === 'rejected' && item.batchState === 'PROCESSING') return false;
+			if (item.batchState === 'PROCESSING') return false;
+			return true;
+		},
+		showDevRevokeApprove(item) {
+			if (!this.refundApproveRevokeDevEnabled) return false;
+			if (!item || !item.auditRequired || item.auditStatus !== 'approved') return false;
+			if (item.applied || item.batchState === 'SUCCESS') return false;
+			return true;
+		},
+		async devRevokeApprove(item) {
+			if (!item || !item.id) return;
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '开发撤销',
+					content: `确认撤销对本单的「审核同意」，恢复为「待审核」吗？\n（须先在「系统业务参数」中开启对应开关）\n退款单：${item.refundNo || ''}`,
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			uni.showLoading({ title: '处理中...', mask: true });
+			try {
+				const res = await this.$request(
+					'refundTransferRevokeApproveDev',
+					{ id: item.id },
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '撤销失败', icon: 'none', duration: 3200 });
+					return;
+				}
+				uni.showToast({ title: res.message || '已恢复待审核', icon: 'success' });
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '撤销失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
 		},
 		async approve(item, actionType) {
 			if (!item || !item.id) return;

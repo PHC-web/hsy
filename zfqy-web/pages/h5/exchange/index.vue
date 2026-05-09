@@ -5,12 +5,16 @@
 			<input v-model.trim="code" class="ipt" placeholder="请输入兑换码" />
 			<button class="btn" type="primary" :loading="loading" @click="submit">立即兑换</button>
 		</view>
+		<h5-agreement-sign-sheet ref="agreementSheet" />
 	</view>
 </template>
 
 <script>
 import { h5ExchangeCouponRedeem, h5RefreshHomeCache } from '@/pages/h5/common/api';
+import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
+
 export default {
+	components: { H5AgreementSignSheet },
 	data() {
 		return { code: '', loading: false };
 	},
@@ -18,6 +22,10 @@ export default {
 		async submit() {
 			const code = String(this.code || '').trim().toUpperCase();
 			if (!code) return uni.showToast({ title: '请输入兑换码', icon: 'none' });
+			const sheet = this.$refs.agreementSheet;
+			if (!sheet) return;
+			const agreed = await sheet.ensureSigned();
+			if (!agreed) return;
 			this.loading = true;
 			try {
 				const res = await h5ExchangeCouponRedeem({ code });

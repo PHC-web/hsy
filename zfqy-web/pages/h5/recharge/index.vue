@@ -65,14 +65,17 @@
 				<view class="bottom-spacer"></view>
 			</view>
 		</scroll-view>
+		<h5-agreement-sign-sheet ref="agreementSheet" />
 	</view>
 </template>
 
 <script>
-import { h5MineInfo, h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefreshHomeCache } from '@/pages/h5/common/api';
+import { h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefreshHomeCache } from '@/pages/h5/common/api';
+import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
+	components: { H5AgreementSignSheet },
 	data() {
 		return {
 			h5Logo: H5_APP_LOGO,
@@ -114,47 +117,29 @@ export default {
 		}
 	},
 	onShow() {
-		this.ensureAgreementAndLoad();
+		this.initPage();
 	},
 	methods: {
 		onSelectPackage(item) {
 			this.selectedId = item.id;
 			this.syncGiftChoice();
 		},
-		async ensureAgreementAndLoad() {
+		async initPage() {
 			this.rechargeReady = false;
-			this.gateText = '正在校验…';
-			const mine = await h5MineInfo();
-			if (mine.code !== 0) {
-				this.gateText = mine.message || '获取用户信息失败';
-				uni.showToast({ title: this.gateText, icon: 'none' });
-				setTimeout(() => {
-					uni.navigateBack({
-						fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' })
-					});
-				}, 400);
-				return;
-			}
-			const m = mine.data && mine.data.merchant;
-			const agreement = (mine.data && mine.data.agreement) || {};
-			if (!m || !!agreement.needSign) {
-				this.gateText = '需先签署优惠活动计划书';
-				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				setTimeout(() => {
-					uni.redirectTo({ url: '/pages/h5/mine/index' });
-				}, 500);
-				return;
-			}
-			this.rechargeReady = true;
+			this.gateText = '加载中…';
 			await this.loadOptions();
 		},
 		async loadOptions() {
 			const res = await h5RechargeOptions();
 			if (res.code !== 0) {
+				this.gateText = res.message || '加载失败';
 				uni.showToast({ title: res.message || '加载失败', icon: 'none' });
-				if (res.code === 403 || res.needAgreement) {
-					this.rechargeReady = false;
-					setTimeout(() => uni.redirectTo({ url: '/pages/h5/mine/index' }), 400);
+				if (res.code === 404) {
+					setTimeout(() => {
+						uni.navigateBack({
+							fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' })
+						});
+					}, 400);
 				}
 				return;
 			}
@@ -168,6 +153,7 @@ export default {
 			} else {
 				this.selectedId = this.packages[0] ? this.packages[0].id : '';
 			}
+			this.rechargeReady = true;
 			this.syncGiftChoice();
 		},
 		syncGiftChoice() {
@@ -183,6 +169,10 @@ export default {
 		},
 		async payNow() {
 			if (!this.selectedId) return;
+			const sheet = this.$refs.agreementSheet;
+			if (!sheet) return;
+			const agreed = await sheet.ensureSigned();
+			if (!agreed) return;
 			if (!this.giftOk) {
 				uni.showToast({ title: '请选择赠品（碰一碰音响或扫码全能POS机）', icon: 'none' });
 				return;

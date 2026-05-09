@@ -28,7 +28,7 @@ const adminUserCollection = db.collection('uni-id-users');
 const zlib = require('zlib');
 const { promisify } = require('util');
 const gzipAsync = promisify(zlib.gzip);
-const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('../common/format-time-cn.js');
+const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 const subsidyEngine = require('./subsidy-engine.js');
 const redisH5 = require('./redis-h5.js');
 /** Redis 键：与云函数多实例共享热点，未开通 Redis 时自动跳过 */
@@ -129,6 +129,154 @@ const REFUND_ENTRY_TOKEN_TTL_MS = 72 * 60 * 60 * 1000;
 const WECOM_ROBOT_WEBHOOK = String(
 	process.env.WECOM_ROBOT_WEBHOOK || payLocal.WECOM_ROBOT_WEBHOOK || 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=3f69eeb7-e0bc-4ec9-afea-028566bda416'
 ).trim();
+
+/** 业务参数内存缓存（与 Redis key REDIS_KEY_BIZ 一致），需在文件中早于 getRefundTransferSliceMaxYuan 声明 */
+let bizSettingsCache = null;
+let bizSettingsCacheAt = 0;
+
+/**
+ * H5 充值退款拆单单笔上限（元）。
+ * 优先级：参数配置（Redis/DB，经 getBizSettings 缓存）> 环境变量 REFUND_TRANSFER_SLICE_MAX_YUAN > 默认 200。
+ */
+function getRefundTransferSliceMaxYuan() {
+	let n;
+	if (bizSettingsCache && bizSettingsCache.refundTransferSliceMaxYuan != null && bizSettingsCache.refundTransferSliceMaxYuan !== '') {
+		n = Number(bizSettingsCache.refundTransferSliceMaxYuan);
+	}
+	if (!Number.isFinite(n)) {
+		const raw = process.env.REFUND_TRANSFER_SLICE_MAX_YUAN;
+		n = raw != null && raw !== '' ? Number(raw) : 200;
+	}
+	if (!Number.isFinite(n) || n <= 0) n = 200;
+	return Math.min(500, Math.max(0.01, n));
+}
+function buildRefundTransferSlicesFromFen(totalFen, maxYuanPerSlice) {
+	const maxFen = Math.max(1, Math.round(Number(maxYuanPerSlice) * 100));
+	const total = Math.max(0, Math.round(Number(totalFen) || 0));
+	if (!total) return [];
+	const slices = [];
+	let left = total;
+	while (left > 0) {
+		const chunk = Math.min(left, maxFen);
+		slices.push(chunk);
+		left -= chunk;
+	}
+	return slices;
+}
+/**
+ * 微信商家转账：商户单号仅允许字母与数字。拆分子单在母单号后接 S1、S2…（不再使用下划线，避免 V3 报「商户单号」规则失败）
+ */
+function makeRefundSliceOutBillNo(baseRefundNo, sliceIndex0Based, maxLen = 64) {
+	const idx = Number(sliceIndex0Based);
+	const n = Number.isFinite(idx) && idx >= 0 ? idx + 1 : 1;
+	const suf = `S${n}`;
+	const alnum = String(baseRefundNo || '').replace(/[^A-Za-z0-9]/g, '');
+	const room = Math.max(1, maxLen - suf.length);
+	const head = (alnum.slice(0, room) || 'RF') + suf;
+	return safeText(head, maxLen);
+}
+function sortTransferItemsBySlice(items) {
+	const arr = Array.isArray(items) ? items.map((x) => ({ ...x })) : [];
+	arr.sort((a, b) => Number(a.slice_index ?? 0) - Number(b.slice_index ?? 0));
+	return arr;
+}
+function findActiveRefundSliceIndex(items) {
+	const arr = sortTransferItemsBySlice(items);
+	for (let i = 0; i < arr.length; i++) {
+		if (normalizeTransferState(arr[i].state || '') !== 'SUCCESS') return i;
+	}
+	return -1;
+}
+function allRefundSlicesSucceeded(items) {
+	const arr = Array.isArray(items) ? items : [];
+	if (!arr.length) return false;
+	return arr.every((it) => normalizeTransferState(it.state || '') === 'SUCCESS');
+}
+function countRefundSlicesSucceeded(items) {
+	return (Array.isArray(items) ? items : []).filter((it) => normalizeTransferState(it.state || '') === 'SUCCESS').length;
+}
+function computeMerchantRefundBatchState(items) {
+	const arr = sortTransferItemsBySlice(items);
+	for (const it of arr) {
+		const s = normalizeTransferState(it.state || '');
+		if (['FAIL', 'FAILED', 'CANCELLED'].includes(s)) return 'FAILED';
+	}
+	if (arr.length && arr.every((it) => normalizeTransferState(it.state || '') === 'SUCCESS')) return 'SUCCESS';
+	return 'PROCESSING';
+}
+/**
+ * 历史单笔 transfer_items 且金额超限时拆成多笔；仅当仅有一条且为 INIT 时升级
+ */
+function ensureMultiRefundSlicesOnOrder(transferOrder, refundNo, finalFen) {
+	const maxYuan = getRefundTransferSliceMaxYuan();
+	const targetFen = Math.round(Number(finalFen != null ? finalFen : transferOrder.final_refund_fen || 0));
+	let items = sortTransferItemsBySlice(transferOrder.transfer_items);
+	if (items.length > 1 || targetFen <= Math.round(maxYuan * 100)) {
+		return {
+			items,
+			transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
+			changed: false
+		};
+	}
+	const one = items[0] || {};
+	const st0 = normalizeTransferState(one.state || '');
+	if (st0 && st0 !== 'INIT') {
+		return { items, transfer_slice_ids: [safeText(one.out_bill_no, 64)].filter(Boolean), changed: false };
+	}
+	if (Number(one.transfer_amount_fen || 0) !== targetFen) {
+		return { items, transfer_slice_ids: [safeText(one.out_bill_no, 64)].filter(Boolean), changed: false };
+	}
+	const chunks = buildRefundTransferSlicesFromFen(targetFen, maxYuan);
+	if (chunks.length <= 1) {
+		return { items, transfer_slice_ids: [safeText(one.out_bill_no, 64)].filter(Boolean), changed: false };
+	}
+	const base = safeText(refundNo, 48);
+	items = chunks.map((fen, idx) => ({
+		slice_index: idx,
+		out_bill_no: makeRefundSliceOutBillNo(base, idx, 64),
+		transfer_amount_fen: fen,
+		state: 'INIT',
+		transfer_bill_no: '',
+		last_error: ''
+	}));
+	return {
+		items,
+		transfer_slice_ids: items.map((x) => x.out_bill_no),
+		changed: true
+	};
+}
+async function findRefundTransferOrderByBillNo(outBillNo) {
+	const b = safeText(outBillNo, 64);
+	if (!b) return null;
+	let r = await transferOrderCollection.where({ out_bill_no: b, is_deleted: false, refund_mode: 'merchant_transfer' }).limit(1).get();
+	if (r.data && r.data[0]) return r.data[0];
+	r = await transferOrderCollection.where({ refund_no: b, is_deleted: false, refund_mode: 'merchant_transfer' }).limit(1).get();
+	if (r.data && r.data[0]) return r.data[0];
+	r = await transferOrderCollection.where({ transfer_slice_ids: b, is_deleted: false, refund_mode: 'merchant_transfer' }).limit(1).get();
+	if (r.data && r.data[0]) return r.data[0];
+	return null;
+}
+async function findRefundTransferOrderForMerchant(merchantId, bill) {
+	const mid = safeText(merchantId, 80);
+	const b = safeText(bill, 64);
+	if (!mid || !b) return null;
+	let r = await transferOrderCollection
+		.where({ merchant_id: mid, out_bill_no: b, is_deleted: false, refund_mode: 'merchant_transfer' })
+		.limit(1)
+		.get();
+	if (r.data && r.data[0]) return r.data[0];
+	r = await transferOrderCollection
+		.where({ merchant_id: mid, refund_no: b, is_deleted: false, refund_mode: 'merchant_transfer' })
+		.limit(1)
+		.get();
+	if (r.data && r.data[0]) return r.data[0];
+	r = await transferOrderCollection
+		.where({ merchant_id: mid, transfer_slice_ids: b, is_deleted: false, refund_mode: 'merchant_transfer' })
+		.limit(1)
+		.get();
+	if (r.data && r.data[0]) return r.data[0];
+	return null;
+}
 
 function getOperator(event) {
 	const ctx = event?.context || {};
@@ -2823,7 +2971,8 @@ async function withdrawApprove(data) {
 							payload: q0 || {}
 						});
 						await withdrawCollection.doc(id).update({
-							audit_status: 'pending',
+							audit_status: 'approved',
+							audit_time: nowTs(),
 							is_paid: false,
 							arrival_status: 'pending',
 							wx_trade_no: bill0,
@@ -2912,9 +3061,10 @@ async function withdrawApprove(data) {
 				if (['FAIL', 'FAILED', 'CANCELLED'].includes(transferState)) {
 					throw new Error(`微信提现失败：${transferState}`);
 				}
-				// PROCESSING 等非终态：记录处理中，保持冻结额度，等待后续状态确认
+				// PROCESSING 等非终态：管理员已同意并发起转账，审核记为已通过；到账仍以后续查询为准
 				await withdrawCollection.doc(id).update({
-					audit_status: 'pending',
+					audit_status: 'approved',
+					audit_time: nowTs(),
 					is_paid: false,
 					arrival_status: 'pending',
 					wx_trade_no: transferBillNo,
@@ -3972,7 +4122,13 @@ function compactMerchantInfo(row, options = {}) {
 	const quotaBalance = normalizeWithdrawQuotaBalance(row);
 	const pendingBalance = normalizePendingBalance(row);
 	const rechargeAmount = Number(row.recharge_amount != null ? row.recharge_amount : row.recharge_total_yuan || 0);
-	const hasAgreementSigned = !!String(row.agreement_img || '').trim();
+	const hasAgreementSigned =
+		!!String(row.agreement_img || '').trim() || Number(row.agreement_signed_at || 0) > 0;
+	const h5Mem = options.h5Membership;
+	const membershipName =
+		h5Mem && typeof h5Mem.name === 'string' && String(h5Mem.name).trim()
+			? safeText(h5Mem.name, 40)
+			: safeText(row.membership_name || '', 40) || '普通会员';
 	return {
 		id: row._id,
 		userId: row.user_id || row._id,
@@ -3988,7 +4144,7 @@ function compactMerchantInfo(row, options = {}) {
 		availableReward: quotaBalance,
 		estimatedFreeQuota: Number(row.estimated_free_quota || 0),
 		accountPoints: pendingBalance,
-		membershipName: safeText(row.membership_name || '', 40) || '普通会员',
+		membershipName,
 		rechargeAmount: Number(Number(rechargeAmount || 0).toFixed(2))
 	};
 }
@@ -4108,8 +4264,10 @@ async function getCurrentAgreement() {
 
 function isMerchantAgreementSatisfied(merchant, agreement) {
 	const hasSignedImage = !!String(merchant?.agreement_img || '').trim();
-	if (!agreement) return hasSignedImage;
-	if (!hasSignedImage) return false;
+	const hasSignedRecord = Number(merchant?.agreement_signed_at || 0) > 0;
+	const baseOk = hasSignedImage || hasSignedRecord;
+	if (!agreement) return baseOk;
+	if (!baseOk) return false;
 	if (!agreement.notify_all_resign) return true;
 	const curVersion = String(agreement.version || '').trim();
 	if (!curVersion) return true;
@@ -4873,11 +5031,12 @@ async function h5MineInfo(data) {
 		merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		merchant = await ensureMerchantRechargeAmountAccurate(merchant);
-		const [boundMachines, biz, curAgreement, openTicket] = await Promise.all([
+		const [boundMachines, biz, curAgreement, openTicket, rechargePackages] = await Promise.all([
 			listBoundMachinesByMerchant(merchant),
 			getBizSettings(),
 			getCurrentAgreement(),
-			feedbackFindOpenTicket(merchant._id)
+			feedbackFindOpenTicket(merchant._id),
+			loadRechargePackagesFromQuota()
 		]);
 		const boundDeviceIds = [...new Set(boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean))];
 		const deviceDisplay = boundDeviceIds.length
@@ -4891,11 +5050,18 @@ async function h5MineInfo(data) {
 		const now = nowTs();
 		const silverEndAt = Number(merchant.silver_member_end_at || 0);
 		const silverActive = isH5SilverMemberForWithdraw(merchant) && silverEndAt > now;
+		let membership = h5MembershipInfo(merchant, rechargePackages);
+		if (membership.tier === 'normal' && Number(merchant.recharge_total_yuan || 0) > 0) {
+			const fixed = await resolveRechargeMembershipFallback(merchant, rechargePackages);
+			if (fixed && fixed.tier && fixed.tier !== 'normal') {
+				membership = fixed;
+			}
+		}
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
-				merchant: compactMerchantInfo(merchant, { includeAgreementImg: false }),
+				merchant: compactMerchantInfo(merchant, { includeAgreementImg: false, h5Membership: membership }),
 				device: {
 					boundCount: boundDeviceIds.length,
 					display: deviceDisplay
@@ -4928,6 +5094,34 @@ async function h5MineInfo(data) {
 	}
 }
 
+/** H5 专用：按需拉取签署快照（含协议图 URL），勿放入 h5MineInfo，避免拖慢「我的」页 */
+async function h5AgreementSignedSnapshot(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		if (!merchantKey) return { code: 400, message: '缺少商户标识' };
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const curAgreement = await getCurrentAgreement();
+		const needSign = !isMerchantAgreementSatisfied(merchant, curAgreement);
+		const img = String(merchant.agreement_img || '').trim();
+		const agreementSigned =
+			!!img || Number(merchant.agreement_signed_at || 0) > 0;
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				agreementImg: img,
+				agreementSigned,
+				agreementSignedAt: formatTime(merchant.agreement_signed_at),
+				needSign
+			}
+		};
+	} catch (e) {
+		console.error('h5AgreementSignedSnapshot failed', e);
+		return { code: 500, message: '加载失败' };
+	}
+}
+
 const BIZ_SETTING_KEY = 'h5_biz_params';
 const DEFAULT_RECHARGE_RULES = [
 	{ price: 600, rewardYuan: 3800, quota: 1000000, tip: '600元配置100万交易量，等于补贴市场价的3800元手续费' },
@@ -4956,13 +5150,15 @@ const DEFAULT_BIZ_SETTINGS = {
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
+	/** H5 充值退款商家转账拆单：单笔上限(元)，受 sanitize 限制在 0.01~500 */
+	refundTransferSliceMaxYuan: 200,
+	/** 后台退款列表「撤销同意(开发)」：仅联调用，生产务必保持 false（存业务参数表，无需云函数环境变量） */
+	refundApproveRevokeDevEnabled: false,
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	servicePhone: '400-668-5796'
 };
 const BIZ_SETTINGS_CACHE_TTL_MS = 60000;
-let bizSettingsCache = null;
-let bizSettingsCacheAt = 0;
 
 function sanitizeBizSettings(raw = {}) {
 	const rechargeRules = (Array.isArray(raw.rechargeRules) ? raw.rechargeRules : DEFAULT_RECHARGE_RULES)
@@ -5016,6 +5212,17 @@ function sanitizeBizSettings(raw = {}) {
 		windowDays: Math.max(1, Number(rc.windowDays || DEFAULT_BIZ_SETTINGS.refundCycle.windowDays))
 	};
 	const refundPenaltyRate = Math.max(0, Math.min(100, Number(raw.refundPenaltyRate != null ? raw.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)));
+	let rtsNum = Number(
+		raw.refundTransferSliceMaxYuan != null && raw.refundTransferSliceMaxYuan !== ''
+			? raw.refundTransferSliceMaxYuan
+			: DEFAULT_BIZ_SETTINGS.refundTransferSliceMaxYuan
+	);
+	if (!Number.isFinite(rtsNum)) rtsNum = DEFAULT_BIZ_SETTINGS.refundTransferSliceMaxYuan;
+	const refundTransferSliceMaxYuan = Math.min(500, Math.max(0.01, rtsNum));
+	const refundApproveRevokeDevEnabled =
+		raw.refundApproveRevokeDevEnabled === true ||
+		raw.refundApproveRevokeDevEnabled === '1' ||
+		raw.refundApproveRevokeDevEnabled === 1;
 	const riskRates = {};
 	const rr = raw.riskRates || {};
 	Object.keys(rr).forEach((k) => {
@@ -5037,6 +5244,8 @@ function sanitizeBizSettings(raw = {}) {
 		optimizeConfig,
 		refundCycle,
 		refundPenaltyRate,
+		refundTransferSliceMaxYuan,
+		refundApproveRevokeDevEnabled,
 		riskRates,
 		testMerchantIds,
 		servicePhone
@@ -5272,6 +5481,11 @@ function h5MembershipInfo(merchant, packages = null) {
 			tier = 'white_gold';
 			accent = '#fcd34d';
 		}
+		// 商户仍有 persisted membership_name（如默认「普通会员」）时会提前 return，
+		// 否则兑换码白银逻辑只在「无 membership_name」分支生效，导致与后台不一致
+		if (tier === 'normal' && hasH5SilverMemberIdentity(merchant)) {
+			return { tier: 'silver', name: '白银会员', accent: '#c0cbd9' };
+		}
 		return { tier, name: persistedName, accent };
 	}
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
@@ -5335,9 +5549,28 @@ function resolveH5WithdrawRole(merchant) {
 	return 'normal_member';
 }
 
+/** 兑换券/兑换码开通白银（exchange / redeem claimed）：提现计算侧可用的隐藏剩余额度下限（界面仍不展示） */
+const H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN = 1000;
+
+function hasSilverExchangeCouponClaim(merchant) {
+	if (!merchant) return false;
+	return merchant.exchange_code_claimed === true || merchant.redeem_code_claimed === true;
+}
+
+/**
+ * H5 积分兑换提现：可用奖励额度口径。
+ * 兑换券类白银会员 DB 可能未写入额度，此处不低于隐藏下限；充值会员/普通会员仅用 normalizeWithdrawQuotaBalance。
+ */
+function effectiveH5WithdrawQuotaBalanceForRedeem(merchant) {
+	const base = normalizeWithdrawQuotaBalance(merchant);
+	if (resolveH5WithdrawRole(merchant) !== 'silver_member') return base;
+	if (!hasSilverExchangeCouponClaim(merchant)) return base;
+	return Math.max(base, H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN);
+}
+
 /**
  * H5 对外展示「剩余提现额度」：白银会员统一显示 0；后台 listMerchants 等仍用真实 normalizeAdminRemainingQuota / 原始字段。
- * 提现可兑换、扣减仍用 normalizeWithdrawQuotaBalance，不受本函数影响。
+ * 兑换券白银的实际可兑换额度见 effectiveH5WithdrawQuotaBalanceForRedeem（仅提现接口），本函数始终不向商户展示剩余额度。
  */
 function h5DisplayWithdrawQuotaRemainingYuan(merchant) {
 	if (!merchant) return 0;
@@ -5480,24 +5713,27 @@ async function h5WithdrawInfo(data) {
 		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		merchant = await ensureMerchantRechargeAmountAccurate(merchant);
+		const biz = await getBizSettings();
+		const testMerchant = isTestMerchantByBiz(merchant, biz);
 		const now = nowTs();
 		const withdrawRole = resolveH5WithdrawRole(merchant);
 		const isRechargeMember = withdrawRole === 'recharge_member';
 		const monthTradeYuan = withdrawRole === 'silver_member' ? await getH5CurrentMonthTradeYuan(merchant, now) : 0;
-		const silverCanWithdraw = monthTradeYuan >= H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN;
-		const canWithdraw = withdrawRole === 'recharge_member' || (withdrawRole === 'silver_member' && silverCanWithdraw);
+		const silverTradeMeetsMin = monthTradeYuan >= H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN;
+		// 白银当月流水门槛：测试商户白名单不校验，其余商户保持 5 万
+		const silverCanWithdrawByTrade = testMerchant || silverTradeMeetsMin;
+		const canWithdraw =
+			withdrawRole === 'recharge_member' || (withdrawRole === 'silver_member' && silverCanWithdrawByTrade);
 		let withdrawHint = '';
 		if (withdrawRole === 'normal_member') {
 			withdrawHint = '当前账号仅可领取积分，暂不支持提现。';
-		} else if (withdrawRole === 'silver_member' && !silverCanWithdraw) {
+		} else if (withdrawRole === 'silver_member' && !testMerchant && !silverTradeMeetsMin) {
 			withdrawHint = `白银会员需当月流水达到${H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN}元后可提现，当前为${monthTradeYuan.toFixed(2)}元。`;
 		}
-		const biz = await getBizSettings();
 		const auditCfg = biz.withdrawAudit || {};
-		const testMerchant = isTestMerchantByBiz(merchant, biz);
 		// 测试商户仅豁免提现门槛与时间限制，不豁免审核开关
 		const needAudit = isRechargeMember ? !!auditCfg.memberRequired : !!auditCfg.nonMemberRequired;
-		const ar = normalizeWithdrawQuotaBalance(merchant);
+		const ar = effectiveH5WithdrawQuotaBalanceForRedeem(merchant);
 		const ap = normalizePendingBalance(merchant);
 		const redeemable = Math.floor(Math.min(ar, ap));
 		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
@@ -5559,7 +5795,7 @@ async function h5WithdrawApply(data) {
 		if (withdrawRole === 'normal_member') {
 			return { code: 400, message: '当前账号暂不支持提现。' };
 		}
-		if (withdrawRole === 'silver_member') {
+		if (withdrawRole === 'silver_member' && !testMerchant) {
 			const monthTradeYuan = await getH5CurrentMonthTradeYuan(merchant, now);
 			if (monthTradeYuan < H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN) {
 				return {
@@ -5580,7 +5816,8 @@ async function h5WithdrawApply(data) {
 		if (points > maxP) {
 			return { code: 400, message: `单次兑换最高为 ${maxP} 积分` };
 		}
-		const ar = normalizeWithdrawQuotaBalance(merchant);
+		const arBase = normalizeWithdrawQuotaBalance(merchant);
+		const ar = effectiveH5WithdrawQuotaBalanceForRedeem(merchant);
 		const ap = normalizePendingBalance(merchant);
 		if (points > ar + 1e-6 || points > ap + 1e-6) {
 			return { code: 400, message: '可兑换积分不足' };
@@ -5642,8 +5879,8 @@ async function h5WithdrawApply(data) {
 		const machinePendingBefore = machine ? Number(machine.pending_amount || 0) : 0;
 		const restoreWithdrawDeduction = async () => {
 			await merchantCollection.doc(merchant._id).update({
-				available_reward: Number(ar.toFixed(4)),
-				withdraw_quota_balance: Number(ar.toFixed(4)),
+				available_reward: Number(arBase.toFixed(4)),
+				withdraw_quota_balance: Number(arBase.toFixed(4)),
 				account_points: Number(ap.toFixed(4)),
 				withdraw_pending_balance: Number(ap.toFixed(4)),
 				pending_withdraw: Number(pendingWithdrawBefore.toFixed(4)),
@@ -5840,8 +6077,8 @@ async function h5WithdrawApply(data) {
 			}
 			try {
 				await merchantCollection.doc(merchant._id).update({
-					available_reward: Number(ar.toFixed(4)),
-					withdraw_quota_balance: Number(ar.toFixed(4)),
+					available_reward: Number(arBase.toFixed(4)),
+					withdraw_quota_balance: Number(arBase.toFixed(4)),
 					account_points: Number(ap.toFixed(4)),
 					withdraw_pending_balance: Number(ap.toFixed(4)),
 					pending_withdraw: Number(pendingWithdrawBefore.toFixed(4)),
@@ -5935,7 +6172,7 @@ async function h5HomeDashboard(data) {
 			message: 'ok',
 			data: {
 				serverTime: now,
-				merchant: compactMerchantInfo(merchant, { includeAgreementImg: false }),
+				merchant: compactMerchantInfo(merchant, { includeAgreementImg: false, h5Membership: membership }),
 				device: {
 					boundCount,
 					display: deviceDisplay
@@ -6321,9 +6558,6 @@ async function h5RechargeOptions(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
-		merchant.__curAgreement = await getCurrentAgreement();
-		const needSign = requireH5AgreementSigned(merchant);
-		if (needSign) return needSign;
 		const biz = await getBizSettings();
 		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle);
 		const rechargePackages = await loadRechargePackagesFromQuota();
@@ -6680,25 +6914,39 @@ async function h5WxTransferNotify(data) {
 			if (row) {
 				await settleWithdrawSuccess(row, safeText(plain.transfer_bill_no || '', 80), 'SUCCESS');
 			} else {
-				// H5 退款商家转账回调：按 out_bill_no 命中退款单并完成入账结算
-				const rr = await transferOrderCollection
-					.where({ out_bill_no: outBillNo, is_deleted: false, refund_mode: 'merchant_transfer' })
-					.limit(1)
-					.get();
-				const refundOrder = rr.data && rr.data[0];
+				// H5 充值退款：按子单 out_bill_no 更新 transfer_items，全部子单成功后再 finalize（不涉及积分提现 withdraw 单）
+				const refundOrder = await findRefundTransferOrderByBillNo(outBillNo);
 				if (refundOrder) {
-					const items = Array.isArray(refundOrder.transfer_items) ? refundOrder.transfer_items.map((x) => ({ ...x })) : [];
-					const first = { ...(items[0] || {}) };
-					first.state = 'SUCCESS';
-					first.transfer_bill_no = safeText(plain.transfer_bill_no || first.transfer_bill_no || '', 80);
-					first.transfer_time = nowTs();
-					first.query_resp = plain || {};
+					let items = sortTransferItemsBySlice(
+						Array.isArray(refundOrder.transfer_items) ? refundOrder.transfer_items.map((x) => ({ ...x })) : []
+					);
+					const idx = items.findIndex((it) => safeText(it.out_bill_no, 64) === outBillNo);
+					if (idx >= 0) {
+						items[idx] = {
+							...items[idx],
+							state: 'SUCCESS',
+							transfer_bill_no: safeText(plain.transfer_bill_no || items[idx].transfer_bill_no || '', 80),
+							transfer_time: nowTs(),
+							query_resp: plain || {}
+						};
+					} else if (items.length === 1) {
+						const first = { ...(items[0] || {}) };
+						first.state = 'SUCCESS';
+						first.transfer_bill_no = safeText(plain.transfer_bill_no || first.transfer_bill_no || '', 80);
+						first.transfer_time = nowTs();
+						first.query_resp = plain || {};
+						items = [first];
+					}
+					const batchState = computeMerchantRefundBatchState(items);
 					await transferOrderCollection.doc(refundOrder._id).update({
-						state: 'SUCCESS',
-						transfer_items: [first],
+						state: batchState,
+						transfer_items: items,
+						transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 						update_time: nowTs()
 					});
-					await finalizeTransferSuccessIfNeeded({ ...refundOrder, state: 'SUCCESS', transfer_items: [first] }, {});
+					if (batchState === 'SUCCESS') {
+						await finalizeTransferSuccessIfNeeded({ ...refundOrder, state: batchState, transfer_items: items }, {});
+					}
 				}
 			}
 		}
@@ -6727,48 +6975,120 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 		const freshRes = await transferOrderCollection.doc(oid).get();
 		let transferOrder = freshRes.data && freshRes.data[0];
 		if (!transferOrder) return { code: 404, message: '退款单不存在' };
+
+		await getBizSettings();
+		const refundNoMain = safeText(transferOrder.refund_no, 64);
+		const splitCheck = ensureMultiRefundSlicesOnOrder(transferOrder, refundNoMain, transferOrder.final_refund_fen);
+		if (splitCheck.changed) {
+			await transferOrderCollection.doc(oid).update({
+				transfer_items: splitCheck.items,
+				transfer_slice_ids: splitCheck.transfer_slice_ids,
+				out_bill_no: splitCheck.items[0] ? splitCheck.items[0].out_bill_no : transferOrder.out_bill_no,
+				update_time: nowTs()
+			});
+			transferOrder.transfer_items = splitCheck.items;
+			transferOrder.transfer_slice_ids = splitCheck.transfer_slice_ids;
+			if (splitCheck.items[0]) transferOrder.out_bill_no = splitCheck.items[0].out_bill_no;
+		}
+
 		if (transferOrder.applied && safeText(transferOrder.state) === 'SUCCESS') {
 			return {
 				code: 0,
 				message: '退款已完成',
 				data: {
-					refundNo: transferOrder.refund_no,
+					refundNo: refundNoMain,
 					refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
 					penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
 					finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
 					phase: countdownPhase,
-					outBillNo: transferOrder.refund_no,
+					outBillNo: refundNoMain,
 					refundState: 'SUCCESS',
 					refundItems: []
 				}
 			};
 		}
-		let items = Array.isArray(transferOrder.transfer_items) ? transferOrder.transfer_items.map((x) => ({ ...x })) : [];
+
+		let items = sortTransferItemsBySlice(transferOrder.transfer_items);
 		if (!items.length) {
+			const fen = Number(transferOrder.final_refund_fen || 0);
+			const ob = safeText(transferOrder.out_bill_no || refundNoMain, 64);
 			items = [
 				{
-					out_bill_no: safeText(transferOrder.out_bill_no, 64),
-					transfer_amount_fen: Number(transferOrder.final_refund_fen || 0),
+					slice_index: 0,
+					out_bill_no: ob,
+					transfer_amount_fen: fen,
 					state: 'INIT',
 					transfer_bill_no: '',
 					last_error: ''
 				}
 			];
 		}
-		const first = { ...(items[0] || {}) };
+
+		if (allRefundSlicesSucceeded(items)) {
+			const batchState = 'SUCCESS';
+			await transferOrderCollection.doc(transferOrder._id).update({
+				state: batchState,
+				transfer_items: items,
+				transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
+				update_time: nowTs()
+			});
+			transferOrder.state = batchState;
+			transferOrder.transfer_items = items;
+			await finalizeTransferSuccessIfNeeded({ ...transferOrder, state: batchState, transfer_items: items }, event);
+			return {
+				code: 0,
+				message: '退款已完成',
+				data: {
+					refundNo: refundNoMain,
+					refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
+					penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
+					finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
+					phase: countdownPhase,
+					outBillNo: refundNoMain,
+					refundState: 'SUCCESS',
+					refundItems: items.map((it) => ({
+						outBillNo: safeText(it.out_bill_no, 64),
+						state: it.state,
+						transferBillNo: safeText(it.transfer_bill_no || '', 80),
+						error: safeText(it.last_error || '', 200)
+					}))
+				}
+			};
+		}
+
+		const activeIdx = findActiveRefundSliceIndex(items);
+		if (activeIdx < 0) {
+			return { code: 500, message: '退款子单状态异常' };
+		}
+		if (activeIdx > 0) {
+			const prevSt = normalizeTransferState(items[activeIdx - 1].state || '');
+			if (prevSt !== 'SUCCESS') {
+				const prevBill = safeText(items[activeIdx - 1].out_bill_no, 64);
+				return {
+					code: 409,
+					message: '请先完成上一笔微信确认收款后，再发起下一笔',
+					data: {
+						refundNo: refundNoMain,
+						outBillNo: prevBill || refundNoMain,
+						refundState: 'PROCESSING',
+						refundItems: []
+					}
+				};
+			}
+		}
+
+		let first = { ...items[activeIdx] };
 		const outBillNo = safeText(first.out_bill_no || transferOrder.out_bill_no, 64);
 		let st = normalizeTransferState(first.state || '');
 		let transferBillNo = safeText(first.transfer_bill_no || '', 80);
 		let transferCreateResp = null;
-		let hasFailed = false;
-		let hasPending = false;
 		if (st !== 'SUCCESS') {
 			try {
 				if (st === 'INIT') {
 					transferCreateResp = await wxPayMerchantTransferToOpenid(wc, {
 						appid: wc.appId,
 						openid,
-						amountFen: Number(first.transfer_amount_fen || transferOrder.final_refund_fen || 0),
+						amountFen: Number(first.transfer_amount_fen || 0),
 						outBillNo,
 						reason
 					});
@@ -6785,13 +7105,12 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 						? e.wxBody.message || e.wxBody.code || e.message
 						: e.message || 'merchant transfer failed';
 				first.last_error = safeText(String(detail), 200);
-				// 查询报 NOT_FOUND：说明微信侧暂无该 out_bill_no，补发起一次转账再查单
 				if (wxCode === 'NOT_FOUND') {
 					try {
 						transferCreateResp = await wxPayMerchantTransferToOpenid(wc, {
 							appid: wc.appId,
 							openid,
-							amountFen: Number(first.transfer_amount_fen || transferOrder.final_refund_fen || 0),
+							amountFen: Number(first.transfer_amount_fen || 0),
 							outBillNo,
 							reason
 						});
@@ -6806,7 +7125,6 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 								? e2.wxBody.message || e2.wxBody.code || e2.message
 								: e2?.message || 'merchant transfer create/query failed';
 						first.last_error = safeText(String(detail2), 200);
-						hasFailed = true;
 					}
 				} else if (String(detail).toLowerCase().includes('out_bill_no')) {
 					try {
@@ -6814,11 +7132,7 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 						st = normalizeTransferState(q?.state || q?.status || st);
 						transferBillNo = safeText(q?.transfer_bill_no || transferBillNo, 80);
 						first.query_resp = q || {};
-					} catch (qe) {
-						hasFailed = true;
-					}
-				} else {
-					hasFailed = true;
+					} catch (qe) {}
 				}
 			}
 		}
@@ -6835,41 +7149,38 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 		);
 		if (packageInfo) first.package_info = packageInfo;
 		if (st === 'SUCCESS') first.transfer_time = nowTs();
-		if (['FAIL', 'FAILED', 'CANCELLED'].includes(st)) hasFailed = true;
-		if (st !== 'SUCCESS' && !['FAIL', 'FAILED', 'CANCELLED'].includes(st)) hasPending = true;
-		items = [first];
-		let batchState = 'PROCESSING';
-		if (hasFailed) batchState = 'FAILED';
-		else if (!hasPending) batchState = 'SUCCESS';
+		items[activeIdx] = first;
+
+		const batchState = computeMerchantRefundBatchState(items);
+		const pkgPersist = packageInfo ? { package_info: packageInfo } : {};
 		await transferOrderCollection.doc(transferOrder._id).update({
 			state: batchState,
 			transfer_items: items,
-			...(packageInfo ? { package_info: packageInfo } : {}),
+			transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
+			...pkgPersist,
 			update_time: nowTs()
 		});
 		transferOrder.state = batchState;
 		transferOrder.transfer_items = items;
-		const itemResults = [
-			{
-				outBillNo,
-				state: first.state,
-				transferBillNo: transferBillNo || '',
-				error: first.last_error || ''
-			}
-		];
+		const itemResults = items.map((it) => ({
+			outBillNo: safeText(it.out_bill_no, 64),
+			state: it.state,
+			transferBillNo: safeText(it.transfer_bill_no || '', 80),
+			error: safeText(it.last_error || '', 200)
+		}));
 
 		if (batchState === 'SUCCESS') {
-			await finalizeTransferSuccessIfNeeded(transferOrder, event);
+			await finalizeTransferSuccessIfNeeded({ ...transferOrder, transfer_items: items }, event);
 			return {
 				code: 0,
 				message: '退款打款成功',
 				data: {
-					refundNo: transferOrder.refund_no,
+					refundNo: refundNoMain,
 					refundAmount: Number(transferOrder.refund_amount || 0).toFixed(2),
 					penaltyAmount: Number(transferOrder.penalty_amount || 0).toFixed(2),
 					finalRefundAmount: Number(transferOrder.final_refund_amount || 0).toFixed(2),
 					phase: countdownPhase,
-					outBillNo: transferOrder.refund_no,
+					outBillNo: refundNoMain,
 					refundState: batchState,
 					refundItems: itemResults
 				}
@@ -6880,8 +7191,8 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 				code: 500,
 				message: '退款打款失败，请稍后重试',
 				data: {
-					refundNo: transferOrder.refund_no,
-					outBillNo: transferOrder.refund_no,
+					refundNo: refundNoMain,
+					outBillNo: safeText(items[activeIdx]?.out_bill_no, 64) || refundNoMain,
 					refundState: batchState,
 					refundItems: itemResults
 				}
@@ -6891,8 +7202,8 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 			code: 409,
 			message: '退款打款处理中，请稍后查询结果',
 			data: {
-				refundNo: transferOrder.refund_no,
-				outBillNo: transferOrder.refund_no,
+				refundNo: refundNoMain,
+				outBillNo: safeText(items[activeIdx]?.out_bill_no, 64) || refundNoMain,
 				refundState: batchState,
 				refundItems: itemResults
 			}
@@ -6967,6 +7278,9 @@ function mapRefundTransferItem(row, merchantMap = {}) {
 	const auditMap = { pending: '待审核', approved: '已同意', rejected: '已拒绝', failed: '失败', none: '-' };
 	const items = Array.isArray(row.transfer_items) ? row.transfer_items : [];
 	const first = items[0] || {};
+	const transferSliceTotal = items.length || 0;
+	const transferSliceDone = countRefundSlicesSucceeded(items);
+	const transferSliceProgressText = transferSliceTotal > 1 ? `${transferSliceDone}/${transferSliceTotal}` : '';
 	const transferErr = safeText(first.last_error || '', 200);
 	const m = merchantMap[row.merchant_id] || {};
 	const userDisplay = [m.wx_nickname || '', m.mobile || ''].filter(Boolean).join('\n') || row.merchant_user_id || '-';
@@ -6985,6 +7299,9 @@ function mapRefundTransferItem(row, merchantMap = {}) {
 		auditStatus,
 		auditStatusText: auditMap[auditStatus] || auditStatus || '-',
 		transferError: transferErr,
+		transferSliceDone,
+		transferSliceTotal,
+		transferSliceProgressText,
 		reason: safeText(row.reason || '', 120),
 		applied: !!row.applied,
 		createTime: formatTime(row.create_time),
@@ -7061,6 +7378,7 @@ async function refundTransferSyncProcessing(data = {}) {
 	const limit = Math.min(Math.max(Number(data?.limit || 20), 1), 100);
 	const now = nowTs();
 	try {
+		await getBizSettings();
 		const processingStates = ['PROCESSING', 'ACCEPTED', 'WAIT_USER_CONFIRM', 'UNKNOWN'];
 		const res = await transferOrderCollection
 			.where({
@@ -7078,67 +7396,78 @@ async function refundTransferSyncProcessing(data = {}) {
 		for (const row of rows) {
 			const merchant = await getMerchantByIdOrUserId(row.merchant_id);
 			if (!merchant) continue;
-			const openid = safeText(merchant.wx_openid, 100);
-			if (!openid) continue;
-			const reason = safeText(row.reason || '用户申请退款', 80);
 			const wc = wxCredentialsByMchId(row.transfer_mch_id) || wxWithdrawCredentials();
 			if (!wc || !wc.mchId) continue;
 			try {
-				const q = await wxPayQueryMerchantTransfer(wc, safeText(row.out_bill_no || row.refund_no, 64));
+				const refundMain = safeText(row.refund_no, 64);
+				let items = sortTransferItemsBySlice(
+					Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : []
+				);
+				const splitCheck = ensureMultiRefundSlicesOnOrder(row, refundMain, row.final_refund_fen);
+				if (splitCheck.changed) {
+					await transferOrderCollection.doc(row._id).update({
+						transfer_items: splitCheck.items,
+						transfer_slice_ids: splitCheck.transfer_slice_ids,
+						out_bill_no: splitCheck.items[0] ? splitCheck.items[0].out_bill_no : row.out_bill_no,
+						update_time: nowTs()
+					});
+					items = sortTransferItemsBySlice(splitCheck.items);
+				}
+				if (!items.length) continue;
+				const activeIdx = findActiveRefundSliceIndex(items);
+				if (activeIdx < 0) {
+					if (allRefundSlicesSucceeded(items)) {
+						await transferOrderCollection.doc(row._id).update({
+							state: 'SUCCESS',
+							transfer_items: items,
+							transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
+							update_time: nowTs()
+						});
+						await finalizeTransferSuccessIfNeeded({ ...row, state: 'SUCCESS', transfer_items: items }, {});
+						success += 1;
+					}
+					continue;
+				}
+				const pollBill = safeText(items[activeIdx].out_bill_no, 64);
+				const q = await wxPayQueryMerchantTransfer(wc, pollBill);
 				const state = normalizeTransferState(q?.state || q?.status || '');
 				const billNo = safeText(q?.transfer_bill_no || '', 80);
 				await writeTransferLog({
 					stage: 'refund_auto_poll_query',
 					withdrawNo: row.refund_no,
 					merchantUserId: row.merchant_user_id,
-					outBillNo: row.out_bill_no,
+					outBillNo: pollBill,
 					transferState: state,
 					message: '自动轮询 H5 退款商家转账',
 					payload: q || {}
 				});
-				if (state === 'SUCCESS') {
-					const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-					const first = { ...(items[0] || {}) };
-					first.state = 'SUCCESS';
-					first.transfer_bill_no = billNo;
-					first.query_resp = q || {};
-					first.transfer_time = nowTs();
-					await transferOrderCollection.doc(row._id).update({
-						state: 'SUCCESS',
-						transfer_items: [first],
-						update_time: nowTs()
-					});
-					const merged = { ...row, state: 'SUCCESS', transfer_items: [first] };
-					await finalizeTransferSuccessIfNeeded(merged, {});
-					success += 1;
-					continue;
-				}
-				if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
-					const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-					const first = { ...(items[0] || {}) };
-					first.state = state;
-					first.last_error = safeText(q?.fail_reason || q?.message || state, 200);
-					await transferOrderCollection.doc(row._id).update({
-						state: 'FAILED',
-						transfer_items: [first],
-						update_time: nowTs()
-					});
-					failed += 1;
-					continue;
-				}
+				const cur = { ...items[activeIdx] };
+				cur.state = state;
+				cur.transfer_bill_no = billNo || cur.transfer_bill_no;
+				cur.query_resp = q || {};
+				if (state === 'SUCCESS') cur.transfer_time = nowTs();
 				const polledPkg = pickTransferPackageInfo(q);
-				const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-				const first = { ...(items[0] || {}) };
-				first.state = state || 'PROCESSING';
-				first.transfer_bill_no = billNo;
-				if (polledPkg) first.query_resp = q || {};
+				if (polledPkg) cur.package_info = polledPkg;
+				if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
+					cur.last_error = safeText(q?.fail_reason || q?.message || state, 200);
+				}
+				items[activeIdx] = cur;
+				const batchState = computeMerchantRefundBatchState(items);
 				await transferOrderCollection.doc(row._id).update({
-					state: 'PROCESSING',
-					transfer_items: [first],
+					state: batchState,
+					transfer_items: items,
+					transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 					...(polledPkg ? { package_info: safeText(polledPkg, 1200) } : {}),
 					update_time: nowTs()
 				});
-				processing += 1;
+				if (batchState === 'SUCCESS') {
+					await finalizeTransferSuccessIfNeeded({ ...row, state: batchState, transfer_items: items }, {});
+					success += 1;
+				} else if (batchState === 'FAILED') {
+					failed += 1;
+				} else {
+					processing += 1;
+				}
 			} catch (e) {
 				await writeTransferLog({
 					stage: 'refund_auto_poll_error',
@@ -7172,13 +7501,27 @@ async function refundTransferApprove(data, event) {
 			if (row.applied || safeText(row.state, 24) === 'SUCCESS') return { code: 400, message: '该退款已完成，不能标记失败' };
 			const reason = safeText(data?.reason || '管理员手动标记失败', 180);
 			const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-			const first = { ...(items[0] || {}) };
-			first.state = 'FAILED';
-			first.last_error = reason;
-			first.fail_time = now;
+			const nextItems =
+				items.length > 0
+					? items.map((it) => ({
+							...it,
+							state: 'FAILED',
+							last_error: reason,
+							fail_time: now
+					  }))
+					: [
+							{
+								out_bill_no: safeText(row.refund_no || row.out_bill_no, 64),
+								transfer_amount_fen: Number(row.final_refund_fen || 0),
+								state: 'FAILED',
+								last_error: reason,
+								fail_time: now
+							}
+					  ];
 			await transferOrderCollection.doc(id).update({
 				state: 'FAILED',
-				transfer_items: [first],
+				transfer_items: nextItems,
+				transfer_slice_ids: nextItems.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 				update_time: now
 			});
 			await writeTransferLog({
@@ -7202,15 +7545,28 @@ async function refundTransferApprove(data, event) {
 				return { code: 400, message: '该退款已到账，不能再拒绝' };
 			}
 			const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-			const first = { ...(items[0] || {}) };
-			first.state = 'REJECTED';
-			first.last_error = '管理员已拒绝退款';
-			first.reject_time = now;
+			const nextItems =
+				items.length > 0
+					? items.map((it) => ({
+							...it,
+							state: 'REJECTED',
+							last_error: '管理员已拒绝退款',
+							reject_time: now
+					  }))
+					: [
+							{
+								out_bill_no: safeText(row.refund_no || row.out_bill_no, 64),
+								state: 'REJECTED',
+								last_error: '管理员已拒绝退款',
+								reject_time: now
+							}
+					  ];
 			await transferOrderCollection.doc(id).update({
 				audit_status: 'rejected',
 				audit_time: now,
 				state: 'REJECTED',
-				transfer_items: [first],
+				transfer_items: nextItems,
+				transfer_slice_ids: nextItems.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 				update_time: now
 			});
 			return { code: 0, message: '已拒绝该退款申请，用户可重新发起' };
@@ -7270,14 +7626,28 @@ async function refundTransferForceFail(data, event) {
 		if (row.applied || safeText(row.state, 24) === 'SUCCESS') return { code: 400, message: '该退款已完成，不能标记失败' };
 
 		const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-		const first = { ...(items[0] || {}) };
-		first.state = 'FAILED';
-		first.last_error = reason;
-		first.fail_time = nowTs();
+		const nextItems =
+			items.length > 0
+				? items.map((it) => ({
+						...it,
+						state: 'FAILED',
+						last_error: reason,
+						fail_time: nowTs()
+				  }))
+				: [
+						{
+							out_bill_no: safeText(row.refund_no || row.out_bill_no, 64),
+							transfer_amount_fen: Number(row.final_refund_fen || 0),
+							state: 'FAILED',
+							last_error: reason,
+							fail_time: nowTs()
+						}
+				  ];
 
 		await transferOrderCollection.doc(row._id).update({
 			state: 'FAILED',
-			transfer_items: [first],
+			transfer_items: nextItems,
+			transfer_slice_ids: nextItems.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 			update_time: nowTs()
 		});
 		await writeTransferLog({
@@ -7325,14 +7695,27 @@ async function refundTransferFixRejectedProcessing(data, event) {
 		const auditStatus = safeText(row.audit_status, 20);
 		if (auditStatus !== 'rejected') return { code: 400, message: '仅支持修复审核已拒绝的退款单' };
 		const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-		const first = { ...(items[0] || {}) };
-		first.state = 'REJECTED';
-		first.last_error = '管理员已拒绝退款';
-		first.reject_time = nowTs();
+		const nextItems =
+			items.length > 0
+				? items.map((it) => ({
+						...it,
+						state: 'REJECTED',
+						last_error: '管理员已拒绝退款',
+						reject_time: nowTs()
+				  }))
+				: [
+						{
+							out_bill_no: safeText(row.refund_no || row.out_bill_no, 64),
+							state: 'REJECTED',
+							last_error: '管理员已拒绝退款',
+							reject_time: nowTs()
+						}
+				  ];
 		await transferOrderCollection.doc(row._id).update({
 			state: 'REJECTED',
 			is_deleted: false,
-			transfer_items: [first],
+			transfer_items: nextItems,
+			transfer_slice_ids: nextItems.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 			update_time: nowTs()
 		});
 		await writeTransferLog({
@@ -7349,6 +7732,87 @@ async function refundTransferFixRejectedProcessing(data, event) {
 	} catch (e) {
 		console.error('refundTransferFixRejectedProcessing failed', e);
 		return { code: 500, message: safeText(e?.message || '单笔状态修复失败', 200) };
+	}
+}
+
+async function refundTransferRevokeApproveDev(data, event) {
+	try {
+		const biz = await getBizSettings();
+		if (!biz || !biz.refundApproveRevokeDevEnabled) {
+			return {
+				code: 403,
+				message: '未开启：请在后台「系统业务参数」中打开「允许撤销审核同意（开发联调）」并保存'
+			};
+		}
+		const id = safeText(data?.id, 80);
+		if (!id) return { code: 400, message: '缺少退款单ID' };
+		const r = await transferOrderCollection.doc(id).get();
+		const row = r.data && r.data[0];
+		if (!row || row.is_deleted) return { code: 404, message: '退款单不存在' };
+		if (safeText(row.refund_mode, 40) !== 'merchant_transfer') {
+			return { code: 400, message: '非 H5 商家转账退款单' };
+		}
+		if (!row.audit_required) return { code: 400, message: '该记录无需审核' };
+		if (safeText(row.audit_status, 20) !== 'approved') {
+			return { code: 400, message: '仅可撤销「审核已同意」的退款单' };
+		}
+		if (row.applied || safeText(row.state, 24) === 'SUCCESS') {
+			return { code: 400, message: '该退款已完成入账，无法撤销审核' };
+		}
+		const itemsSorted = Array.isArray(row.transfer_items) ? sortTransferItemsBySlice(row.transfer_items) : [];
+		for (const it of itemsSorted) {
+			if (normalizeTransferState(it.state || '') === 'SUCCESS') {
+				return { code: 400, message: '已有分笔转账成功，无法撤销（请换新退款单测试）' };
+			}
+		}
+		const now = nowTs();
+		const refundNo = safeText(row.refund_no || row.out_bill_no, 64);
+		const finalFen = Math.round(Number(row.final_refund_fen || 0));
+		const nextItems =
+			itemsSorted.length > 0
+				? itemsSorted.map((it, idx) => ({
+						slice_index: Number(it.slice_index ?? idx),
+						out_bill_no: safeText(it.out_bill_no, 64),
+						transfer_amount_fen: Math.round(Number(it.transfer_amount_fen || 0)),
+						state: 'INIT',
+						transfer_bill_no: '',
+						last_error: ''
+				  }))
+				: [
+						{
+							slice_index: 0,
+							out_bill_no: safeText(row.out_bill_no || refundNo, 64),
+							transfer_amount_fen: finalFen,
+							state: 'INIT',
+							transfer_bill_no: '',
+							last_error: ''
+						}
+				  ];
+		const upd = {
+			audit_status: 'pending',
+			audit_time: 0,
+			state: 'PENDING_AUDIT',
+			transfer_items: nextItems,
+			transfer_slice_ids: nextItems.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
+			update_time: now
+		};
+		if (nextItems[0] && safeText(nextItems[0].out_bill_no, 64)) {
+			upd.out_bill_no = safeText(nextItems[0].out_bill_no, 64);
+		}
+		await transferOrderCollection.doc(id).update(upd);
+		await writeTransferLog({
+			stage: 'refund_admin_revoke_approve_dev',
+			level: 'warn',
+			withdrawNo: refundNo,
+			merchantUserId: safeText(row.merchant_user_id, 80),
+			outBillNo: safeText(upd.out_bill_no || row.out_bill_no, 64),
+			message: '开发环境：撤销审核同意，恢复为待审核',
+			payload: { operatorUid: String(event?.uid || ''), id }
+		});
+		return { code: 0, message: '已恢复为待审核（仅开发）' };
+	} catch (e) {
+		console.error('refundTransferRevokeApproveDev failed', e);
+		return { code: 500, message: safeText(e?.message || '撤销失败', 200) };
 	}
 }
 
@@ -7468,18 +7932,30 @@ function buildH5RefundUiFromContext(ctx) {
 		refundable: ctx.refundable !== false,
 		refundAmount: Number(ctx.refundAmount || 0).toFixed(2),
 		penaltyAmount: Number(ctx.penaltyAmount || 0).toFixed(2),
-		finalRefundAmount: Number(ctx.finalRefundAmount || 0).toFixed(2)
+		finalRefundAmount: Number(ctx.finalRefundAmount || 0).toFixed(2),
+		transferSliceTotal: 0,
+		transferSliceDone: 0,
+		transferSliceIndex: 0
 	};
 	if (!ctx.ok || !ctx.refundable) return d;
 	const ord = ctx.transferOrder;
 	if (!ord) return d;
-	const outBillNo = safeText(ord.out_bill_no || ord.refund_no, 64);
-	d.outBillNo = outBillNo;
+	const itemsSorted = sortTransferItemsBySlice(Array.isArray(ord.transfer_items) ? ord.transfer_items : []);
+	const activeIdx = findActiveRefundSliceIndex(itemsSorted);
+	const cur =
+		activeIdx >= 0 && itemsSorted[activeIdx] ? itemsSorted[activeIdx] : itemsSorted[0] || {};
+	const outBill =
+		activeIdx >= 0 && cur && cur.out_bill_no
+			? safeText(cur.out_bill_no, 64)
+			: safeText(ord.out_bill_no || ord.refund_no, 64);
+	d.outBillNo = outBill;
 	d.refundNo = safeText(ord.refund_no, 64);
 	d.batchState = safeText(ord.state, 24);
-	const items = Array.isArray(ord.transfer_items) ? ord.transfer_items : [];
-	const first = items[0] || {};
-	d.wxItemState = normalizeTransferState(first.state || '');
+	d.transferSliceTotal = itemsSorted.length || 0;
+	d.transferSliceDone = countRefundSlicesSucceeded(itemsSorted);
+	d.transferSliceIndex = activeIdx >= 0 ? activeIdx + 1 : 0;
+	const wxSt = normalizeTransferState(cur.state || '');
+	d.wxItemState = wxSt;
 	if (ord.audit_required && safeText(ord.audit_status, 20) === 'pending' && d.batchState === 'PENDING_AUDIT') {
 		d.phase = 'auditing';
 		return d;
@@ -7497,11 +7973,15 @@ function buildH5RefundUiFromContext(ctx) {
 		return d;
 	}
 	if (d.batchState === 'FAILED') {
-		// 与未申请时一致：允许用户再次点击「申请退款」重试
 		d.phase = 'idle';
 		return d;
 	}
-	if (d.wxItemState === 'WAIT_USER_CONFIRM') {
+	if (itemsSorted.length && allRefundSlicesSucceeded(itemsSorted) && !ord.applied && d.batchState === 'SUCCESS') {
+		d.phase = 'processing';
+		return d;
+	}
+	// 当前子单：待发起(INIT) 或 待微信确认(WAIT_USER_CONFIRM) → 用户可多次点击「提取」
+	if (wxSt === 'INIT' || wxSt === 'WAIT_USER_CONFIRM') {
 		d.phase = 'confirm_transfer';
 		return d;
 	}
@@ -7529,19 +8009,17 @@ async function h5RefundConfirmPackage(data) {
 			const tokenCheck = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
 			if (!tokenCheck.ok) return { code: tokenCheck.code || 403, message: tokenCheck.message || '退款入口无效' };
 		}
-		const refundNo = safeText(data?.refundNo || data?.outBillNo, 64);
-		if (!refundNo) return { code: 400, message: '缺少退款单号' };
-		const ordRes = await transferOrderCollection
-			.where({ merchant_id: merchant._id, out_bill_no: refundNo, is_deleted: false, refund_mode: 'merchant_transfer' })
-			.limit(1)
-			.get();
-		const row = ordRes.data && ordRes.data[0];
+		const refundNoIn = safeText(data?.refundNo || data?.outBillNo, 64);
+		if (!refundNoIn) return { code: 400, message: '缺少退款单号' };
+		let row = await findRefundTransferOrderForMerchant(merchant._id, refundNoIn);
 		if (!row) return { code: 404, message: '退款单不存在' };
+		await getBizSettings();
 		if (safeText(row.state, 24) === 'REJECTED' || safeText(row.audit_status, 20) === 'rejected') {
 			return { code: 400, message: '该退款已被管理员拒绝，无法发起确认收款' };
 		}
 		const wc = wxCredentialsByMchId(row.transfer_mch_id) || wxWithdrawCredentials();
 		if (!wc || !wc.mchId) return { code: 500, message: '未配置退款商户号支付参数' };
+		const refundNoMain = safeText(row.refund_no, 64);
 		if (row.audit_required && safeText(row.audit_status, 20) !== 'approved') {
 			return { code: 400, message: '退款尚未审核通过，请等待管理员处理' };
 		}
@@ -7558,7 +8036,8 @@ async function h5RefundConfirmPackage(data) {
 			if (pipe.code !== 0 && pipe.code !== 409) {
 				const detail =
 					safeText(
-						pipe?.data?.refundItems?.[0]?.error ||
+						(pipe?.data?.refundItems || []).map((x) => x.error).find(Boolean) ||
+							pipe?.data?.refundItems?.[0]?.error ||
 							pipe?.data?.transferError ||
 							'',
 						180
@@ -7567,8 +8046,8 @@ async function h5RefundConfirmPackage(data) {
 					code: pipe.code || 500,
 					message: pipe.message || '发起退款打款失败',
 					data: {
-						refundNo,
-						outBillNo: refundNo,
+						refundNo: refundNoMain,
+						outBillNo: pipe?.data?.outBillNo || refundNoIn,
 						state: safeText(row.state, 24),
 						detail
 					}
@@ -7582,21 +8061,44 @@ async function h5RefundConfirmPackage(data) {
 				row.package_info = fresh.package_info;
 			}
 		}
+
+		let items = sortTransferItemsBySlice(
+			Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : []
+		);
+		const splitCheck = ensureMultiRefundSlicesOnOrder(row, refundNoMain, row.final_refund_fen);
+		if (splitCheck.changed) {
+			await transferOrderCollection.doc(row._id).update({
+				transfer_items: splitCheck.items,
+				transfer_slice_ids: splitCheck.transfer_slice_ids,
+				out_bill_no: splitCheck.items[0] ? splitCheck.items[0].out_bill_no : row.out_bill_no,
+				update_time: nowTs()
+			});
+			items = sortTransferItemsBySlice(splitCheck.items);
+			row.transfer_items = items;
+		}
+
+		const idxByBill = items.findIndex((it) => safeText(it.out_bill_no, 64) === refundNoIn);
+		let sliceIdx = idxByBill >= 0 ? idxByBill : findActiveRefundSliceIndex(items);
+		if (sliceIdx < 0) sliceIdx = 0;
+		let first = { ...(items[sliceIdx] || { out_bill_no: refundNoIn, state: 'INIT' }) };
+		let sliceBill = safeText(first.out_bill_no || refundNoIn, 64);
+
 		let q = null;
-		const items = Array.isArray(row.transfer_items) ? row.transfer_items.map((x) => ({ ...x })) : [];
-		let first = { ...(items[0] || { out_bill_no: refundNo, state: 'INIT' }) };
 		let state = normalizeTransferState(first.state || row.state || '');
 		let queryErrorDetail = '';
 		try {
-			q = await wxPayQueryMerchantTransfer(wc, refundNo);
+			q = await wxPayQueryMerchantTransfer(wc, sliceBill);
 			state = normalizeTransferState(q?.state || q?.status || state);
 			const qPkgEarly = pickTransferPackageInfo(q);
 			first.state = state;
 			first.transfer_bill_no = safeText(q?.transfer_bill_no || first.transfer_bill_no || '', 80);
 			first.query_resp = q || {};
+			items[sliceIdx] = first;
+			const batchAfter = computeMerchantRefundBatchState(items);
 			await transferOrderCollection.doc(row._id).update({
-				state: state === 'SUCCESS' ? 'SUCCESS' : state === 'WAIT_USER_CONFIRM' ? 'PROCESSING' : row.state,
-				transfer_items: [first],
+				state: batchAfter,
+				transfer_items: items,
+				transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 				...(qPkgEarly ? { package_info: safeText(qPkgEarly, 1200) } : {}),
 				update_time: nowTs()
 			});
@@ -7610,19 +8112,20 @@ async function h5RefundConfirmPackage(data) {
 					180
 				) || '查询退款转账状态失败';
 			first.last_error = queryErrorDetail;
+			items[sliceIdx] = first;
 			await transferOrderCollection.doc(row._id).update({
-				transfer_items: [first],
+				transfer_items: items,
+				transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 				update_time: nowTs()
 			});
 			await writeTransferLog({
 				stage: 'h5_refund_confirm_query_error',
 				level: 'error',
-				withdrawNo: refundNo,
+				withdrawNo: sliceBill,
 				merchantUserId: merchant.user_id || merchant._id,
-				outBillNo: refundNo,
+				outBillNo: sliceBill,
 				message: queryErrorDetail
 			});
-			// 兜底修复：查单 NOT_FOUND 且已审核通过时，补发起一次商家转账后重查
 			if (wxCode === 'NOT_FOUND' && (!row.audit_required || safeText(row.audit_status, 20) === 'approved') && !row.applied) {
 				const openid = safeText(merchant.wx_openid, 100);
 				if (openid) {
@@ -7638,12 +8141,13 @@ async function h5RefundConfirmPackage(data) {
 							code: pipe.code || 500,
 							message: pipe.message || '发起退款打款失败',
 							data: {
-								refundNo,
-								outBillNo: refundNo,
+								refundNo: refundNoMain,
+								outBillNo: pipe?.data?.outBillNo || sliceBill,
 								state: safeText(row.state, 24),
 								detail:
 									safeText(
-										pipe?.data?.refundItems?.[0]?.error ||
+										(pipe?.data?.refundItems || []).map((x) => x.error).find(Boolean) ||
+											pipe?.data?.refundItems?.[0]?.error ||
 											pipe?.data?.transferError ||
 											'',
 										180
@@ -7657,18 +8161,31 @@ async function h5RefundConfirmPackage(data) {
 						row.state = fresh.state;
 						row.transfer_items = fresh.transfer_items;
 						row.package_info = fresh.package_info;
-						const freshFirst = Array.isArray(fresh.transfer_items) ? (fresh.transfer_items[0] || {}) : {};
-						first = { ...freshFirst };
-						state = normalizeTransferState(freshFirst.state || fresh.state || state);
+						items = sortTransferItemsBySlice(
+							Array.isArray(fresh.transfer_items) ? fresh.transfer_items.map((x) => ({ ...x })) : []
+						);
+						sliceIdx = findActiveRefundSliceIndex(items);
+						if (sliceIdx < 0) sliceIdx = 0;
+						first = { ...(items[sliceIdx] || {}) };
+						sliceBill = safeText(first.out_bill_no, 64);
+						state = normalizeTransferState(first.state || fresh.state || state);
 					}
 					try {
-						const q2 = await wxPayQueryMerchantTransfer(wc, refundNo);
+						const q2 = await wxPayQueryMerchantTransfer(wc, sliceBill);
 						q = q2;
 						state = normalizeTransferState(q2?.state || q2?.status || state);
 						first.transfer_bill_no = safeText(q2?.transfer_bill_no || first.transfer_bill_no || '', 80);
 						first.query_resp = q2 || {};
 						queryErrorDetail = '';
 						first.last_error = '';
+						items[sliceIdx] = first;
+						const batchAfter2 = computeMerchantRefundBatchState(items);
+						await transferOrderCollection.doc(row._id).update({
+							state: batchAfter2,
+							transfer_items: items,
+							transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
+							update_time: nowTs()
+						});
 					} catch (e2) {
 						const detail2 =
 							safeText(
@@ -7679,14 +8196,34 @@ async function h5RefundConfirmPackage(data) {
 							) || '补发起后查询失败';
 						queryErrorDetail = detail2;
 						first.last_error = detail2;
+						items[sliceIdx] = first;
+						await transferOrderCollection.doc(row._id).update({
+							transfer_items: items,
+							update_time: nowTs()
+						});
 					}
 				}
 			}
 		}
+
 		if (state === 'SUCCESS') {
-			const merged = { ...row, state: 'SUCCESS', transfer_items: [first] };
-			await finalizeTransferSuccessIfNeeded(merged, {});
-			return { code: 400, message: '该笔退款已到账，无需再次确认' };
+			const batchFin = computeMerchantRefundBatchState(items);
+			if (batchFin === 'SUCCESS') {
+				await finalizeTransferSuccessIfNeeded({ ...row, state: 'SUCCESS', transfer_items: items }, {});
+				return { code: 400, message: '该笔退款已到账，无需再次确认' };
+			}
+			const nextIdx = findActiveRefundSliceIndex(items);
+			const nextBill = safeText((nextIdx >= 0 && items[nextIdx] && items[nextIdx].out_bill_no) || refundNoMain, 64);
+			return {
+				code: 0,
+				message: '本笔已到账，请继续领取下一笔',
+				data: {
+					refundNo: refundNoMain,
+					outBillNo: nextBill,
+					state,
+					allDone: false
+				}
+			};
 		}
 		if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
 			return { code: 400, message: `当前状态为${state}，请联系管理员或稍后重试` };
@@ -7701,12 +8238,7 @@ async function h5RefundConfirmPackage(data) {
 			1200
 		);
 		if (state !== 'WAIT_USER_CONFIRM' || !packageInfo) {
-			const persistedErr = safeText(
-				first.last_error ||
-					(Array.isArray(row.transfer_items) && row.transfer_items[0] && row.transfer_items[0].last_error) ||
-					'',
-				180
-			);
+			const persistedErr = safeText(first.last_error || '', 180);
 			const detail = persistedErr || queryErrorDetail || '';
 			const message =
 				state && state !== 'UNKNOWN'
@@ -7716,24 +8248,27 @@ async function h5RefundConfirmPackage(data) {
 				code: 409,
 				message,
 				data: {
-					refundNo,
-					outBillNo: refundNo,
+					refundNo: refundNoMain,
+					outBillNo: sliceBill,
 					state,
 					detail
 				}
 			};
 		}
+		items[sliceIdx] = { ...first, package_info: packageInfo };
+		const batchProc = computeMerchantRefundBatchState(items);
 		await transferOrderCollection.doc(row._id).update({
 			package_info: packageInfo,
-			transfer_items: [first],
-			state: 'PROCESSING',
+			transfer_items: items,
+			state: batchProc === 'SUCCESS' ? 'SUCCESS' : 'PROCESSING',
+			transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 			update_time: nowTs()
 		});
 		await writeTransferLog({
 			stage: 'h5_refund_confirm_package_ready',
-			withdrawNo: refundNo,
+			withdrawNo: sliceBill,
 			merchantUserId: merchant.user_id || merchant._id,
-			outBillNo: refundNo,
+			outBillNo: sliceBill,
 			transferState: state,
 			message: 'H5 退款返回用户确认收款拉起参数',
 			payload: { hasPackage: true }
@@ -7745,8 +8280,8 @@ async function h5RefundConfirmPackage(data) {
 				mchId: wc.mchId,
 				appId: wc.appId,
 				package: packageInfo,
-				withdrawNo: refundNo,
-				refundNo,
+				withdrawNo: sliceBill,
+				refundNo: refundNoMain,
 				state
 			}
 		};
@@ -7801,24 +8336,46 @@ async function h5RefundReset(data, event) {
 		if (!transferOrder) {
 			const refundNo = `H5F${now}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 			const initialState = needRefundAudit ? 'PENDING_AUDIT' : 'INIT';
-			const addRes = await transferOrderCollection.add({
-				biz_key: ctx.bizKey,
-				merchant_id: merchant._id,
-				merchant_user_id: merchant.user_id || merchant._id,
-				recharge_log_ids: rows.map((x) => x._id).filter(Boolean),
-				refund_no: refundNo,
-				out_bill_no: refundNo,
-				transfer_mch_id: wc.mchId,
-				refund_mode: 'merchant_transfer',
-				transfer_items: [
+			const maxYuan = getRefundTransferSliceMaxYuan();
+			const chunks = buildRefundTransferSlicesFromFen(targetRefundFen, maxYuan);
+			let transfer_items;
+			let transfer_slice_ids;
+			if (chunks.length <= 1) {
+				transfer_items = [
 					{
+						slice_index: 0,
 						out_bill_no: refundNo,
 						transfer_amount_fen: targetRefundFen,
 						state: 'INIT',
 						transfer_bill_no: '',
 						last_error: ''
 					}
-				],
+				];
+				transfer_slice_ids = [refundNo];
+			} else {
+				const base = safeText(refundNo, 48);
+				transfer_items = chunks.map((fen, idx) => ({
+					slice_index: idx,
+					out_bill_no: makeRefundSliceOutBillNo(base, idx, 64),
+					transfer_amount_fen: fen,
+					state: 'INIT',
+					transfer_bill_no: '',
+					last_error: ''
+				}));
+				transfer_slice_ids = transfer_items.map((x) => x.out_bill_no);
+			}
+			const firstOutBill = transfer_items[0] ? transfer_items[0].out_bill_no : refundNo;
+			const addRes = await transferOrderCollection.add({
+				biz_key: ctx.bizKey,
+				merchant_id: merchant._id,
+				merchant_user_id: merchant.user_id || merchant._id,
+				recharge_log_ids: rows.map((x) => x._id).filter(Boolean),
+				refund_no: refundNo,
+				out_bill_no: firstOutBill,
+				transfer_mch_id: wc.mchId,
+				refund_mode: 'merchant_transfer',
+				transfer_items,
+				transfer_slice_ids,
 				refund_amount: Number(refundAmount || 0),
 				penalty_amount: Number(penaltyAmount || 0),
 				final_refund_amount: Number(finalRefundAmount || 0),
@@ -7902,21 +8459,34 @@ async function h5TransferStatus(data, event) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const outBillNo = safeText(data?.outBillNo || data?.refundNo, 64);
 		if (!outBillNo) return { code: 400, message: '缺少转账单号' };
-		const ordRes = await transferOrderCollection
-			.where({ out_bill_no: outBillNo, merchant_id: merchant._id, is_deleted: false })
-			.limit(1)
-			.get();
-		const ord = ordRes.data && ordRes.data[0];
+		let ord = await findRefundTransferOrderForMerchant(merchant._id, outBillNo);
+		if (!ord) {
+			const ordRes = await transferOrderCollection
+				.where({ out_bill_no: outBillNo, merchant_id: merchant._id, is_deleted: false })
+				.limit(1)
+				.get();
+			ord = ordRes.data && ordRes.data[0];
+		}
 		if (!ord) return { code: 404, message: '退款单不存在' };
 		if (ord.refund_mode === 'merchant_transfer') {
+			await getBizSettings();
 			const wc = wxCredentialsByMchId(ord.transfer_mch_id) || wxWithdrawCredentials();
-			const first = Array.isArray(ord.transfer_items) && ord.transfer_items.length ? { ...ord.transfer_items[0] } : {
-				out_bill_no: outBillNo,
-				state: ord.state || 'PROCESSING'
+			let items = sortTransferItemsBySlice(
+				Array.isArray(ord.transfer_items) ? ord.transfer_items.map((x) => ({ ...x })) : []
+			);
+			const idxHit = items.findIndex((it) => safeText(it.out_bill_no, 64) === outBillNo);
+			let sliceIdx = idxHit >= 0 ? idxHit : findActiveRefundSliceIndex(items);
+			if (sliceIdx < 0) sliceIdx = 0;
+			let first = {
+				...(items[sliceIdx] || {
+					out_bill_no: outBillNo,
+					state: ord.state || 'PROCESSING'
+				})
 			};
+			const billToQuery = safeText(first.out_bill_no || outBillNo, 64);
 			let st = normalizeTransferState(first.state || ord.state || '');
 			try {
-				const q = await wxPayQueryMerchantTransfer(wc, outBillNo);
+				const q = await wxPayQueryMerchantTransfer(wc, billToQuery);
 				first.query_resp = q || {};
 				st = normalizeTransferState(q?.state || q?.status || st);
 				first.transfer_bill_no = safeText(q?.transfer_bill_no || first.transfer_bill_no || '', 80);
@@ -7931,11 +8501,14 @@ async function h5TransferStatus(data, event) {
 				if (qPkg) first.package_info = qPkg;
 				first.last_error = '';
 				if (st === 'SUCCESS') first.transfer_time = nowTs();
+				first.state = st;
+				if (sliceIdx >= 0 && items[sliceIdx]) items[sliceIdx] = first;
+				else if (!items.length) items = [first];
 				await writeTransferLog({
 					stage: 'transfer_status_query',
-					withdrawNo: outBillNo,
+					withdrawNo: billToQuery,
 					merchantUserId: merchant.user_id || merchant._id,
-					outBillNo,
+					outBillNo: billToQuery,
 					transferState: st,
 					message: 'h5TransferStatus 查询商家转账状态',
 					payload: q || {}
@@ -7949,23 +8522,25 @@ async function h5TransferStatus(data, event) {
 				await writeTransferLog({
 					stage: 'transfer_status_query_error',
 					level: 'error',
-					withdrawNo: outBillNo,
+					withdrawNo: billToQuery,
 					merchantUserId: merchant.user_id || merchant._id,
-					outBillNo,
+					outBillNo: billToQuery,
 					transferState: st,
 					message: first.last_error
 				});
 			}
 			first.state = st;
-			const batchState = st === 'SUCCESS' ? 'SUCCESS' : (['FAIL', 'FAILED', 'CANCELLED'].includes(st) ? 'FAILED' : 'PROCESSING');
+			if (sliceIdx >= 0 && items[sliceIdx]) items[sliceIdx] = first;
+			const batchState = computeMerchantRefundBatchState(items);
 			await transferOrderCollection.doc(ord._id).update({
 				state: batchState,
-				transfer_items: [first],
+				transfer_items: items,
+				transfer_slice_ids: items.map((x) => safeText(x.out_bill_no, 64)).filter(Boolean),
 				...(first.package_info ? { package_info: safeText(first.package_info, 1200) } : {}),
 				update_time: nowTs()
 			});
 			ord.state = batchState;
-			ord.transfer_items = [first];
+			ord.transfer_items = items;
 			if (batchState === 'SUCCESS') await finalizeTransferSuccessIfNeeded(ord, event);
 			return {
 				code: 0,
@@ -7978,7 +8553,9 @@ async function h5TransferStatus(data, event) {
 					wxItemState: st,
 					transferMchId: ord.transfer_mch_id,
 					transferError: safeText(first.last_error || '', 200),
-					transferBillNo: safeText(first.transfer_bill_no || '', 80)
+					transferBillNo: safeText(first.transfer_bill_no || '', 80),
+					transferSliceDone: countRefundSlicesSucceeded(items),
+					transferSliceTotal: items.length
 				}
 			};
 		}
@@ -8034,6 +8611,8 @@ async function h5TransferStatus(data, event) {
 
 async function finalizeTransferSuccessIfNeeded(transferOrder, event) {
 	if (!transferOrder || transferOrder.applied) return;
+	const ti = transferOrder.transfer_items;
+	if (Array.isArray(ti) && ti.length && !allRefundSlicesSucceeded(ti)) return;
 	const merchantId = safeText(transferOrder.merchant_id, 80);
 	if (!merchantId) return;
 	const merchant = await getMerchantByIdOrUserId(merchantId);
@@ -10260,6 +10839,9 @@ async function h5ExchangeCouponRedeem(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		merchant.__curAgreement = await getCurrentAgreement();
+		const redeemNeedSign = requireH5AgreementSigned(merchant);
+		if (redeemNeedSign) return redeemNeedSign;
 		const code = safeText(String(data?.code || '').trim().toUpperCase(), 30);
 		if (!code) return { code: 400, message: '请输入兑换码' };
 		const now = nowTs();
@@ -10786,6 +11368,8 @@ exports.main = async (event, context) => {
 			return await refundTransferForceFail(actualData, event);
 		case 'refundTransferFixRejectedProcessing':
 			return await refundTransferFixRejectedProcessing(actualData, event);
+		case 'refundTransferRevokeApproveDev':
+			return await refundTransferRevokeApproveDev(actualData, event);
 		case 'tradeBillList':
 			return await tradeBillList(actualData);
 		case 'tradeBillDelete':
@@ -10846,6 +11430,8 @@ exports.main = async (event, context) => {
 			return await h5FinanceRecords(actualData);
 		case 'h5MineInfo':
 			return await applyH5GzipIfRequested(await h5MineInfo(actualData), actualData);
+		case 'h5AgreementSignedSnapshot':
+			return await h5AgreementSignedSnapshot(actualData);
 		case 'h5WithdrawInfo':
 			return await h5WithdrawInfo(actualData);
 		case 'h5WithdrawApply':

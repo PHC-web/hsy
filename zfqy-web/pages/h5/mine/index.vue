@@ -33,7 +33,7 @@
 					
 					<text class="fixed-notice-content">各大银行卡皆可参与活动奖励</text>
 				</view>
-				<view class="acct-card h5-glass-panel" @click="onAcctCardClick">
+				<view class="acct-card h5-glass-panel">
 					<view
 						class="acct-item"
 						:class="{ 'acct-item--link': showWithdrawEntry }"
@@ -56,7 +56,6 @@
 						<text class="k">权益费</text>
 						<text class="v">{{ rechargeAmountDisplay }}</text>
 					</view>
-					<text v-if="agreementNeedSign" class="acct-hint">点击此区域签署「{{ agreement.title || '开户优惠活动计划书' }}」</text>
 				</view>
 
 				
@@ -73,7 +72,7 @@
 						<text class="menu-title">财务管理</text>
 						<text class="menu-arrow">›</text>
 					</view>
-					<view class="menu-item" @click="goRules">
+				<!-- 	<view class="menu-item" @click="goRules">
 						<text class="menu-title">活动规则与时间</text>
 						<text class="menu-arrow">›</text>
 					</view>
@@ -84,7 +83,7 @@
 					<view class="menu-item" @click="goTransferProof">
 						<text class="menu-title">转账场景证明</text>
 						<text class="menu-arrow">›</text>
-					</view>
+					</view> -->
 					<view class="menu-item" @click="goPendingReturn">
 						<text class="menu-title">待返积分</text>
 						<text class="menu-arrow">›</text>
@@ -93,7 +92,7 @@
 						<text class="menu-title">优惠券</text>
 						<text class="menu-arrow">›</text>
 					</view>
-					<view class="menu-item" @click="goExchange">
+					<view v-if="showExchangeCodeMenu" class="menu-item" @click="goExchange">
 						<text class="menu-title">兑换码</text>
 						<text class="menu-arrow">›</text>
 					</view>
@@ -348,6 +347,18 @@ export default {
 				transform: `translate(${x}px, ${y}px) scale(${s})`,
 				transformOrigin: '0 0'
 			};
+		},
+		/** 仅普通会员、未充值用户展示兑换码入口；白银会员及已充值会员隐藏 */
+		showExchangeCodeMenu() {
+			const tier = String(this.mine.membershipTier || '').toLowerCase();
+			if (tier === 'silver' || tier === 'white_gold' || tier === 'platinum' || tier === 'diamond') {
+				return false;
+			}
+			const name = String(this.mine.membershipName || '').trim();
+			if (name.includes('白银')) return false;
+			const ra = Number(this.mine.rechargeAmount || 0);
+			if (Number.isFinite(ra) && ra > 0) return false;
+			return true;
 		}
 	},
 	onShow() {
@@ -433,11 +444,6 @@ export default {
 			uni.navigateTo({ url: '/pages/h5/coupons/index' });
 		},
 		goExchange() {
-			if (this.agreementNeedSign) {
-				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.openAgreementPopup();
-				return;
-			}
 			uni.navigateTo({ url: '/pages/h5/exchange/index' });
 		},
 		goPendingReturn() {
@@ -448,10 +454,6 @@ export default {
 		},
 		goFeedback() {
 			uni.navigateTo({ url: '/pages/h5/feedback/index' });
-		},
-		onAcctCardClick() {
-			if (!this.agreementNeedSign) return;
-			this.openAgreementPopup();
 		},
 		onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
@@ -723,11 +725,6 @@ export default {
 			uni.redirectTo({ url: '/pages/h5/income/index' });
 		},
 		goRecharge() {
-			if (this.agreementNeedSign) {
-				uni.showToast({ title: '请先签署优惠活动计划书', icon: 'none' });
-				this.openAgreementPopup();
-				return;
-			}
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		},
 		goPayNotify() {

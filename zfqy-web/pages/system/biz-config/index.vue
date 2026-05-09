@@ -95,6 +95,16 @@
 						<text class="label">锁定期违约金比例(%)</text>
 						<uni-easyinput v-model="form.refundPenaltyRate" type="number" placeholder="0~100，默认50" />
 					</view>
+					<view class="field field--wide">
+						<text class="label">退款拆单单笔上限(元)</text>
+						<uni-easyinput v-model="form.refundTransferSliceMaxYuan" type="number" placeholder="默认200，微信场景常用200" />
+						<text class="field-hint">H5 充值退款走商家转账时，单笔超过该金额会拆成多笔；保存后写入 Redis 供云函数快速读取。环境变量 REFUND_TRANSFER_SLICE_MAX_YUAN 仅在未配置该项时生效。</text>
+					</view>
+					<view class="field field--wide field-row-switch">
+						<text class="label">允许撤销审核同意（开发联调）</text>
+						<switch :checked="form.refundApproveRevokeDevEnabled" @change="onRefundApproveRevokeDevChange" />
+						<text class="field-hint">开启后，退款列表可对「已同意」且未到账的退款显示「撤销同意(开发)」。依赖业务参数存储，无需云函数环境变量；生产环境请勿开启。</text>
+					</view>
 				</view>
 			</view>
 
@@ -131,7 +141,7 @@
 
 			<view class="card">
 				<view class="card-title">5）测试商户白名单（无门槛积分兑换）</view>
-				<text class="card-tip">命中商户可不受最低兑换金额与提现时间限制。支持输入商户 user_id 或商户记录 _id，多个ID可用逗号或换行分隔。</text>
+				<text class="card-tip">命中商户可不受最低兑换金额、提现办理时间限制，且白银会员不受「当月流水≥5万才可提现」限制。支持输入商户 user_id 或商户记录 _id，多个ID可用逗号或换行分隔。</text>
 				<uni-easyinput
 					v-model.trim="form.testMerchantIdsText"
 					type="textarea"
@@ -163,6 +173,8 @@ const defaultForm = () => ({
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
+	refundTransferSliceMaxYuan: 200,
+	refundApproveRevokeDevEnabled: false,
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	testMerchantIdsText: '',
@@ -189,6 +201,9 @@ export default {
 			} finally {
 				this.loading = false;
 			}
+		},
+		onRefundApproveRevokeDevChange(e) {
+			this.form.refundApproveRevokeDevEnabled = !!(e && e.detail && e.detail.value);
 		},
 		async save() {
 			this.saving = true;
@@ -265,6 +280,10 @@ export default {
 	gap: 10px;
 }
 .field { display: flex; flex-direction: column; gap: 6px; }
+.field--wide { grid-column: 1 / -1; }
+.field-row-switch .label { margin-bottom: 0; }
+.field-row-switch switch { align-self: flex-start; }
+.field-hint { font-size: 11px; color: #909399; line-height: 1.45; margin-top: 2px; }
 .label { font-size: 12px; color: #606266; }
 
 @media (max-width: 1200px) {

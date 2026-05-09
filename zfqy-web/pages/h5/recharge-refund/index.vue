@@ -28,9 +28,9 @@
 
 					<view class="rule-card h5-glass-panel">
 						<text class="rule-title">退款规则说明</text>
-						<!-- <text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
+						<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
 						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text> -->
+						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
 						<text class="rule-link" @click="onViewAgreement">查看协议</text>
 					</view>
 
@@ -64,6 +64,9 @@
 						mode="widthFix"
 						@click="previewAgreementImage"
 					/>
+					<view v-else-if="agreementViewerSigned || !agreementViewerNeedSign || agreementViewerSignedAt" class="agreement-empty">
+						<text>系统已记录您的签署，签名图暂不可展示时可联系客服。</text>
+					</view>
 					<view v-else class="agreement-empty">
 						<text>暂未签署协议</text>
 					</view>
@@ -80,6 +83,7 @@
 import {
 	h5HomeDashboard,
 	h5MineInfo,
+	h5AgreementSignedSnapshot,
 	h5RefundReset,
 	h5TransferStatus,
 	h5RefundEntryValidate,
@@ -98,7 +102,10 @@ function defaultRefundUi() {
 		refundable: true,
 		refundAmount: '0.00',
 		penaltyAmount: '0.00',
-		finalRefundAmount: '0.00'
+		finalRefundAmount: '0.00',
+		transferSliceTotal: 0,
+		transferSliceDone: 0,
+		transferSliceIndex: 0
 	};
 }
 
@@ -111,7 +118,10 @@ export default {
 			refundEntryToken: '',
 			fromFeedbackEntry: true,
 			refundUi: defaultRefundUi(),
-			mineMerchant: {},
+			agreementViewerImg: '',
+			agreementViewerNeedSign: true,
+			agreementViewerSigned: false,
+			agreementViewerSignedAt: '',
 			silver: {
 				active: false,
 				expireAt: 0,
@@ -189,10 +199,19 @@ export default {
 		},
 		refundButtonLabel() {
 			const p = this.refundUi && this.refundUi.phase;
+			const u = this.refundUi || {};
+			const total = Number(u.transferSliceTotal || 0);
+			const done = Number(u.transferSliceDone || 0);
 			if (p === 'auditing') return '审核中';
 			if (p === 'processing') return '加载中';
 			if (p === 'failed') return '退款失败，请联系客服';
-			if (p === 'confirm_transfer') return '审核通过，点击提取';
+			if (p === 'confirm_transfer') {
+				if (total > 1) {
+					const next = Math.min(done + 1, total);
+					return `审核通过，领取第 ${next}/${total} 笔`;
+				}
+				return '审核通过，点击提取';
+			}
 			if (p === 'done') return '退款已完成';
 			return '申请退款并重置权益数据';
 		},
@@ -226,7 +245,7 @@ export default {
 			return `距离到期：${d}天 ${String(h).padStart(2, '0')}时 ${String(m).padStart(2, '0')}分`;
 		},
 		agreementImageUrl() {
-			return String(this.mineMerchant && this.mineMerchant.agreementImg ? this.mineMerchant.agreementImg : '').trim();
+			return String(this.agreementViewerImg || '').trim();
 		}
 	},
 	onLoad(options) {
@@ -369,18 +388,44 @@ export default {
 				const mineRes = this.unwrapResult(mineRaw);
 				if (mineRes.code === 0) {
 					this.silver = Object.assign({}, this.silver, mineRes.data?.silver || {});
-					this.mineMerchant = Object.assign({}, mineRes.data?.merchant || {});
 				}
 			} finally {
 				this.loading = false;
 			}
 		},
-		onViewAgreement() {
-			if (!this.agreementImageUrl) {
+		async onViewAgreement() {
+			uni.showLoading({ title: '加载中...', mask: true });
+			try {
+				const raw = await h5AgreementSignedSnapshot();
+				const res = this.unwrapResult(raw);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+					return;
+				}
+				const d = res.data || {};
+				const img = String(d.agreementImg || '').trim();
+				this.agreementViewerImg = img;
+				this.agreementViewerNeedSign = !!d.needSign;
+				this.agreementViewerSigned = !!d.agreementSigned;
+				this.agreementViewerSignedAt = String(d.agreementSignedAt || '').trim();
+				if (img) {
+					this.$refs.agreementViewPopup.open();
+					return;
+				}
+				const signedOk =
+					d.needSign === false || !!d.agreementSigned || String(d.agreementSignedAt || '').trim();
+				if (signedOk) {
+					uni.showModal({
+						title: '协议已签署',
+						content: '系统已记录您的签署。若此处无法显示签名图，请到「我的」页查看或联系客服获取协议文本。',
+						showCancel: false
+					});
+					return;
+				}
 				uni.showToast({ title: '暂未签署协议', icon: 'none' });
-				return;
+			} finally {
+				uni.hideLoading();
 			}
-			this.$refs.agreementViewPopup.open();
 		},
 		previewAgreementImage() {
 			const src = String(this.agreementImageUrl || '').trim();
@@ -419,20 +464,7 @@ export default {
 				this.loading = false;
 			}
 		},
-		async goRecharge() {
-			const mine = await h5MineInfo();
-			const mineRes = this.unwrapResult(mine);
-			if (mineRes.code !== 0) {
-				uni.showToast({ title: mineRes.message || '获取用户信息失败', icon: 'none' });
-				return;
-			}
-			const m = mineRes.data && mineRes.data.merchant;
-			const agreement = (mineRes.data && mineRes.data.agreement) || {};
-			if (!m || !!agreement.needSign) {
-				uni.showToast({ title: '请先在「我的」中签署优惠活动计划书', icon: 'none' });
-				uni.navigateTo({ url: '/pages/h5/mine/index' });
-				return;
-			}
+		goRecharge() {
 			uni.navigateTo({ url: '/pages/h5/recharge/index' });
 		},
 		onRefundMainAction() {
@@ -444,13 +476,14 @@ export default {
 			this.refundApply();
 		},
 		async confirmRefundTransfer() {
-			const no = String(this.refundUi.refundNo || this.refundUi.outBillNo || '').trim();
-			if (!no) {
+			const bill = String(this.refundUi.outBillNo || this.refundUi.refundNo || '').trim();
+			const mainRef = String(this.refundUi.refundNo || '').trim();
+			if (!bill) {
 				uni.showToast({ title: '缺少退款单号', icon: 'none' });
 				return;
 			}
 			try {
-				const pre = await h5TransferStatus(no);
+				const pre = await h5TransferStatus(bill);
 				const preRes = this.unwrapResult(pre);
 				if (preRes.code === 0 && preRes.data) {
 					const s = String(preRes.data.wxItemState || preRes.data.state || preRes.data.refundState || '').toUpperCase();
@@ -473,8 +506,8 @@ export default {
 			uni.showLoading({ title: '拉起中...', mask: true });
 			try {
 				const raw = await h5RefundConfirmPackage({
-					refundNo: no,
-					outBillNo: no,
+					refundNo: mainRef || bill,
+					outBillNo: bill,
 					refundEntryToken: this.refundEntryToken,
 					entrySource: 'feedback'
 				});
@@ -501,10 +534,27 @@ export default {
 							const msg = String((r && r.err_msg) || '');
 							if (msg.indexOf('ok') >= 0) {
 								this.markNeedRefreshHomeMine();
-								uni.showToast({ title: '确认成功，正在返回首页', icon: 'none' });
-								setTimeout(() => {
-									uni.redirectTo({ url: '/pages/h5/home/index' });
-								}, 350);
+								const doneRefresh = async () => {
+									await this.refreshRefundUiOnly();
+									const phase = String(this.refundUi?.phase || '');
+									const total = Number(this.refundUi?.transferSliceTotal || 0);
+									const doneCount = Number(this.refundUi?.transferSliceDone || 0);
+									if (phase === 'done') {
+										uni.showToast({ title: '退款已全部完成', icon: 'none' });
+										setTimeout(() => {
+											uni.redirectTo({ url: '/pages/h5/home/index' });
+										}, 400);
+									} else if (total > 1 && doneCount < total) {
+										uni.showToast({
+											title: '本笔已确认，请再次点击按钮领取下一笔',
+											icon: 'none',
+											duration: 2800
+										});
+									} else {
+										uni.showToast({ title: '确认成功', icon: 'none' });
+									}
+								};
+								doneRefresh();
 							} else if (msg.indexOf('cancel') >= 0) {
 								uni.showToast({ title: '你已取消确认收款', icon: 'none' });
 							} else {
@@ -514,10 +564,10 @@ export default {
 						}
 					);
 				});
-				await this.refreshRefundUiOnly();
 				if (String(this.refundUi?.phase || '') === 'done') {
 					this.markNeedRefreshHomeMine();
 				}
+				this.syncStatusPoll();
 			} finally {
 				uni.hideLoading();
 			}

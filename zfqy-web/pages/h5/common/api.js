@@ -120,6 +120,11 @@ export function h5MineInfo() {
 	return merchantCall('h5MineInfo', Object.assign(merchantIdentity(), { cmp: 1 }));
 }
 
+/** 按需拉取协议签署快照（含签名图 URL），勿放入 h5MineInfo，避免「我的」页变慢 */
+export function h5AgreementSignedSnapshot() {
+	return merchantCall('h5AgreementSignedSnapshot', merchantIdentity());
+}
+
 export async function h5MineInfoCached(options = {}) {
 	const maxAgeMs = Number(options.maxAgeMs || H5_CACHE_TTL_MS);
 	const force = !!options.force;
