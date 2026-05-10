@@ -1,0 +1,14 @@
+[
+	{
+		"IndexName": "receive_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "receive_time",
+					"Direction": "-1"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	}
+]

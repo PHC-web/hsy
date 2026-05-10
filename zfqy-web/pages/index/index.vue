@@ -64,24 +64,12 @@
 							<view class="returns-metric-label">提现率</view>
 							<view class="returns-metric-value">{{ withdrawRatePercent }}%</view>
 						</view>
-						<view class="returns-metric">
-							<view class="returns-metric-label">总充值金额</view>
-							<view class="returns-metric-value">{{ toMoney(dashboard.totalRechargeAmount) }}</view>
-						</view>
-						<view class="returns-metric">
-							<view class="returns-metric-label">总退款金额</view>
-							<view class="returns-metric-value">{{ toMoney(dashboard.totalRefundAmount) }}</view>
-						</view>
-						<view class="returns-metric returns-metric--rate">
-							<view class="returns-metric-label">退款率</view>
-							<view class="returns-metric-value">{{ refundRatePercent }}%</view>
-						</view>
 					</view>
 				</view>
 
 				<view class="summary-card">
 					<view class="summary-title">数据说明</view>
-					<view class="summary-item">资金汇总：已提现为到账金额；总刷卡与「品牌-刷卡记录」页顶部交易额一致；提现率＝已提现÷总刷卡；退款率＝总退款÷总充值。下方「流水统计」与刷卡记录同一套过滤规则</view>
+					<view class="summary-item">资金汇总：已提现为到账金额；总刷卡与「品牌-刷卡记录」页顶部交易额一致；提现率＝已提现÷总刷卡。下方「流水统计」与刷卡记录同一套过滤规则</view>
 					<view class="summary-item">提现：按提现记录汇总，金额保留两位小数</view>
 					<view class="summary-item">激活：今日激活按当天 00:00 后时间统计</view>
 					<view class="summary-item">会员率：会员数 / 用户数</view>
@@ -668,13 +656,6 @@
 				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
 				if (!Number.isFinite(s) || s <= 0) return '0.00';
 				return ((w / s) * 100).toFixed(2);
-			},
-			/** 总退款金额 / 总充值金额 × 100，分母为 0 时显示 0.00 */
-			refundRatePercent() {
-				const r = Number(this.dashboard.totalRefundAmount || 0);
-				const c = Number(this.dashboard.totalRechargeAmount || 0);
-				if (!Number.isFinite(c) || c <= 0) return '0.00';
-				return ((r / c) * 100).toFixed(2);
 			}
 		}
 	};

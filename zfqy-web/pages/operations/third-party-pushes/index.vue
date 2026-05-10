@@ -38,23 +38,38 @@
 						<uni-table :key="'t1-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
 							<uni-th width="150">接收时间</uni-th>
-							<uni-th width="142" filter-type="search" @filter-change="headerFilterChange($event, 'firstagentid')">代理商编号</uni-th>
+							<uni-th
+								width="142"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0001.firstagentid"
+								@filter-change="headerFilterChange($event, 'firstagentid')"
+							>代理商编号</uni-th>
 							<!-- <uni-th width="130" filter-type="search" @filter-change="headerFilterChange($event, 'logno')">流水号</uni-th> -->
-							<uni-th width="124" filter-type="search" @filter-change="headerFilterChange($event, 'mercid')">商户号</uni-th>
-							<uni-th width="132" filter-type="search" @filter-change="headerFilterChange($event, 'termphyno')">码牌号</uni-th>
+							<uni-th
+								width="124"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0001.mercid"
+								@filter-change="headerFilterChange($event, 'mercid')"
+							>商户号</uni-th>
+							<uni-th
+								width="132"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0001.termphyno"
+								@filter-change="headerFilterChange($event, 'termphyno')"
+							>码牌号</uni-th>
 							<uni-th width="92">交易日期</uni-th>
 							<uni-th width="88">交易时间</uni-th>
 							<uni-th
 								width="122"
 								filter-type="select"
-								:filter-data="paychannelFilterData"
+								:filter-data="tyy0001PaychannelFilterData"
 								@filter-change="headerFilterChange($event, 'paychannel')"
 							>支付方式</uni-th>
 							<uni-th width="92">交易金额</uni-th>
 							<uni-th
 								width="108"
 								filter-type="select"
-								:filter-data="refundFilterData"
+								:filter-data="tyy0001RefundFilterData"
 								@filter-change="headerFilterChange($event, 'refund')"
 							>是否退款</uni-th>
 							<!-- <uni-th width="56">补贴类型</uni-th> -->
@@ -90,8 +105,18 @@
 					<uni-table v-if="activeType === 'TYY0002'" :key="'t2-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
 							<uni-th width="150">接收时间</uni-th>
-							<uni-th width="130" filter-type="search" @filter-change="headerFilterChange($event, 'firstagentid')">代理商编号</uni-th>
-							<uni-th width="110" filter-type="search" @filter-change="headerFilterChange($event, 'mercid')">商户号</uni-th>
+							<uni-th
+								width="130"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0002.firstagentid"
+								@filter-change="headerFilterChange($event, 'firstagentid')"
+							>代理商编号</uni-th>
+							<uni-th
+								width="110"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0002.mercid"
+								@filter-change="headerFilterChange($event, 'mercid')"
+							>商户号</uni-th>
 							<uni-th width="140">商户名称</uni-th>
 							<uni-th width="88">注册日期 </uni-th>
 						
@@ -125,26 +150,51 @@
 					<uni-table v-if="activeType === 'TYY0003'" :key="'t3-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
 							<uni-th width="150">接收时间</uni-th>
-							<uni-th width="130" filter-type="search" @filter-change="headerFilterChange($event, 'firstagentid')">代理商编号</uni-th>
-							<uni-th width="100" filter-type="search" @filter-change="headerFilterChange($event, 'termno')">终端号</uni-th>
-							<uni-th width="140" filter-type="search" @filter-change="headerFilterChange($event, 'termphyno')">终端机身号</uni-th>
-							<uni-th width="110" filter-type="search" @filter-change="headerFilterChange($event, 'mercid')">绑定商户号</uni-th>
+							<uni-th
+								width="130"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0003.firstagentid"
+								@filter-change="headerFilterChange($event, 'firstagentid')"
+							>代理商编号</uni-th>
+							<uni-th
+								width="100"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0003.termno"
+								@filter-change="headerFilterChange($event, 'termno')"
+							>终端号</uni-th>
+							<uni-th
+								width="140"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0003.termphyno"
+								@filter-change="headerFilterChange($event, 'termphyno')"
+							>终端机身号</uni-th>
+							<uni-th
+								width="110"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0003.mercid"
+								@filter-change="headerFilterChange($event, 'mercid')"
+							>绑定商户号</uni-th>
 							<uni-th width="72">政策ID</uni-th>
 							<uni-th
 								width="100"
 								filter-type="select"
-								:filter-data="equiptypeFilterData"
+								:filter-data="tyy0003EquiptypeFilterData"
 								@filter-change="headerFilterChange($event, 'equiptype')"
 							>设备类型</uni-th>
 							<uni-th
 								width="96"
 								filter-type="select"
-								:filter-data="allinoneFilterData"
+								:filter-data="tyy0003AllinoneFilterData"
 								@filter-change="headerFilterChange($event, 'allinone')"
 							>是否一体机</uni-th>
 							<uni-th width="88">绑定日期</uni-th>
 							<uni-th width="72">绑定时间</uni-th>
-							<uni-th width="120" filter-type="search" @filter-change="headerFilterChange($event, 'spno')">绑定音箱号</uni-th>
+							<uni-th
+								width="120"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0003.spno"
+								@filter-change="headerFilterChange($event, 'spno')"
+							>绑定音箱号</uni-th>
 							<uni-th width="88">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item._id">
@@ -172,9 +222,19 @@
 					<uni-table v-if="activeType === 'TYY0004'" :key="'t4-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
 							<uni-th width="150">接收时间</uni-th>
-							<uni-th width="130" filter-type="search" @filter-change="headerFilterChange($event, 'firstagentid')">一级代理商编号</uni-th>
+							<uni-th
+								width="130"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0004.firstagentid"
+								@filter-change="headerFilterChange($event, 'firstagentid')"
+							>一级代理商编号</uni-th>
 							<!-- <uni-th width="120">id</uni-th> -->
-							<uni-th width="110" filter-type="search" @filter-change="headerFilterChange($event, 'mercid')">商户号</uni-th>
+							<uni-th
+								width="110"
+								filter-type="search"
+								:filter-default-value="filtersByType.TYY0004.mercid"
+								@filter-change="headerFilterChange($event, 'mercid')"
+							>商户号</uni-th>
 							<uni-th width="88">政策ID</uni-th>
 							<uni-th width="88">通讯费ID</uni-th>
 							<uni-th width="140">缴费完成时间</uni-th>
@@ -264,6 +324,37 @@ function defaultRange() {
 	return [start.getTime(), end.getTime()];
 }
 
+/** 各 Tab 独立表头筛选，避免 TYY0001 / TYY0002 等同名列共用一份 filters 导致切换后条件错乱 */
+function defaultFiltersByType() {
+	return {
+		TYY0001: {
+			firstagentid: '',
+			mercid: '',
+			logno: '',
+			termphyno: '',
+			refund: '',
+			paychannel: ''
+		},
+		TYY0002: {
+			firstagentid: '',
+			mercid: ''
+		},
+		TYY0003: {
+			firstagentid: '',
+			mercid: '',
+			termno: '',
+			termphyno: '',
+			spno: '',
+			equiptype: '',
+			allinone: ''
+		},
+		TYY0004: {
+			firstagentid: '',
+			mercid: ''
+		}
+	};
+}
+
 export default {
 	data() {
 		return {
@@ -277,18 +368,7 @@ export default {
 				{ key: 'TYY0004', name: 'TYY0004 通讯费' }
 			],
 			list: [],
-			filters: {
-				firstagentid: '',
-				mercid: '',
-				logno: '',
-				termphyno: '',
-				termno: '',
-				spno: '',
-				equiptype: '',
-				allinone: '',
-				refund: '',
-				paychannel: ''
-			},
+			filtersByType: defaultFiltersByType(),
 			equiptypeFilterData: [
 				{ text: '码牌', value: '1', checked: false },
 				{ text: 'POS', value: '2', checked: false },
@@ -330,12 +410,33 @@ export default {
 			} catch (e) {
 				return '';
 			}
+		},
+		/** select 类表头不会读 filterDefaultValue，用 filterData 内 checked 与 filtersByType 对齐 */
+		tyy0001PaychannelFilterData() {
+			return this.mergeSelectFilterChecked(this.paychannelFilterData, this.filtersByType.TYY0001.paychannel);
+		},
+		tyy0001RefundFilterData() {
+			return this.mergeSelectFilterChecked(this.refundFilterData, this.filtersByType.TYY0001.refund);
+		},
+		tyy0003EquiptypeFilterData() {
+			return this.mergeSelectFilterChecked(this.equiptypeFilterData, this.filtersByType.TYY0003.equiptype);
+		},
+		tyy0003AllinoneFilterData() {
+			return this.mergeSelectFilterChecked(this.allinoneFilterData, this.filtersByType.TYY0003.allinone);
 		}
 	},
 	mounted() {
 		this.search();
 	},
 	methods: {
+		mergeSelectFilterChecked(baseList, selectedVal) {
+			const sel = String(selectedVal == null ? '' : selectedVal).trim();
+			return (baseList || []).map((item) => ({
+				text: item.text,
+				value: item.value,
+				checked: sel !== '' && String(item.value) === sel
+			}));
+		},
 		fmtTs(ts) {
 			if (ts == null || ts === '') return '-';
 			const n = Number(ts);
@@ -400,6 +501,8 @@ export default {
 			this.search();
 		},
 		headerFilterChange(e, field) {
+			const bucket = this.filtersByType[this.activeType];
+			if (!bucket) return;
 			const { filterType, filter } = e || {};
 			if (filterType === 'search') {
 				if (
@@ -410,7 +513,9 @@ export default {
 					field === 'termno' ||
 					field === 'spno'
 				) {
-					this.filters[field] = String(filter == null ? '' : filter).trim();
+					if (Object.prototype.hasOwnProperty.call(bucket, field)) {
+						bucket[field] = String(filter == null ? '' : filter).trim();
+					}
 					this.pageInfo.currentPage = 1;
 					this.search();
 				}
@@ -423,8 +528,10 @@ export default {
 					field === 'equiptype' ||
 					field === 'allinone')
 			) {
-				const arr = Array.isArray(filter) ? filter.map(String) : [];
-				this.filters[field] = arr.length ? arr[0] : '';
+				if (Object.prototype.hasOwnProperty.call(bucket, field)) {
+					const arr = Array.isArray(filter) ? filter.map(String) : [];
+					bucket[field] = arr.length ? arr[0] : '';
+				}
 				this.pageInfo.currentPage = 1;
 				this.search();
 				return;
@@ -438,21 +545,22 @@ export default {
 				timeStart = Number(r[0]);
 				timeEnd = Number(r[1]);
 			}
+			const t = this.activeType;
+			const f = this.filtersByType[t] || {};
 			return {
-				type: this.activeType,
+				type: t,
 				page: this.pageInfo.currentPage,
 				pageSize: this.pageInfo.pageSize,
-				firstagentid: this.filters.firstagentid,
-				mercid: this.filters.mercid,
-				logno: this.activeType === 'TYY0001' ? this.filters.logno : '',
-				termphyno:
-					this.activeType === 'TYY0001' || this.activeType === 'TYY0003' ? this.filters.termphyno : '',
-				termno: this.activeType === 'TYY0003' ? this.filters.termno : '',
-				spno: this.activeType === 'TYY0003' ? this.filters.spno : '',
-				equiptype: this.activeType === 'TYY0003' ? this.filters.equiptype : '',
-				allinone: this.activeType === 'TYY0003' ? this.filters.allinone : '',
-				refund: this.activeType === 'TYY0001' ? this.filters.refund : '',
-				paychannel: this.activeType === 'TYY0001' ? this.filters.paychannel : '',
+				firstagentid: f.firstagentid || '',
+				mercid: f.mercid || '',
+				logno: t === 'TYY0001' ? f.logno || '' : '',
+				termphyno: t === 'TYY0001' || t === 'TYY0003' ? f.termphyno || '' : '',
+				termno: t === 'TYY0003' ? f.termno || '' : '',
+				spno: t === 'TYY0003' ? f.spno || '' : '',
+				equiptype: t === 'TYY0003' ? f.equiptype || '' : '',
+				allinone: t === 'TYY0003' ? f.allinone || '' : '',
+				refund: t === 'TYY0001' ? f.refund || '' : '',
+				paychannel: t === 'TYY0001' ? f.paychannel || '' : '',
 				timeStart,
 				timeEnd
 			};
@@ -469,8 +577,16 @@ export default {
 						return;
 					}
 					const d = res.data || {};
+					const total = Number(d.total) || 0;
+					this.pageInfo.total = total;
+					const ps = Math.max(1, Number(this.pageInfo.pageSize) || 15);
+					const maxPage = Math.max(1, Math.ceil(total / ps) || 1);
+					const cur = Math.max(1, Number(this.pageInfo.currentPage) || 1);
+					if (cur > maxPage) {
+						this.pageInfo.currentPage = maxPage;
+						return this.search();
+					}
 					this.list = d.list || [];
-					this.pageInfo.total = Number(d.total) || 0;
 				})
 				.catch(() => {
 					this.loading = false;
@@ -581,22 +697,76 @@ export default {
 /* 表头单行；详情按钮不换行、不被压扁 */
 .push-table-wrap ::v-deep .uni-table-th {
 	white-space: nowrap;
+	text-align: center !important;
 }
+/* 标题与筛选图标作为一组整体居中 */
 .push-table-wrap ::v-deep .uni-table-th-content {
 	white-space: nowrap;
 	flex-wrap: nowrap;
+	justify-content: center !important;
+	width: 100%;
+	box-sizing: border-box;
 }
 .push-table-wrap ::v-deep .uni-table-th-row {
 	flex-wrap: nowrap;
 	align-items: center;
+	justify-content: center;
+	width: 100%;
+	box-sizing: border-box;
 }
-/* TYY0001：支付方式列 — uni-th 内标题区 flex:1 会把「文字」与「筛选图标」中间拉出大块空白 */
+/* 表头筛选浮层：底部「搜索 / 重置」与顶部「刷新」同为 uni mini 按钮规格并居中 */
+.push-table-wrap ::v-deep .uni-filter-dropdown .opera-area.flex-r {
+	justify-content: center;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	box-sizing: border-box;
+}
+.push-table-wrap ::v-deep .uni-filter-dropdown .opera-area .flex-f {
+	flex: 0 0 auto;
+	min-width: 76px;
+}
+.push-table-wrap ::v-deep .uni-filter-dropdown .opera-area .btn {
+	margin: 0 !important;
+	min-height: 28px;
+	line-height: 28px;
+	padding: 0 14px !important;
+	font-size: 12px;
+	font-weight: 400;
+	border-radius: 4px;
+	box-sizing: border-box;
+	display: inline-flex !important;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+/* 与 uni.scss $uni-color-primary / 顶部「刷新」主色一致 */
+.push-table-wrap ::v-deep .uni-filter-dropdown .opera-area .btn-submit {
+	background-color: #2563eb !important;
+	color: #fff !important;
+	border: 1px solid #2563eb !important;
+}
+/* 对齐默认 mini 描边按钮（重置） */
+.push-table-wrap ::v-deep .uni-filter-dropdown .opera-area .btn-default:not(.disable) {
+	background-color: #fff !important;
+	color: #606266 !important;
+	border: 1px solid #dcdfe6 !important;
+}
+.push-table-wrap ::v-deep .uni-filter-dropdown .opera-area .btn-default.disable {
+	opacity: 0.5;
+	cursor: default;
+	border-color: #ebeef5 !important;
+	color: #c0c4cc !important;
+	background-color: #f5f7fa !important;
+}
+/* TYY0001：支付方式列 — 限制标题区伸缩，避免与筛选图标间距异常 */
 .push-table-wrap ::v-deep .tyy0001-table-wrap tr:first-child > th:nth-child(7) .uni-table-th-content {
 	flex: 0 1 auto;
 	min-width: 0;
 }
 .push-table-wrap ::v-deep .tyy0001-table-wrap tr:first-child > th:nth-child(7) .uni-table-th-row {
-	justify-content: flex-start;
+	justify-content: center;
 }
 .push-table-wrap ::v-deep .tyy0001-table-wrap td:nth-child(7) {
 	white-space: nowrap;

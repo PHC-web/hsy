@@ -176,7 +176,16 @@ async function thirdPartyPushList(data = {}) {
 		};
 	} catch (e) {
 		console.error('thirdPartyPushList failed', e);
-		return { code: 500, message: e.message || '查询失败' };
+		const raw = e && e.message ? String(e.message) : String(e);
+		/** MongoDB 大 skip + sort 无索引时易触发 32MB 排序内存上限（error 96） */
+		if (raw.indexOf('33554432') >= 0 || raw.indexOf('Sort operation') >= 0) {
+			return {
+				code: 500,
+				message:
+					'列表按接收时间排序时数据量过大（分页较深时需索引支撑）。请在 uniCloud 数据库控制台为当前类型对应集合创建 receive_time 降序索引（已提供 hsy-push-*.index.json），上传索引后重试；或缩小「接收时间」范围、用表头筛选缩小结果集。'
+			};
+		}
+		return { code: 500, message: raw || '查询失败' };
 	}
 }
 

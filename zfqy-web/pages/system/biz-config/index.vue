@@ -105,6 +105,18 @@
 						<switch :checked="form.refundApproveRevokeDevEnabled" @change="onRefundApproveRevokeDevChange" />
 						<text class="field-hint">开启后，退款列表可对「已同意」且未到账的退款显示「撤销同意(开发)」。依赖业务参数存储，无需云函数环境变量；生产环境请勿开启。</text>
 					</view>
+					<view class="field field--wide">
+						<text class="label">H5「退款与周期」规则说明（每行一条）</text>
+						<uni-easyinput
+							v-model="form.refundRuleLinesText"
+							type="textarea"
+							:inputBorder="true"
+							:autoHeight="true"
+							:maxlength="16000"
+							placeholder="每行一条说明；留空保存后将使用系统默认三条说明"
+						/>
+						<text class="field-hint">最多 20 行、每行最多 800 字。可使用占位符：`{cycleDays}`（锁定天数）、`{windowDays}`（退款窗口天数）、`{penaltyRate}`（锁定期违约金比例，与上方一致）。保存后写入业务参数并刷新 Redis，H5 展示为替换占位符后的文案。</text>
+					</view>
 				</view>
 			</view>
 
@@ -147,6 +159,7 @@
 					type="textarea"
 					:inputBorder="true"
 					:autoHeight="true"
+					:maxlength="8000"
 					placeholder="示例：\n668f98c7ab1234567890abcd\nuid_merchant_test_001, uid_merchant_test_002"
 				/>
 			</view>
@@ -178,7 +191,8 @@ const defaultForm = () => ({
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	testMerchantIdsText: '',
-	servicePhone: '400-668-5796'
+	servicePhone: '400-668-5796',
+	refundRuleLinesText: ''
 });
 
 export default {
@@ -197,6 +211,9 @@ export default {
 				const merged = Object.assign(defaultForm(), res.data || {});
 				const ids = Array.isArray(merged.testMerchantIds) ? merged.testMerchantIds : [];
 				merged.testMerchantIdsText = ids.join('\n');
+				const ruleLines = Array.isArray(merged.h5RefundRuleLines) ? merged.h5RefundRuleLines : [];
+				merged.refundRuleLinesText = ruleLines.join('\n');
+				delete merged.h5RefundRuleLines;
 				this.form = merged;
 			} finally {
 				this.loading = false;
@@ -218,6 +235,11 @@ export default {
 					)
 				);
 				delete payload.testMerchantIdsText;
+				payload.h5RefundRuleLines = String(payload.refundRuleLinesText || '')
+					.split(/\r?\n/)
+					.map((x) => String(x || '').trim())
+					.filter(Boolean);
+				delete payload.refundRuleLinesText;
 				const res = await this.$request('bizConfigSave', payload, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '保存失败', icon: 'none' });
 				uni.showToast({ title: '保存成功', icon: 'success' });

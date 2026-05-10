@@ -4114,6 +4114,18 @@ async function getMerchantByIdOrUserId(key) {
 	if (isValidCnMobile(val)) ors.push({ mobile: val });
 	const res = await merchantCollection.where(db.command.or(ors)).limit(1).get();
 	if (res.data && res.data.length) return res.data[0];
+	const mRes = await machineCollection
+		.where({ device_id: val, is_deleted: false, is_bound: 1 })
+		.field({ bind_user_id: true })
+		.limit(1)
+		.get();
+	const bindUid = mRes.data && mRes.data[0] && mRes.data[0].bind_user_id ? String(mRes.data[0].bind_user_id).trim() : '';
+	if (!bindUid) return null;
+	const res2 = await merchantCollection
+		.where(db.command.or([{ user_id: bindUid }, { _id: bindUid }]))
+		.limit(1)
+		.get();
+	if (res2.data && res2.data.length) return res2.data[0];
 	return null;
 }
 
@@ -5133,6 +5145,43 @@ const DEFAULT_RECHARGE_RULES = [
 		tip: '1000元配置200万交易量，等于补贴市场价的7600元手续费；另可在充值页任选蓝牙音响或扫码POS机一台（支付成功后发货）'
 	}
 ];
+/** H5「退款与周期」页规则说明，支持占位符 {cycleDays}、{windowDays}、{penaltyRate}（与参数配置中锁定周期/窗口/违约金一致） */
+const DEFAULT_H5_REFUND_RULE_LINES = [
+	'1）重置后 {cycleDays} 天内无法退款。',
+	'2）满 {cycleDays} 天后，系统会自动给客户 {windowDays} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。',
+	'3）如客户执意在 {cycleDays} 天内退款，将扣除 {penaltyRate}% 违约金后返还剩余款项。'
+];
+
+function sanitizeH5RefundRuleLines(raw) {
+	const arr = Array.isArray(raw) ? raw : [];
+	const lines = arr
+		.map((x) => String(x == null ? '' : x).trim())
+		.filter(Boolean)
+		.slice(0, 20)
+		.map((s) => s.slice(0, 800));
+	return lines.length ? lines : DEFAULT_H5_REFUND_RULE_LINES.slice();
+}
+
+function formatH5RefundRuleLines(biz) {
+	const rc = biz.refundCycle || {};
+	const cycleDays = Math.max(1, Number(rc.cycleDays || DEFAULT_BIZ_SETTINGS.refundCycle.cycleDays));
+	const windowDays = Math.max(1, Number(rc.windowDays || DEFAULT_BIZ_SETTINGS.refundCycle.windowDays));
+	const penaltyRate = Math.max(
+		0,
+		Math.min(
+			100,
+			Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)
+		)
+	);
+	const lines = sanitizeH5RefundRuleLines(biz.h5RefundRuleLines);
+	return lines.map((line) =>
+		String(line || '')
+			.replace(/\{cycleDays\}/g, String(cycleDays))
+			.replace(/\{windowDays\}/g, String(windowDays))
+			.replace(/\{penaltyRate\}/g, String(penaltyRate))
+	);
+}
+
 const DEFAULT_BIZ_SETTINGS = {
 	rechargeRules: DEFAULT_RECHARGE_RULES,
 	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
@@ -5156,7 +5205,8 @@ const DEFAULT_BIZ_SETTINGS = {
 	refundApproveRevokeDevEnabled: false,
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
-	servicePhone: '400-668-5796'
+	servicePhone: '400-668-5796',
+	h5RefundRuleLines: DEFAULT_H5_REFUND_RULE_LINES.slice()
 };
 const BIZ_SETTINGS_CACHE_TTL_MS = 60000;
 
@@ -5235,6 +5285,7 @@ function sanitizeBizSettings(raw = {}) {
 			.filter(Boolean);
 	const testMerchantIds = [...new Set(rawTestMerchantIds.map((x) => safeText(x, 80)).filter(Boolean))];
 	const servicePhone = safeText(raw.servicePhone || DEFAULT_BIZ_SETTINGS.servicePhone, 30);
+	const h5RefundRuleLines = sanitizeH5RefundRuleLines(raw.h5RefundRuleLines);
 	return {
 		rechargeRules: normRules,
 		withdrawRange,
@@ -5248,7 +5299,8 @@ function sanitizeBizSettings(raw = {}) {
 		refundApproveRevokeDevEnabled,
 		riskRates,
 		testMerchantIds,
-		servicePhone
+		servicePhone,
+		h5RefundRuleLines
 	};
 }
 
@@ -6107,7 +6159,11 @@ async function h5HomeDashboard(data) {
 		const memHit = h5HomeDashboardCache.get(cacheSign);
 		if (memHit && now - memHit.at < H5_HOME_DASH_CACHE_TTL_MS) {
 			const payload = JSON.parse(JSON.stringify(memHit.payload));
-			if (payload?.data) payload.data.serverTime = now;
+			if (payload?.data) {
+				payload.data.serverTime = now;
+				const bizNow = await getBizSettings();
+				payload.data.refundRuleLines = formatH5RefundRuleLines(bizNow);
+			}
 			return payload;
 		}
 		const redisDashKey = `hsy:h5:home:dash:${cacheSign}`;
@@ -6115,6 +6171,8 @@ async function h5HomeDashboard(data) {
 		if (redisHit && redisHit.code === 0 && redisHit.data) {
 			const payload = redisHit;
 			payload.data.serverTime = now;
+			const bizNow = await getBizSettings();
+			payload.data.refundRuleLines = formatH5RefundRuleLines(bizNow);
 			h5HomeDashboardCache.set(cacheSign, { at: now, payload: JSON.parse(JSON.stringify(payload)) });
 			return payload;
 		}
@@ -6213,7 +6271,8 @@ async function h5HomeDashboard(data) {
 					cycleDays: Number(cycleCfg.cycleDays || 180),
 					windowDays: Number(cycleCfg.windowDays || 3)
 				},
-				refundPenaltyRate: Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)
+				refundPenaltyRate: Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate),
+				refundRuleLines: formatH5RefundRuleLines(biz)
 			}
 		};
 		h5HomeDashboardCache.set(cacheSign, { at: now, payload: JSON.parse(JSON.stringify(out)) });
@@ -9036,7 +9095,7 @@ async function couponIssue(data, event) {
 		const lines = rawLines.length ? rawLines.map((x) => String(x || '').trim()).filter(Boolean) : linesFromText;
 		if (!templateId) return { code: 400, message: '请选择优惠券模板' };
 		if (scope !== 'all' && scope !== 'selected') return { code: 400, message: '发放范围无效' };
-		if (scope === 'selected' && !lines.length) return { code: 400, message: '请填写至少一个商户（user_id 或手机号）' };
+		if (scope === 'selected' && !lines.length) return { code: 400, message: '请填写至少一个商户（机具号或手机号）' };
 
 		const tplRes = await couponCollection.doc(templateId).get();
 		const tplRow = tplRes.data && tplRes.data[0];
@@ -11298,6 +11357,9 @@ async function bizConfigSave(data, event) {
 		bizSettingsCache = null;
 		bizSettingsCacheAt = 0;
 		await redisH5.h5RedisDel(REDIS_KEY_BIZ);
+		try {
+			h5HomeDashboardCache.clear();
+		} catch (e) {}
 		return { code: 0, message: '保存成功' };
 	} catch (error) {
 		console.error('bizConfigSave failed:', error);

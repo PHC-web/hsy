@@ -127,7 +127,7 @@
 						<radio-group class="issue-rg" @change="onIssueScopeChange">
 							<label class="issue-radio-lab">
 								<radio value="selected" :checked="issueForm.scope === 'selected'" color="#409eff" />
-								<text>指定用户</text>
+								<text>指定商户</text>
 							</label>
 							<label class="issue-radio-lab">
 								<radio value="all" :checked="issueForm.scope === 'all'" color="#409eff" />
@@ -136,15 +136,15 @@
 						</radio-group>
 					</view>
 					<view v-if="issueForm.scope === 'selected'" class="issue-keys">
-						<text class="issue-label">用户列表（每行一个 user_id 或手机号）</text>
+						<text class="issue-label">商户列表（每行一个机具号或手机号）</text>
 						<textarea
 							v-model="issueForm.keysText"
 							class="issue-textarea"
-							placeholder="每行一个。示例：507f1f77bcf86cd799439011 或 13800138000"
+							placeholder="每行一个机具号或手机号。示例：SN123456789 或 13800138000"
 						/>
 					</view>
 					<view v-else class="issue-keys">
-						<text class="issue-warn">将向「使用状态=正常」的商户批量创建考核记录，已存在同模板在考核/待领中的用户会自动跳过。</text>
+						<text class="issue-warn">将向「使用状态=正常」的商户批量创建考核记录，已存在同模板在考核/待领中的商户会自动跳过。</text>
 					</view>
 					<view class="dialog-actions">
 						<button type="primary" size="mini" :loading="issueLoading" @click="submitIssue">确认发放</button>
@@ -490,7 +490,7 @@ export default {
 		submitIssue() {
 			if (!this.issueForm.couponId) return;
 			if (this.issueForm.scope === 'selected' && !String(this.issueForm.keysText || '').trim()) {
-				uni.showToast({ title: '请填写至少一个用户', icon: 'none' });
+				uni.showToast({ title: '请填写至少一行机具号或手机号', icon: 'none' });
 				return;
 			}
 			this.issueLoading = true;

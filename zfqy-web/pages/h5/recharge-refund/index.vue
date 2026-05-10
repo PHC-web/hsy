@@ -28,9 +28,7 @@
 
 					<view class="rule-card h5-glass-panel">
 						<text class="rule-title">退款规则说明</text>
-						<text class="rule-item">1）重置后 {{ refundCycleDays }} 天内无法退款。</text>
-						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统会自动给客户 {{ refundWindowDays }} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
-						<text class="rule-item">3）如客户执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
+						<text v-for="(line, idx) in displayRefundRuleLines" :key="'rl-' + idx" class="rule-item">{{ line }}</text>
 						<text class="rule-link" @click="onViewAgreement">查看协议</text>
 					</view>
 
@@ -139,6 +137,7 @@ export default {
 			refundCycleDays: 180,
 			refundWindowDays: 3,
 			refundPenaltyRate: 50,
+			refundRuleLines: [],
 			tick: 0,
 			tickTimer: null,
 			statusPollTimer: null
@@ -246,6 +245,20 @@ export default {
 		},
 		agreementImageUrl() {
 			return String(this.agreementViewerImg || '').trim();
+		},
+		displayRefundRuleLines() {
+			const arr = Array.isArray(this.refundRuleLines)
+				? this.refundRuleLines.map((x) => String(x == null ? '' : x).trim()).filter(Boolean)
+				: [];
+			if (arr.length) return arr;
+			const d = this.refundCycleDays;
+			const w = this.refundWindowDays;
+			const p = this.refundPenaltyRate;
+			return [
+				`1）重置后 ${d} 天内无法退款。`,
+				`2）满 ${d} 天后，系统会自动给客户 ${w} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。`,
+				`3）如客户执意在 ${d} 天内退款，将扣除 ${p}% 违约金后返还剩余款项。`
+			];
 		}
 	},
 	onLoad(options) {
@@ -384,6 +397,7 @@ export default {
 				this.refundCycleDays = Number(d.refundCycle?.cycleDays || 180);
 				this.refundWindowDays = Number(d.refundCycle?.windowDays || 3);
 				this.refundPenaltyRate = Number(d.refundPenaltyRate != null ? d.refundPenaltyRate : 50);
+				this.refundRuleLines = Array.isArray(d.refundRuleLines) ? d.refundRuleLines : [];
 				const mineRaw = await h5MineInfo();
 				const mineRes = this.unwrapResult(mineRaw);
 				if (mineRes.code === 0) {
