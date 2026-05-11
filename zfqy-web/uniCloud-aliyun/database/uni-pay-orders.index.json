@@ -97,5 +97,26 @@
             ],
             "MgoIsUnique": false
         }
+    },
+    {
+        "IndexName": "status_isdel_cdate_desc",
+        "MgoKeySchema": {
+            "MgoIndexKeys": [
+                {
+                    "Name": "status",
+                    "Direction": "1"
+                },
+                {
+                    "Name": "is_deleted",
+                    "Direction": "1"
+                },
+                {
+                    "Name": "create_date",
+                    "Direction": "-1",
+                    "Type": "long"
+                }
+            ],
+            "MgoIsUnique": false
+        }
     }
 ]

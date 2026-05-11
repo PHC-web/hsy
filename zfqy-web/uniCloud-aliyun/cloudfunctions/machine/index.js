@@ -7,7 +7,7 @@ const tradeCollection = db.collection('hsy-machine-trades');
 const merchantCollection = db.collection('hsy-merchant-users');
 const incomePacketCollection = db.collection('hsy-income-packets');
 const withdrawCollection = db.collection('hsy-withdraw-records');
-const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('../common/format-time-cn.js');
+const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 
 const monthNo = shanghaiYearMonthFromTs;
 
@@ -664,6 +664,46 @@ async function getFreezeBillList(data) {
 	}
 }
 
+/** get() 默认最多 100 条，必须分页否则「已绑定机具」列表不全，刷卡记录会漏数据 */
+const CARD_LIST_BOUND_MACHINE_PAGE = 1000;
+/** MongoDB in 列表过长时拆成 $or，降低单次查询体积 */
+const CARD_LIST_IN_CHUNK = 450;
+
+function chunkIdsForIn(arr, chunkSize) {
+	const out = [];
+	const a = Array.isArray(arr) ? arr : [];
+	for (let i = 0; i < a.length; i += chunkSize) out.push(a.slice(i, i + chunkSize));
+	return out;
+}
+
+/**
+ * 拉取满足条件的全部已绑定机具的 device_id / bind_user_id（分页）
+ */
+async function fetchAllBoundMachineIdsForCardList(boundMachineWhere) {
+	const deviceSet = new Set();
+	const userSet = new Set();
+	let skip = 0;
+	for (;;) {
+		const r = await machineCollection
+			.where(boundMachineWhere)
+			.field({ device_id: true, bind_user_id: true })
+			.skip(skip)
+			.limit(CARD_LIST_BOUND_MACHINE_PAGE)
+			.get();
+		const rows = r.data || [];
+		for (const x of rows) {
+			const d = String(x.device_id || '').trim();
+			const u = String(x.bind_user_id || '').trim();
+			if (d) deviceSet.add(d);
+			if (u) userSet.add(u);
+		}
+		if (rows.length < CARD_LIST_BOUND_MACHINE_PAGE) break;
+		skip += CARD_LIST_BOUND_MACHINE_PAGE;
+		if (skip > 200000) break;
+	}
+	return { boundDeviceIds: [...deviceSet], boundUserIds: [...userSet] };
+}
+
 // 刷卡记录列表（多条件筛选 + 品牌/商户关联）
 async function getCardRecordList(data) {
 	try {
@@ -740,18 +780,20 @@ async function getCardRecordList(data) {
 		} else if (muidArr.length > 1) {
 			boundMachineWhere.bind_user_id = _.in(muidArr);
 		}
-		const boundMachineRes = await machineCollection
-			.where(boundMachineWhere)
-			.field({ device_id: true, bind_user_id: true })
-			.get();
-		const boundRows = boundMachineRes.data || [];
-		const boundDeviceIds = [...new Set(boundRows.map((x) => String(x.device_id || '')).filter(Boolean))];
-		const boundUserIds = [...new Set(boundRows.map((x) => String(x.bind_user_id || '')).filter(Boolean))];
+		const { boundDeviceIds, boundUserIds } = await fetchAllBoundMachineIdsForCardList(boundMachineWhere);
 		if (!boundDeviceIds.length || !boundUserIds.length) {
 			return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
 		}
-		pushWhere({ device_id: _.in(boundDeviceIds) });
-		pushWhere({ user_id: _.in(boundUserIds) });
+		const pushIdIn = (field, ids) => {
+			if (!ids || !ids.length) return;
+			if (ids.length <= CARD_LIST_IN_CHUNK) {
+				pushWhere({ [field]: _.in(ids) });
+				return;
+			}
+			pushWhere(_.or(chunkIdsForIn(ids, CARD_LIST_IN_CHUNK).map((c) => ({ [field]: _.in(c) }))));
+		};
+		pushIdIn('device_id', boundDeviceIds);
+		pushIdIn('user_id', boundUserIds);
 		const actArr = Array.isArray(isActivatedList)
 			? [...new Set(isActivatedList.map((x) => String(x)))]
 			: [];

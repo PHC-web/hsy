@@ -44,6 +44,8 @@ const REDIS_EX_WD_SUM_SEC = 28;
 const REDIS_EX_H5_HOME_DASH_SEC = 15;
 const REDIS_EX_H5_SILVER_TRADE_SEC = 45;
 const REDIS_EX_H5_RECHARGE_HINT_SEC = 25;
+/** 管理端交易账单列表缓存（秒），减轻重复筛选下的云函数+DB 压力 */
+const REDIS_EX_TRADE_BILL_SEC = 22;
 /** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
 
@@ -1356,6 +1358,96 @@ async function offlineFirstRecharge(data, event) {
 	}
 }
 
+/** 交易账单：未选手动时间时默认查询跨度（宜与索引、limit 配合以控制耗时） */
+const TRADE_BILL_DEFAULT_RANGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** 带单号搜索但未选时间时，向前多查一段（仍有限） */
+const TRADE_BILL_KEYWORD_RANGE_MS = 180 * 24 * 60 * 60 * 1000;
+/** 单侧集合默认最大拉取条数（列表）；导出可通过 perSourceLimit 临时提高（有上限） */
+const TRADE_BILL_PER_SOURCE_LIMIT = 500;
+const TRADE_BILL_PER_SOURCE_LIMIT_MAX = 2500;
+const TRADE_BILL_PAY_FIELDS = {
+	user_id: true,
+	pay_date: true,
+	create_date: true,
+	total_fee: true,
+	transaction_id: true,
+	out_trade_no: true,
+	order_no: true,
+	nickname: true,
+	description: true,
+	type: true,
+	provider: true,
+	status: true
+};
+const TRADE_BILL_LOG_FIELDS = {
+	action: true,
+	create_time: true,
+	target_id: true,
+	target_name: true,
+	platform_no: true,
+	offline_order_no: true,
+	package_title: true,
+	package_price: true,
+	package_quota: true,
+	refund_final_amount: true,
+	refund_amount: true,
+	refund_penalty_amount: true,
+	refunded: true
+};
+const TRADE_BILL_MERCHANT_FIELDS = {
+	salesman: true,
+	wx_nickname: true,
+	wx_avatar: true,
+	mobile: true,
+	user_id: true
+};
+
+function tradeBillCacheKey(data) {
+	const crypto = require('crypto');
+	const payload = {
+		page: data?.page,
+		pageSize: data?.pageSize,
+		perSourceLimit: data?.perSourceLimit,
+		salesmanKeyword: data?.salesmanKeyword,
+		firstCharge: data?.firstCharge,
+		userKeyword: data?.userKeyword,
+		platformNo: data?.platformNo,
+		wxTradeNo: data?.wxTradeNo,
+		refunded: data?.refunded,
+		payTimeStart: data?.payTimeStart,
+		payTimeEnd: data?.payTimeEnd
+	};
+	return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex').slice(0, 40);
+}
+
+function normalizeTradeBillTimeRange(data) {
+	const now = nowTs();
+	let tsStart =
+		data?.payTimeStart !== '' && data?.payTimeStart != null ? Number(data.payTimeStart) : 0;
+	let tsEnd = data?.payTimeEnd !== '' && data?.payTimeEnd != null ? Number(data.payTimeEnd) : 0;
+	if (!Number.isFinite(tsStart) || tsStart < 0) tsStart = 0;
+	if (!Number.isFinite(tsEnd) || tsEnd < 0) tsEnd = 0;
+	const pNo = safeText(data?.platformNo, 80);
+	const wNo = safeText(data?.wxTradeNo, 80);
+	const hasKeyword = !!(pNo || wNo);
+	const span = hasKeyword ? TRADE_BILL_KEYWORD_RANGE_MS : TRADE_BILL_DEFAULT_RANGE_MS;
+
+	if (!tsStart && !tsEnd) {
+		tsEnd = now;
+		tsStart = now - span;
+	} else if (tsStart && !tsEnd) {
+		tsEnd = now;
+	} else if (!tsStart && tsEnd) {
+		tsStart = tsEnd - span;
+	}
+	if (tsStart && tsEnd && tsStart > tsEnd) {
+		const t = tsStart;
+		tsStart = tsEnd;
+		tsEnd = t;
+	}
+	return { tsStart, tsEnd };
+}
+
 async function buildTradeBillListData(data) {
 	const {
 		page = 1,
@@ -1370,62 +1462,100 @@ async function buildTradeBillListData(data) {
 		payTimeEnd = ''
 	} = data || {};
 
-	const payWhereParts = [{ status: db.command.in([1, 2, 3]) }, db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])];
+	const { tsStart, tsEnd } = normalizeTradeBillTimeRange({
+		...data,
+		payTimeStart,
+		payTimeEnd,
+		platformNo,
+		wxTradeNo
+	});
+
+	const limRaw = Number(data?.perSourceLimit);
+	const perLimit =
+		Number.isFinite(limRaw) && limRaw > 0
+			? Math.min(TRADE_BILL_PER_SOURCE_LIMIT_MAX, Math.max(80, Math.floor(limRaw)))
+			: TRADE_BILL_PER_SOURCE_LIMIT;
+
+	// 仅按 create_date 做时间窗，避免 pay_date/create_date OR 无法有效使用索引；列表排序亦按 create_date
+	const payWhereParts = [{ status: db.command.in([1, 2, 3]) }, { is_deleted: db.command.neq(true) }];
 	if (platformNo) {
 		const r = new RegExp(escapeReg(platformNo), 'i');
 		payWhereParts.push(db.command.or([{ out_trade_no: r }, { order_no: r }]));
 	}
 	if (wxTradeNo) payWhereParts.push({ transaction_id: new RegExp(escapeReg(wxTradeNo), 'i') });
-	if (payTimeStart && payTimeEnd) {
-		payWhereParts.push(
-			db.command.or([
-				db.command.and([{ pay_date: db.command.gte(Number(payTimeStart)) }, { pay_date: db.command.lte(Number(payTimeEnd)) }]),
-				db.command.and([{ create_date: db.command.gte(Number(payTimeStart)) }, { create_date: db.command.lte(Number(payTimeEnd)) }])
-			])
-		);
-	} else if (payTimeStart) {
-		payWhereParts.push(db.command.or([{ pay_date: db.command.gte(Number(payTimeStart)) }, { create_date: db.command.gte(Number(payTimeStart)) }]));
-	} else if (payTimeEnd) {
-		payWhereParts.push(db.command.or([{ pay_date: db.command.lte(Number(payTimeEnd)) }, { create_date: db.command.lte(Number(payTimeEnd)) }]));
+	if (tsStart && tsEnd) {
+		payWhereParts.push(db.command.and([{ create_date: db.command.gte(tsStart) }, { create_date: db.command.lte(tsEnd) }]));
+	} else if (tsStart) {
+		payWhereParts.push({ create_date: db.command.gte(tsStart) });
+	} else if (tsEnd) {
+		payWhereParts.push({ create_date: db.command.lte(tsEnd) });
 	}
 	const payWhere = payWhereParts.length === 1 ? payWhereParts[0] : db.command.and(payWhereParts);
 
 	const logWhereParts = [
 		{ action: db.command.in(['offline_first_recharge', 'h5_quota_recharge', 'h5_refund_reset']) },
-		db.command.or([{ is_deleted: false }, { is_deleted: db.command.exists(false) }])
+		{ is_deleted: db.command.neq(true) }
 	];
 	if (platformNo) logWhereParts.push({ target_id: new RegExp(escapeReg(platformNo), 'i') });
-	if (payTimeStart && payTimeEnd) {
-		logWhereParts.push(db.command.and([{ create_time: db.command.gte(Number(payTimeStart)) }, { create_time: db.command.lte(Number(payTimeEnd)) }]));
-	} else if (payTimeStart) {
-		logWhereParts.push({ create_time: db.command.gte(Number(payTimeStart)) });
-	} else if (payTimeEnd) {
-		logWhereParts.push({ create_time: db.command.lte(Number(payTimeEnd)) });
+	if (tsStart && tsEnd) {
+		logWhereParts.push(db.command.and([{ create_time: db.command.gte(tsStart) }, { create_time: db.command.lte(tsEnd) }]));
+	} else if (tsStart) {
+		logWhereParts.push({ create_time: db.command.gte(tsStart) });
+	} else if (tsEnd) {
+		logWhereParts.push({ create_time: db.command.lte(tsEnd) });
 	}
 	const logWhere = logWhereParts.length === 1 ? logWhereParts[0] : db.command.and(logWhereParts);
 
 	const [payRes, logRes] = await Promise.all([
-		uniPayOrderCollection.where(payWhere).orderBy('create_date', 'desc').limit(10000).get(),
-		operationLogCollection.where(logWhere).orderBy('create_time', 'desc').limit(10000).get()
+		uniPayOrderCollection
+			.where(payWhere)
+			.field(TRADE_BILL_PAY_FIELDS)
+			.orderBy('create_date', 'desc')
+			.limit(perLimit)
+			.get(),
+		operationLogCollection
+			.where(logWhere)
+			.field(TRADE_BILL_LOG_FIELDS)
+			.orderBy('create_time', 'desc')
+			.limit(perLimit)
+			.get()
 	]);
 	const payRows = payRes.data || [];
 	const logRows = logRes.data || [];
+	const truncated = payRows.length >= perLimit || logRows.length >= perLimit;
 
 	const merchantIds = [...new Set(logRows.map((x) => String(x.target_id || '')).filter(Boolean))];
 	const userIds = [...new Set(payRows.map((x) => String(x.user_id || '')).filter(Boolean))];
 	const merchantMap = {};
-	if (merchantIds.length) {
-		const r = await merchantCollection.where({ _id: db.command.in(merchantIds) }).limit(10000).get();
-		(r.data || []).forEach((m) => {
-			merchantMap[String(m._id)] = m;
-		});
-	}
-	if (userIds.length) {
-		const r = await merchantCollection.where({ user_id: db.command.in(userIds) }).limit(10000).get();
-		(r.data || []).forEach((m) => {
-			merchantMap[String(m.user_id || '')] = m;
-		});
-	}
+	const chunkInQueryParallel = async (field, values) => {
+		const uniq = [...new Set(values.filter(Boolean))];
+		const CHUNK = 400;
+		const tasks = [];
+		for (let i = 0; i < uniq.length; i += CHUNK) {
+			const part = uniq.slice(i, i + CHUNK);
+			tasks.push(
+				merchantCollection
+					.where({ [field]: db.command.in(part) })
+					.field(TRADE_BILL_MERCHANT_FIELDS)
+					.limit(CHUNK)
+					.get()
+			);
+		}
+		const parts = await Promise.all(tasks);
+		const rows = [];
+		parts.forEach((r) => rows.push(...(r.data || [])));
+		return rows;
+	};
+	const [rowsById, rowsByUser] = await Promise.all([
+		merchantIds.length ? chunkInQueryParallel('_id', merchantIds) : Promise.resolve([]),
+		userIds.length ? chunkInQueryParallel('user_id', userIds) : Promise.resolve([])
+	]);
+	rowsById.forEach((m) => {
+		merchantMap[String(m._id)] = m;
+	});
+	rowsByUser.forEach((m) => {
+		merchantMap[String(m.user_id || '')] = m;
+	});
 
 	const payList = payRows.map((row) => {
 		const merchant = merchantMap[String(row.user_id || '')] || null;
@@ -1552,21 +1682,34 @@ async function buildTradeBillListData(data) {
 	if (platformNo) merged = merged.filter((x) => String(x.platformNo || '').toLowerCase().includes(String(platformNo).toLowerCase()));
 	if (wxTradeNo) merged = merged.filter((x) => String(x.wxTradeNo || '').toLowerCase().includes(String(wxTradeNo).toLowerCase()));
 	if (refunded !== '') merged = merged.filter((x) => x.refunded === (String(refunded) === '1' ? '是' : '否'));
-	if (payTimeStart) merged = merged.filter((x) => Number(x._ts || 0) >= Number(payTimeStart));
-	if (payTimeEnd) merged = merged.filter((x) => Number(x._ts || 0) <= Number(payTimeEnd));
+	if (tsStart) merged = merged.filter((x) => Number(x._ts || 0) >= tsStart);
+	if (tsEnd) merged = merged.filter((x) => Number(x._ts || 0) <= tsEnd);
 
 	merged.sort((a, b) => Number(b._ts || 0) - Number(a._ts || 0));
 	const total = merged.length;
 	const s = (Number(page) - 1) * Number(pageSize);
 	const e = s + Number(pageSize);
 	const list = merged.slice(s, e).map(({ _ts, ...rest }) => rest);
-	return { list, total, page: Number(page), pageSize: Number(pageSize) };
+	return {
+		list,
+		total,
+		page: Number(page),
+		pageSize: Number(pageSize),
+		queryRange: { payTimeStart: tsStart, payTimeEnd: tsEnd },
+		truncated,
+		perSourceLimit: perLimit
+	};
 }
 
 async function tradeBillList(data) {
 	try {
+		const cacheKey = `hsy:admin:tradeBill:v3:${tradeBillCacheKey(data || {})}`;
+		const cached = await redisH5.h5RedisGetJson(cacheKey);
+		if (cached && cached.code === 0) return cached;
 		const result = await buildTradeBillListData(data);
-		return { code: 0, message: 'ok', data: result };
+		const out = { code: 0, message: 'ok', data: result };
+		await redisH5.h5RedisSetJson(cacheKey, out, REDIS_EX_TRADE_BILL_SEC);
+		return out;
 	} catch (error) {
 		console.error('tradeBillList failed:', error);
 		return { code: 500, message: '获取交易账单失败' };

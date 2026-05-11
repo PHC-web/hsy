@@ -1,0 +1,23 @@
+[
+	{
+		"IndexName": "action_isdel_ctime_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "action",
+					"Direction": "1"
+				},
+				{
+					"Name": "is_deleted",
+					"Direction": "1"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	}
+]

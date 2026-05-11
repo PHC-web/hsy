@@ -24,7 +24,7 @@
 		<view class="uni-container">
 			<view class="page-intro">
 				<text class="page-title">交易账单</text>
-				<text class="page-sub">记录 H5 充值与线下首冲账单数据</text>
+				<text class="page-sub">记录 H5 充值与线下首冲账单数据；默认最近 30 天（按订单创建时间筛），可在「支付时间」扩大范围。</text>
 			</view>
 			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
@@ -127,6 +127,10 @@ export default {
 		}
 	},
 	mounted() {
+		const end = Date.now();
+		const start = end - 30 * 86400000;
+		this.searchForm.payTimeStart = start;
+		this.searchForm.payTimeEnd = end;
 		this.search();
 	},
 	methods: {
@@ -180,11 +184,20 @@ export default {
 				}
 				this.list = res.data?.list || [];
 				this.pageInfo.total = res.data?.total || 0;
+				if (res.data?.truncated) {
+					uni.showToast({
+						title: '当前时间范围内数据量较大，列表可能未展示全部，请缩小支付时间或筛选条件',
+						icon: 'none',
+						duration: 3500
+					});
+				}
 			}).catch(() => {
 				this.loading = false;
 			});
 		},
 		reset() {
+			const end = Date.now();
+			const start = end - 30 * 86400000;
 			this.searchForm = {
 				salesmanKeyword: '',
 				firstCharge: '',
@@ -194,8 +207,8 @@ export default {
 				wxTradeNo: '',
 				refunded: '',
 				refundedList: [],
-				payTimeStart: '',
-				payTimeEnd: ''
+				payTimeStart: start,
+				payTimeEnd: end
 			};
 			this.firstChargeFilterData = [
 				{ text: '否', value: '0', checked: false },
@@ -234,6 +247,7 @@ export default {
 			const res = await this.$request('tradeBillList', {
 				page: 1,
 				pageSize: 10000,
+				perSourceLimit: 2000,
 				...this.buildPayload()
 			}, { functionName: 'merchant' });
 			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
