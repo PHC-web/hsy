@@ -823,6 +823,24 @@
 					}
 				},
 				{
+					"path": "recharge-logs/index",
+					"style": {
+						"navigationBarTitleText": "充值日志"
+					}
+				},
+				{
+					"path": "refund-logs/index",
+					"style": {
+						"navigationBarTitleText": "退款日志"
+					}
+				},
+				{
+					"path": "withdraw-logs/index",
+					"style": {
+						"navigationBarTitleText": "提现日志"
+					}
+				},
+				{
 					"path": "points-records/index",
 					"style": {
 						"navigationBarTitleText": "积分记录"

@@ -826,5 +826,41 @@
 		"enable": true,
 		"create_date": 1777113000103,
 		"_id": "operations_logs"
+	},
+	{
+		"menu_id": "operations_recharge_logs",
+		"name": "充值日志",
+		"icon": "",
+		"url": "/pages/operations/recharge-logs/index",
+		"sort": 1832,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000105,
+		"_id": "operations_recharge_logs"
+	},
+	{
+		"menu_id": "operations_refund_logs",
+		"name": "退款日志",
+		"icon": "",
+		"url": "/pages/operations/refund-logs/index",
+		"sort": 1834,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000106,
+		"_id": "operations_refund_logs"
+	},
+	{
+		"menu_id": "operations_withdraw_logs",
+		"name": "提现日志",
+		"icon": "",
+		"url": "/pages/operations/withdraw-logs/index",
+		"sort": 1836,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000107,
+		"_id": "operations_withdraw_logs"
 	}
 ]

@@ -22,6 +22,10 @@
 		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
 		"delete_time": { "bsonType": "timestamp", "description": "删除时间" },
 		"delete_user": { "bsonType": "string", "description": "删除人" },
-		"is_deleted": { "bsonType": "bool", "description": "软删", "default": false }
+		"is_deleted": { "bsonType": "bool", "description": "软删", "default": false },
+		"withdraw_member_bucket": {
+			"bsonType": "string",
+			"description": "提现发起时的会员分档：member=充值会员(钻石/铂金/白金等)；non_member=普通/白银。历史单由首页汇总接口按当前身份分批回填。"
+		}
 	}
 }

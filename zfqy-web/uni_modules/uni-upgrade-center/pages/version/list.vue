@@ -201,16 +201,17 @@
 				return dbSearchFields.map(name => queryRe + '.test(' + name + ')').join(' || ')
 			},
 			search() {
-				const newWhere = this.getWhere()
-				const isSameWhere = newWhere === this.where
-				this.where = newWhere
-				if (this.where) {
-					this.where = `(${this.where}) && `
+				// 空关键词：保持与切换应用一致的对象条件（含 create_env 过滤），避免把 where 变成非法/残缺字符串导致列表无数据
+				const textWhere = this.getWhere()
+				const appidCond = `${new RegExp(this.currentAppid, 'i')}.test(appid)`
+				if (!textWhere) {
+					this.where = createListQuery({
+						appid: this.currentAppid
+					})
+				} else {
+					this.where = `create_env != "uni-stat" && (${textWhere}) && ${appidCond}`
 				}
-				this.where += `${new RegExp(this.currentAppid, 'i')}.test(appid)`
-				if (isSameWhere) { // 相同条件时，手动强制刷新
-					this.loadData()
-				}
+				this.loadData()
 			},
 			loadData(clear = true) {
 				this.$refs.udb.loadData({
@@ -282,7 +283,10 @@
 						result
 					} = await db.collection(appListDbName).get()
 					if (result && result.data && result.data.length > 0) {
-						this.appList = result.data.filter(item => item.appid !== this.appid)
+						const raw = result.data
+						const filtered = raw.filter(item => item.appid !== this.appid)
+						// 若仅存在与当前管理端相同的 appid，过滤后会无法选应用；此时保留全部列表
+						this.appList = filtered.length > 0 ? filtered : raw
 					} else {
 						this.showModalToAppManager()
 					}

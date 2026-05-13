@@ -345,10 +345,18 @@ async function writeTransferLog(entry) {
 			message: safeText(entry?.message || '', 300),
 			payload: safeJson(entry?.payload || {}, 4000),
 			create_time: now,
+			// 与 uni-pay-orders 等表对齐，便于运维按 create_date 做时间筛选或控制台排查
+			create_date: now,
 			is_deleted: false
 		});
 	} catch (e) {
-		console.error('writeTransferLog failed', e);
+		console.error(
+			'writeTransferLog failed',
+			safeText(entry?.stage, 40),
+			safeText(entry?.scene, 20),
+			e && e.message,
+			e
+		);
 	}
 }
 
@@ -1869,29 +1877,68 @@ function bucketKeyByRange(ts, range) {
 	return shDayKey(ts);
 }
 
+/** 与 machine/getCardRecordList 一致：get() 默认仅 100 条，须分页拉全量已绑定机具 */
+const ADMIN_CARD_ALIGN_MACHINE_PAGE = 1000;
+const ADMIN_CARD_ALIGN_IN_CHUNK = 450;
+
+function adminChunkIdsForIn(arr, chunkSize) {
+	const out = [];
+	const a = Array.isArray(arr) ? arr : [];
+	for (let i = 0; i < a.length; i += chunkSize) out.push(a.slice(i, i + chunkSize));
+	return out;
+}
+
+async function adminFetchAllBoundMachineIdsForCardAlign(boundMachineWhere) {
+	const deviceSet = new Set();
+	const userSet = new Set();
+	let skip = 0;
+	for (;;) {
+		const r = await machineCollection
+			.where(boundMachineWhere)
+			.field({ device_id: true, bind_user_id: true })
+			.skip(skip)
+			.limit(ADMIN_CARD_ALIGN_MACHINE_PAGE)
+			.get();
+		const rows = r.data || [];
+		for (const x of rows) {
+			const d = String(x.device_id || '').trim();
+			const u = String(x.bind_user_id || '').trim();
+			if (d) deviceSet.add(d);
+			if (u) userSet.add(u);
+		}
+		if (rows.length < ADMIN_CARD_ALIGN_MACHINE_PAGE) break;
+		skip += ADMIN_CARD_ALIGN_MACHINE_PAGE;
+		if (skip > 200000) break;
+	}
+	return { boundDeviceIds: [...deviceSet], boundUserIds: [...userSet] };
+}
+
 /**
  * 与 cloudfunctions/machine#getCardRecordList 在无额外筛选时的条件一致（不含时间）。
  * 用于首页流水统计、粉卡总刷卡、交易类型图等与「刷卡记录」列表口径对齐。
  */
 async function buildCardRecordAlignedTradeBaseWhere(_) {
 	try {
-		const whereParts = [{ is_deleted: _.neq(true) }];
-		const boundMachineRes = await machineCollection
-			.where({
-				is_deleted: false,
-				is_bound: 1,
-				bind_user_id: _.neq('')
-			})
-			.field({ device_id: true, bind_user_id: true })
-			.get();
-		const boundRows = boundMachineRes.data || [];
-		const boundDeviceIds = [...new Set(boundRows.map((x) => String(x.device_id || '')).filter(Boolean))];
-		const boundUserIds = [...new Set(boundRows.map((x) => String(x.bind_user_id || '')).filter(Boolean))];
+		const boundMachineWhere = {
+			is_deleted: false,
+			is_bound: 1,
+			bind_user_id: _.neq('')
+		};
+		const { boundDeviceIds, boundUserIds } = await adminFetchAllBoundMachineIdsForCardAlign(boundMachineWhere);
 		if (!boundDeviceIds.length || !boundUserIds.length) {
 			return { ok: false, baseWhere: null };
 		}
-		whereParts.push({ device_id: _.in(boundDeviceIds) });
-		whereParts.push({ user_id: _.in(boundUserIds) });
+		const whereParts = [{ is_deleted: _.neq(true) }];
+		const pushIdIn = (field, ids) => {
+			if (!ids || !ids.length) return;
+			if (ids.length <= ADMIN_CARD_ALIGN_IN_CHUNK) {
+				whereParts.push({ [field]: _.in(ids) });
+				return;
+			}
+			whereParts.push(_.or(adminChunkIdsForIn(ids, ADMIN_CARD_ALIGN_IN_CHUNK).map((c) => ({ [field]: _.in(c) }))));
+		};
+		pushIdIn('device_id', boundDeviceIds);
+		pushIdIn('user_id', boundUserIds);
 		whereParts.push({ stats_eligible: true });
 		whereParts.push(_.and([{ user_id: _.neq('') }, { user_id: _.neq(null) }]));
 		whereParts.push(_.or([{ user_name: _.neq('') }, { user_mobile: _.neq('') }]));
@@ -2366,13 +2413,141 @@ async function adminDashboardTrend30d(data = {}) {
 	}
 }
 
+/** 控制台首页：为历史到账提现回填 withdraw_member_bucket（按当前商户身份初始化；新单在发起时已写入） */
+async function backfillWithdrawMemberBucketChunk(limit = 160) {
+	const _ = db.command;
+	try {
+		const res = await withdrawCollection
+			.where(
+				_.and([
+					{ is_deleted: _.neq(true) },
+					{ is_paid: true },
+					{ arrival_status: 'received' },
+					_.or([{ withdraw_member_bucket: _.exists(false) }, { withdraw_member_bucket: _.nin(['member', 'non_member']) }])
+				])
+			)
+			.field({ merchant_user_id: true })
+			.limit(Math.min(300, Math.max(1, Number(limit) || 160)))
+			.get();
+		const rows = res.data || [];
+		if (!rows.length) return 0;
+		const uids = [...new Set(rows.map((r) => String(r.merchant_user_id || '').trim()).filter(Boolean))];
+		const merchantByUid = {};
+		if (uids.length) {
+			const mRes = await merchantCollection.where({ user_id: _.in(uids) }).limit(uids.length).get();
+			(mRes.data || []).forEach((m) => {
+				const k = String(m.user_id || '');
+				if (k) merchantByUid[k] = m;
+			});
+			const missing = uids.filter((u) => !merchantByUid[u]);
+			if (missing.length) {
+				const m2 = await merchantCollection.where({ _id: _.in(missing) }).limit(missing.length).get();
+				(m2.data || []).forEach((m) => {
+					merchantByUid[String(m._id)] = m;
+					const uk = String(m.user_id || '');
+					if (uk && !merchantByUid[uk]) merchantByUid[uk] = m;
+				});
+			}
+		}
+		const now = nowTs();
+		const tasks = rows.map((row) => {
+			const uid = String(row.merchant_user_id || '').trim();
+			const m = uid ? merchantByUid[uid] : null;
+			const bucket = withdrawMemberBucketForSummary(m);
+			return withdrawCollection.doc(row._id).update({ withdraw_member_bucket: bucket, update_time: now });
+		});
+		await Promise.all(tasks);
+		return rows.length;
+	} catch (e) {
+		console.error('backfillWithdrawMemberBucketChunk failed', e);
+		return 0;
+	}
+}
+
+/** 管理端商户列表：退款窗口倒计时（与 H5 退款页同一套周期/窗口逻辑） */
+function merchantHasQuotaRechargeForRefundWindow(merchant) {
+	if (!merchant) return false;
+	const yuan = Number(
+		merchant.recharge_total_yuan != null ? merchant.recharge_total_yuan : merchant.recharge_amount || 0
+	);
+	if (yuan > 0) return true;
+	if (Number(merchant.recharge_package_price || 0) > 0) return true;
+	if (Number(merchant.recharge_cycle_start || 0) > 0) return true;
+	return false;
+}
+
+async function adminMerchantRefundWindow(data) {
+	try {
+		const merchantKey = safeText(data?.merchantId || data?.id || '', 80) || safeText(data?.userId || '', 80);
+		if (!merchantKey) return { code: 400, message: '缺少商户标识' };
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		if (!merchantHasQuotaRechargeForRefundWindow(merchant)) {
+			return { code: 400, message: '该商户未充值' };
+		}
+		const start = Number(merchant.recharge_cycle_start || 0);
+		if (!start) {
+			return {
+				code: 0,
+				message: 'ok',
+				data: {
+					phase: 'no_cycle_start',
+					summary:
+						'该商户暂无「周期起点」（recharge_cycle_start），系统无法计算距离退款窗口的天数。若已线下充值，请确认是否已写入周期字段。'
+				}
+			};
+		}
+		const biz = await getBizSettings();
+		const cycleCfg = resolveMerchantRefundCycleDays(merchant, biz.refundCycle || {});
+		const now = nowTs();
+		const cd = computeRechargeCountdown(start, now, cycleCfg.cycleDays, cycleCfg.windowDays);
+		const DAY_MS = 24 * 60 * 60 * 1000;
+		const cycleDays = cycleCfg.cycleDays;
+		const windowDays = cycleCfg.windowDays;
+		let summary = '';
+		let daysToWindowOpen = 0;
+		let daysUntilWindowEnd = 0;
+		if (cd.phase === 'lock') {
+			daysToWindowOpen = Math.max(0, Math.ceil((cd.windowStart - now) / DAY_MS));
+			summary = `当前为锁定期（每 ${cycleDays} 天满期后，开放 ${windowDays} 天退款窗口）。距离本期退款窗口开启还有约 ${daysToWindowOpen} 天。`;
+		} else if (cd.phase === 'window') {
+			daysUntilWindowEnd = Math.max(0, Math.ceil((cd.windowEnd - now) / DAY_MS));
+			summary = `当前在退款窗口内（本窗口 ${windowDays} 天）。距离窗口结束约还有 ${daysUntilWindowEnd} 天，可申请全额退款。`;
+		} else {
+			summary = '当前周期状态无法解析，请稍后再试或核对商户的充值周期数据。';
+		}
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				phase: cd.phase,
+				cycleDays,
+				windowDays,
+				daysToWindowOpen,
+				daysUntilWindowEnd,
+				summary
+			}
+		};
+	} catch (e) {
+		console.error('adminMerchantRefundWindow failed', e);
+		return { code: 500, message: safeText(e?.message || '查询失败', 120) };
+	}
+}
+
 /** 控制台首页粉卡：已提现(到账)/已绑定商户机具刷卡额/累计充值/累计退款 — 总刷卡与 cloudfunctions/machine#getCardRecordList 默认列表求和口径一致 */
 async function adminHomeSummary() {
 	try {
 		const _ = db.command;
 		const $ = db.command.aggregate;
 
+		for (let i = 0; i < 5; i++) {
+			const n = await backfillWithdrawMemberBucketChunk(200);
+			if (!n) break;
+		}
+
 		let arrivedWithdrawAmount = 0;
+		let arrivedWithdrawAmountMember = 0;
+		let arrivedWithdrawAmountNonMember = 0;
 		let boundMerchantTradeAmount = 0;
 		let totalRechargeAmount = 0;
 		let totalRefundAmount = 0;
@@ -2391,6 +2566,26 @@ async function adminHomeSummary() {
 			arrivedWithdrawAmount = Number(Number((((wdAgg.data || [])[0] || {}).total || 0)).toFixed(2));
 		} catch (eAgg) {
 			arrivedWithdrawAmount = 0;
+		}
+
+		try {
+			const splitAgg = await withdrawCollection
+				.aggregate()
+				.match(_.and([{ is_deleted: _.neq(true) }, { is_paid: true }, { arrival_status: 'received' }]))
+				.group({
+					_id: '$withdraw_member_bucket',
+					total: $.sum('$payable')
+				})
+				.end();
+			for (const row of splitAgg.data || []) {
+				const key = row._id;
+				const t = Number(Number((row.total || 0)).toFixed(2));
+				if (key === 'member') arrivedWithdrawAmountMember = t;
+				else if (key === 'non_member') arrivedWithdrawAmountNonMember = t;
+			}
+		} catch (eSplit) {
+			arrivedWithdrawAmountMember = 0;
+			arrivedWithdrawAmountNonMember = 0;
 		}
 
 		try {
@@ -2469,6 +2664,8 @@ async function adminHomeSummary() {
 			message: 'ok',
 			data: {
 				arrivedWithdrawAmount,
+				arrivedWithdrawAmountMember,
+				arrivedWithdrawAmountNonMember,
 				boundMerchantTradeAmount,
 				totalRechargeAmount,
 				totalRefundAmount
@@ -2912,6 +3109,17 @@ async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState 
 			withdrawn_amount: Number((Number(machine.withdrawn_amount || 0) + settleAmt).toFixed(4))
 		});
 	}
+	await writeTransferLog({
+		scene: 'withdraw',
+		stage: 'withdraw_arrival_settled',
+		withdrawId: withdrawRow._id,
+		withdrawNo: safeText(withdrawRow.withdraw_no, 64),
+		merchantUserId,
+		outBillNo: safeText(withdrawRow.withdraw_no, 64),
+		transferState: safeText(transferState || 'SUCCESS', 40),
+		message: '提现到账：已同步本地到账状态及商户/机具账务',
+		payload: { wxTradeNo: safeText(wxTradeNo || withdrawRow.wx_trade_no || '', 80), settleAmt }
+	});
 }
 
 async function withdrawSyncProcessing(data = {}) {
@@ -5744,6 +5952,16 @@ function resolveH5WithdrawRole(merchant) {
 	return 'normal_member';
 }
 
+/**
+ * 首页资金汇总：按提现发起时商户身份分档（与 resolveH5WithdrawRole 一致）。
+ * member＝充值会员（钻石/铂金/白金等付费档）；non_member＝普通会员、白银会员。
+ */
+function withdrawMemberBucketForSummary(merchant) {
+	if (!merchant) return 'non_member';
+	if (resolveH5WithdrawRole(merchant) === 'recharge_member') return 'member';
+	return 'non_member';
+}
+
 /** 兑换券/兑换码开通白银（exchange / redeem claimed）：提现计算侧可用的隐藏剩余额度下限（界面仍不展示） */
 const H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN = 1000;
 
@@ -6053,7 +6271,8 @@ async function h5WithdrawApply(data) {
 			transfer_state: needAudit ? 'PENDING_AUDIT' : '',
 			create_time: now,
 			update_time: now,
-			is_deleted: false
+			is_deleted: false,
+			withdraw_member_bucket: withdrawMemberBucketForSummary(merchant)
 		});
 		const newWithdrawId = addRes.id;
 		await writeTransferLog({
@@ -6851,6 +7070,15 @@ async function h5RechargeCreate(data, event) {
 			amount: { total: payFeeFen, currency: 'CNY' },
 			payer: { openid }
 		};
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_h5_order_pre_wx',
+			merchantUserId: merchant.user_id || merchant._id,
+			outBillNo: orderNo,
+			withdrawNo: orderNo,
+			message: '用户拉起充值：已生成单号，正在请求微信 JSAPI 下单',
+			payload: { packageId: pkg.id, packageTitle: pkg.title, payFeeFen, notifyUrlTail: String(H5_PAY_NOTIFY_URL || '').slice(-48) }
+		});
 		const wxRes = await wxPayRequestFor(rc, 'POST', '/v3/pay/transactions/jsapi', createBody);
 		const prepayId = safeText(wxRes.prepay_id, 120);
 		if (!prepayId) {
@@ -6859,10 +7087,20 @@ async function h5RechargeCreate(data, event) {
 				180
 			);
 			console.error('[h5RechargeCreate] missing prepay_id wxRes=', JSON.stringify(wxRes));
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_h5_order_wx_create_fail',
+				level: 'error',
+				merchantUserId: merchant.user_id || merchant._id,
+				outBillNo: orderNo,
+				withdrawNo: orderNo,
+				message: maybeMsg ? `用户拉起充值：微信 JSAPI 未返回 prepay_id（${maybeMsg}）` : '用户拉起充值：微信 JSAPI 未返回 prepay_id',
+				payload: { orderNo, wxRes: safeJson(wxRes, 3500) }
+			});
 			return { code: 500, message: maybeMsg ? `微信下单失败：${maybeMsg}` : '微信下单失败：未返回 prepay_id' };
 		}
 
-		await uniPayOrderCollection.add({
+		const addPayRes = await uniPayOrderCollection.add({
 			provider: 'wxpay',
 			provider_pay_type: 'jsapi',
 			uni_platform: 'h5',
@@ -6898,6 +7136,17 @@ async function h5RechargeCreate(data, event) {
 			},
 			create_date: now,
 			is_deleted: false
+		});
+		const payOrderId = safeText(addPayRes.id, 80);
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_h5_order_created',
+			merchantUserId: merchant.user_id || merchant._id,
+			withdrawId: payOrderId,
+			withdrawNo: orderNo,
+			outBillNo: orderNo,
+			message: '用户拉起充值：已创建待支付订单（JSAPI）',
+			payload: { packageId: pkg.id, packageTitle: pkg.title, totalFeeFen: payFeeFen }
 		});
 
 		const timeStamp = String(Math.floor(now / 1000));
@@ -6956,6 +7205,15 @@ async function h5RechargeConfirm(data) {
 			if (!(order.custom && order.custom.recharge_applied)) {
 				await applyRechargeByOrder(order);
 			}
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_h5_confirm_already_paid',
+				merchantUserId: order.user_id,
+				withdrawId: order._id,
+				withdrawNo: outTradeNo,
+				outBillNo: outTradeNo,
+				message: 'H5 主动查单/轮询：本地已支付，本次补触发额度同步'
+			});
 			return { code: 0, message: '支付成功', data: { paid: true } };
 		}
 
@@ -6963,6 +7221,16 @@ async function h5RechargeConfirm(data) {
 		const queryPath = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(outTradeNo)}?mchid=${encodeURIComponent(payCreds.mchId)}`;
 		const q = await wxPayRequestFor(payCreds, 'GET', queryPath, null);
 		if (q.trade_state !== 'SUCCESS') {
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_h5_confirm_poll',
+				merchantUserId: order.user_id,
+				withdrawId: order._id,
+				withdrawNo: outTradeNo,
+				outBillNo: outTradeNo,
+				message: `H5 主动查单/轮询：微信交易状态=${safeText(q.trade_state, 32) || '未知'}`,
+				payload: { trade_state: q.trade_state }
+			});
 			return { code: 0, message: '未支付', data: { paid: false, tradeState: q.trade_state || '' } };
 		}
 		const now = nowTs();
@@ -6975,11 +7243,30 @@ async function h5RechargeConfirm(data) {
 			original_data: q
 		});
 		await applyRechargeByOrder(order);
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_h5_confirm_paid_sync',
+			merchantUserId: order.user_id,
+			withdrawId: order._id,
+			withdrawNo: outTradeNo,
+			outBillNo: outTradeNo,
+			message: 'H5 主动查单/轮询：微信已支付，已补写订单并同步额度',
+			payload: { transaction_id: q.transaction_id }
+		});
 		return { code: 0, message: '支付成功', data: { paid: true } };
 	} catch (e) {
 		console.error('h5RechargeConfirm failed', e);
 		if (e && e.name === 'WxPayRequestError' && e.wxBody) {
 			console.error('[h5RechargeConfirm] wechat_json', JSON.stringify(e.wxBody));
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_h5_confirm_error',
+				level: 'error',
+				withdrawNo: safeText(data?.orderNo, 40),
+				outBillNo: safeText(data?.orderNo, 40),
+				message: safeText(e.message || '确认支付失败', 200),
+				payload: e.wxBody || {}
+			});
 			const out = {
 				code: 500,
 				message: safeText(e.message || '确认支付失败', 180),
@@ -6987,7 +7274,149 @@ async function h5RechargeConfirm(data) {
 			};
 			return out;
 		}
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_h5_confirm_error',
+			level: 'error',
+			withdrawNo: safeText(data?.orderNo, 40),
+			outBillNo: safeText(data?.orderNo, 40),
+			message: safeText(e?.message || '确认支付失败', 200)
+		});
 		return { code: 500, message: '确认支付失败' };
+	}
+}
+
+/** 管理端：近 N 天 status=0 的微信支付单，逐笔向微信查单；成功则补写订单并调用 applyRechargeByOrder（H5 额度充值会同步会员额度） */
+const ADMIN_PENDING_WX_SYNC_DAYS = 7;
+const ADMIN_PENDING_WX_SYNC_MAX = 150;
+
+async function adminSyncPendingRechargeFromWx(data) {
+	const now = nowTs();
+	const cutoff = now - ADMIN_PENDING_WX_SYNC_DAYS * 24 * 60 * 60 * 1000;
+	const limRaw = Number(data?.limit);
+	const lim = Math.min(250, Math.max(1, Number.isFinite(limRaw) && limRaw > 0 ? Math.floor(limRaw) : ADMIN_PENDING_WX_SYNC_MAX));
+	try {
+		const res = await uniPayOrderCollection
+			.where({
+				provider: 'wxpay',
+				status: 0,
+				is_deleted: db.command.neq(true),
+				create_date: db.command.gte(cutoff)
+			})
+			.field({
+				_id: true,
+				out_trade_no: true,
+				order_no: true,
+				user_id: true,
+				custom: true,
+				type: true,
+				provider: true,
+				mchid: true,
+				provider_mchid: true
+			})
+			.orderBy('create_date', 'desc')
+			.limit(lim)
+			.get();
+		const rows = res.data || [];
+		const details = [];
+		let scanned = 0;
+		let synced = 0;
+		let stillPending = 0;
+		let errors = 0;
+		for (const order of rows) {
+			const outTradeNo = safeText(order.out_trade_no || order.order_no, 40);
+			if (!outTradeNo) {
+				details.push({ out_trade_no: '', note: 'skip_no_out_trade_no' });
+				continue;
+			}
+			scanned += 1;
+			try {
+				const payCreds = wxCredentialsForPayOrder(order);
+				const queryPath = `/v3/pay/transactions/out-trade-no/${encodeURIComponent(outTradeNo)}?mchid=${encodeURIComponent(payCreds.mchId)}`;
+				const q = await wxPayRequestFor(payCreds, 'GET', queryPath, null);
+				if (q.trade_state !== 'SUCCESS') {
+					stillPending += 1;
+					details.push({ out_trade_no: outTradeNo, trade_state: q.trade_state || '' });
+					continue;
+				}
+				const latestRes = await uniPayOrderCollection.doc(order._id).get();
+				const latest = latestRes.data && latestRes.data[0];
+				if (!latest) {
+					details.push({ out_trade_no: outTradeNo, note: 'order_gone' });
+					continue;
+				}
+				if (Number(latest.status) !== 0) {
+					if (
+						Number(latest.status) === 1 &&
+						latest.user_order_success &&
+						latest.custom &&
+						!latest.custom.recharge_applied
+					) {
+						await applyRechargeByOrder(latest);
+						synced += 1;
+						details.push({ out_trade_no: outTradeNo, note: 'reapply_quota_only' });
+					} else {
+						details.push({ out_trade_no: outTradeNo, note: 'already_not_pending' });
+					}
+					continue;
+				}
+				const ts = nowTs();
+				await uniPayOrderCollection.doc(latest._id).update({
+					status: 1,
+					transaction_id: safeText(q.transaction_id, 80),
+					notify_date: ts,
+					pay_date: ts,
+					user_order_success: true,
+					original_data: q,
+					update_date: ts
+				});
+				await applyRechargeByOrder(latest);
+				synced += 1;
+				details.push({ out_trade_no: outTradeNo, synced: true });
+			} catch (e) {
+				errors += 1;
+				const wxBody = e && e.name === 'WxPayRequestError' ? e.wxBody : null;
+				details.push({
+					out_trade_no: outTradeNo,
+					error: safeText(e?.message || 'wx_query_failed', 160),
+					wx: wxBody ? safeJson(wxBody, 500) : ''
+				});
+				console.error('[adminSyncPendingRechargeFromWx] fail', outTradeNo, e);
+			}
+		}
+		if (scanned > 0 || synced > 0 || errors > 0) {
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_admin_batch_sync',
+				message: `管理端/定时：近${ADMIN_PENDING_WX_SYNC_DAYS}天待支付查单 scanned=${scanned} synced=${synced} stillPending=${stillPending} errors=${errors}`,
+				payload: {
+					scanned,
+					synced,
+					stillPending,
+					errors,
+					truncated: rows.length >= lim,
+					limit: lim
+				}
+			});
+		}
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				days: ADMIN_PENDING_WX_SYNC_DAYS,
+				cutoff,
+				scanned,
+				synced,
+				stillPending,
+				errors,
+				truncated: rows.length >= lim,
+				limit: lim,
+				details: details.slice(0, 80)
+			}
+		};
+	} catch (e) {
+		console.error('adminSyncPendingRechargeFromWx failed', e);
+		return { code: 500, message: safeText(e?.message || '同步失败', 160) };
 	}
 }
 
@@ -6997,22 +7426,69 @@ async function h5WxPayNotify(data) {
 		const rawBody = String(data?.rawBody || JSON.stringify(data?.body || {}));
 		const verifyRes = verifyWxCallbackSignatureDual(headers, rawBody);
 		if (!verifyRes.ok) {
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_wx_notify_verify_fail',
+				level: 'error',
+				message: safeText(verifyRes.message || '签名校验失败', 200),
+				payload: { headerKeys: Object.keys(headers || {}) }
+			});
 			return { code: 400, message: verifyRes.message, data: { ack: wxAckFail(verifyRes.message) } };
 		}
 		const bodyObj = data?.body && typeof data.body === 'object' ? data.body : JSON.parse(rawBody || '{}');
 		if (bodyObj.event_type !== 'TRANSACTION.SUCCESS') {
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_wx_notify_skip',
+				message: `微信支付回调：忽略事件类型 ${safeText(bodyObj.event_type, 48)}`,
+				payload: { event_type: bodyObj.event_type }
+			});
 			return { code: 0, message: '忽略非支付成功通知', data: { ack: wxAckSuccess() } };
 		}
 		const plain = decryptWxResourceFor(verifyRes.creds, bodyObj.resource || {});
 		const outTradeNo = safeText(plain.out_trade_no, 40);
-		if (!outTradeNo) return { code: 400, message: '回调缺少订单号', data: { ack: wxAckFail('订单号缺失') } };
+		if (!outTradeNo) {
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_wx_notify_missing_trade_no',
+				level: 'error',
+				message: '微信支付回调：解密成功但缺少商户订单号'
+			});
+			return { code: 400, message: '回调缺少订单号', data: { ack: wxAckFail('订单号缺失') } };
+		}
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_wx_notify_decrypted_ok',
+			outBillNo: outTradeNo,
+			withdrawNo: outTradeNo,
+			message: `微信支付回调：验签解密成功，商户订单号=${outTradeNo}`,
+			payload: { trade_state: safeText(plain.trade_state, 24) }
+		});
 		const res = await uniPayOrderCollection.where({ out_trade_no: outTradeNo }).limit(1).get();
 		const order = res.data && res.data[0];
-		if (!order) return { code: 0, message: '订单不存在，忽略', data: { ack: wxAckSuccess() } };
+		if (!order) {
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_wx_notify_order_missing',
+				message: `微信支付回调：本地无订单 out_trade_no=${outTradeNo}`,
+				outBillNo: outTradeNo,
+				withdrawNo: outTradeNo
+			});
+			return { code: 0, message: '订单不存在，忽略', data: { ack: wxAckSuccess() } };
+		}
 		if (Number(order.status) === 1 && order.user_order_success) {
 			if (!(order.custom && order.custom.recharge_applied)) {
 				await applyRechargeByOrder(order);
 			}
+			await writeTransferLog({
+				scene: 'recharge',
+				stage: 'recharge_wx_notify_duplicate',
+				merchantUserId: order.user_id,
+				withdrawId: order._id,
+				withdrawNo: outTradeNo,
+				outBillNo: outTradeNo,
+				message: '微信支付回调：订单已支付，本次仅补额度或未变更'
+			});
 			return { code: 0, message: '已处理过', data: { ack: wxAckSuccess() } };
 		}
 		const now = nowTs();
@@ -7025,9 +7501,26 @@ async function h5WxPayNotify(data) {
 			original_data: plain
 		});
 		await applyRechargeByOrder(order);
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_wx_notify_success',
+			merchantUserId: order.user_id,
+			withdrawId: order._id,
+			withdrawNo: outTradeNo,
+			outBillNo: outTradeNo,
+			transferState: safeText(plain.trade_state || 'SUCCESS', 32),
+			message: '微信支付回调：支付成功，已更新订单并同步额度',
+			payload: { transaction_id: plain.transaction_id }
+		});
 		return { code: 0, message: '回调处理成功', data: { ack: wxAckSuccess() } };
 	} catch (e) {
 		console.error('h5WxPayNotify failed', e);
+		await writeTransferLog({
+			scene: 'recharge',
+			stage: 'recharge_wx_notify_error',
+			level: 'error',
+			message: safeText(e?.message || '回调处理失败', 200)
+		});
 		return { code: 500, message: '回调处理失败', data: { ack: wxAckFail(e.message || '回调处理失败') } };
 	}
 }
@@ -7076,6 +7569,16 @@ async function h5WxRefundNotify(data) {
 			refund_date: now,
 			original_data: plain
 		});
+		await writeTransferLog({
+			scene: 'refund',
+			stage: 'refund_wx_pay_refund_notify',
+			merchantUserId: order.user_id,
+			withdrawId: order._id,
+			withdrawNo: outTradeNo,
+			outBillNo: outTradeNo,
+			message: '微信支付退款成功回调：已更新本地订单退款累计',
+			payload: { refund_id: refundId, refundedFen, status }
+		});
 		return { code: 0, message: '退款回调处理成功', data: { ack: wxAckSuccess() } };
 	} catch (e) {
 		console.error('h5WxRefundNotify failed', e);
@@ -7090,6 +7593,7 @@ async function h5WxTransferNotify(data) {
 		const verifyRes = verifyWxCallbackSignatureDual(headers, rawBody);
 		if (!verifyRes.ok) {
 			await writeTransferLog({
+				scene: 'withdraw',
 				stage: 'transfer_notify_verify_fail',
 				level: 'error',
 				message: verifyRes.message,
@@ -7101,23 +7605,37 @@ async function h5WxTransferNotify(data) {
 		const plain = decryptWxResourceFor(verifyRes.creds, bodyObj.resource || {});
 		const outBillNo = safeText(plain.out_bill_no || plain.outBillNo || '', 64);
 		const state = normalizeTransferState(plain.state || plain.status || '');
+		let withdrawRowNotify = null;
+		let refundOrderNotify = null;
+		if (outBillNo) {
+			const wr0 = await withdrawCollection.where({ withdraw_no: outBillNo, is_deleted: false }).limit(1).get();
+			withdrawRowNotify = wr0.data && wr0.data[0];
+			if (!withdrawRowNotify) {
+				refundOrderNotify = await findRefundTransferOrderByBillNo(outBillNo);
+			}
+		}
+		const notifyScene = refundOrderNotify ? 'refund' : 'withdraw';
+		const notifyMsg = refundOrderNotify
+			? '收到微信退款商家转账结果通知'
+			: withdrawRowNotify
+			? '收到微信提现商家转账结果通知'
+			: '收到微信商家转账结果通知';
 		await writeTransferLog({
+			scene: notifyScene,
 			stage: 'transfer_notify_received',
 			withdrawNo: outBillNo,
 			openid: safeText(plain.openid || '', 128),
 			outBillNo,
 			transferState: state,
-			message: '收到微信提现到账通知',
+			message: notifyMsg,
 			payload: plain || {}
 		});
 		if (outBillNo && state === 'SUCCESS') {
-			const r = await withdrawCollection.where({ withdraw_no: outBillNo, is_deleted: false }).limit(1).get();
-			const row = r.data && r.data[0];
-			if (row) {
-				await settleWithdrawSuccess(row, safeText(plain.transfer_bill_no || '', 80), 'SUCCESS');
+			if (withdrawRowNotify) {
+				await settleWithdrawSuccess(withdrawRowNotify, safeText(plain.transfer_bill_no || '', 80), 'SUCCESS');
 			} else {
 				// H5 充值退款：按子单 out_bill_no 更新 transfer_items，全部子单成功后再 finalize（不涉及积分提现 withdraw 单）
-				const refundOrder = await findRefundTransferOrderByBillNo(outBillNo);
+				const refundOrder = refundOrderNotify || (await findRefundTransferOrderByBillNo(outBillNo));
 				if (refundOrder) {
 					let items = sortTransferItemsBySlice(
 						Array.isArray(refundOrder.transfer_items) ? refundOrder.transfer_items.map((x) => ({ ...x })) : []
@@ -7155,6 +7673,7 @@ async function h5WxTransferNotify(data) {
 		return { code: 0, message: '回调处理成功', data: { ack: wxAckSuccess() } };
 	} catch (e) {
 		await writeTransferLog({
+			scene: 'withdraw',
 			stage: 'transfer_notify_error',
 			level: 'error',
 			message: safeText(e?.message || '微信提现回调处理失败', 180)
@@ -7352,6 +7871,17 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 		if (packageInfo) first.package_info = packageInfo;
 		if (st === 'SUCCESS') first.transfer_time = nowTs();
 		items[activeIdx] = first;
+
+		await writeTransferLog({
+			scene: 'refund',
+			stage: 'refund_merchant_transfer_slice',
+			withdrawNo: refundNoMain,
+			merchantUserId: safeText(transferOrder.merchant_user_id, 80),
+			outBillNo,
+			transferState: st,
+			message: `退款商家转账：子单 ${outBillNo} 当前状态=${st}`,
+			payload: { sliceIndex: activeIdx, hadCreate: !!transferCreateResp }
+		});
 
 		const batchState = computeMerchantRefundBatchState(items);
 		const pkgPersist = packageInfo ? { package_info: packageInfo } : {};
@@ -7635,6 +8165,7 @@ async function refundTransferSyncProcessing(data = {}) {
 				const state = normalizeTransferState(q?.state || q?.status || '');
 				const billNo = safeText(q?.transfer_bill_no || '', 80);
 				await writeTransferLog({
+					scene: 'refund',
 					stage: 'refund_auto_poll_query',
 					withdrawNo: row.refund_no,
 					merchantUserId: row.merchant_user_id,
@@ -7672,6 +8203,7 @@ async function refundTransferSyncProcessing(data = {}) {
 				}
 			} catch (e) {
 				await writeTransferLog({
+					scene: 'refund',
 					stage: 'refund_auto_poll_error',
 					level: 'error',
 					withdrawNo: row.refund_no,
@@ -7727,6 +8259,7 @@ async function refundTransferApprove(data, event) {
 				update_time: now
 			});
 			await writeTransferLog({
+				scene: 'refund',
 				stage: 'refund_admin_force_fail',
 				level: 'warn',
 				withdrawNo: safeText(row.refund_no || row.out_bill_no, 64),
@@ -7779,6 +8312,7 @@ async function refundTransferApprove(data, event) {
 		const rowSt0 = safeText(row.state, 24);
 		if (rowSt0 === 'SUCCESS') return { code: 400, message: '该退款已成功' };
 		await writeTransferLog({
+			scene: 'refund',
 			stage: 'refund_admin_approve',
 			withdrawNo: row.refund_no,
 			merchantUserId: row.merchant_user_id,
@@ -7853,6 +8387,7 @@ async function refundTransferForceFail(data, event) {
 			update_time: nowTs()
 		});
 		await writeTransferLog({
+			scene: 'refund',
 			stage: 'refund_admin_force_fail',
 			level: 'warn',
 			withdrawNo: safeText(row.refund_no || row.out_bill_no, 64),
@@ -7921,6 +8456,7 @@ async function refundTransferFixRejectedProcessing(data, event) {
 			update_time: nowTs()
 		});
 		await writeTransferLog({
+			scene: 'refund',
 			stage: 'refund_admin_fix_rejected_processing',
 			level: 'warn',
 			withdrawNo: safeText(row.refund_no || row.out_bill_no, 64),
@@ -8003,6 +8539,7 @@ async function refundTransferRevokeApproveDev(data, event) {
 		}
 		await transferOrderCollection.doc(id).update(upd);
 		await writeTransferLog({
+			scene: 'refund',
 			stage: 'refund_admin_revoke_approve_dev',
 			level: 'warn',
 			withdrawNo: refundNo,
@@ -8321,6 +8858,7 @@ async function h5RefundConfirmPackage(data) {
 				update_time: nowTs()
 			});
 			await writeTransferLog({
+				scene: 'refund',
 				stage: 'h5_refund_confirm_query_error',
 				level: 'error',
 				withdrawNo: sliceBill,
@@ -11583,6 +12121,8 @@ exports.main = async (event, context) => {
 			return await adminDashboardTrend30d(actualData);
 		case 'adminHomeSummary':
 			return await adminHomeSummary(actualData);
+		case 'adminMerchantRefundWindow':
+			return await adminMerchantRefundWindow(actualData);
 		case 'financeMerchantFlowList':
 			return await financeMerchantFlowList(actualData);
 		case 'withdrawExportCsv':
@@ -11597,6 +12137,8 @@ exports.main = async (event, context) => {
 			return await merchantDataCorrectStart(actualData, event);
 		case 'merchantDataCorrectStatus':
 			return await merchantDataCorrectStatus(actualData);
+		case 'adminSyncPendingRechargeFromWx':
+			return await adminSyncPendingRechargeFromWx(actualData);
 		case 'adminSilverMemberGiftBackfill':
 			return await adminSilverMemberGiftBackfill(actualData);
 		case 'adminSilverMemberGiftRevert':

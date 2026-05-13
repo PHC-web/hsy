@@ -1,0 +1,12 @@
+{
+	"name": "pending-pay-wx-sync-cron",
+	"version": "1.0.0",
+	"description": "调用 merchant 查单补同步；定时触发器请在 uniCloud 控制台自行添加（勿写在 package.json，避免上传报错）",
+	"main": "index.js",
+	"dependencies": {},
+	"cloudfunction-config": {
+		"concurrency": 1,
+		"memorySize": 256,
+		"timeout": 180
+	}
+}

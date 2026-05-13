@@ -51,28 +51,42 @@
 			<view class="bottom-row">
 				<view class="returns-card">
 					<view class="returns-title">资金汇总</view>
-					<view class="returns-metrics">
-						<view class="returns-metric">
-							<view class="returns-metric-label">已提现金额</view>
-							<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmount) }}</view>
+					<view class="returns-stack">
+						<view class="returns-metrics returns-metrics--overview">
+							<view class="returns-metric">
+								<view class="returns-metric-label">已提现金额</view>
+								<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmount) }}</view>
+							</view>
+							<view class="returns-metric">
+								<view class="returns-metric-label">总刷卡金额</view>
+								<view class="returns-metric-value">{{ toMoney(dashboard.boundMerchantTradeAmount) }}</view>
+							</view>
+							<view class="returns-metric returns-metric--rate">
+								<view class="returns-metric-label">提现率</view>
+								<view class="returns-metric-value">{{ withdrawRatePerWan }}</view>
+							</view>
 						</view>
-						<view class="returns-metric">
-							<view class="returns-metric-label">总刷卡金额</view>
-							<view class="returns-metric-value">{{ toMoney(dashboard.boundMerchantTradeAmount) }}</view>
-						</view>
-						<view class="returns-metric returns-metric--rate">
-							<view class="returns-metric-label">提现率</view>
-							<view class="returns-metric-value">{{ withdrawRatePercent }}%</view>
+						<view class="returns-tier-wrap">
+							<view class="returns-metrics returns-metrics--tier">
+								<view class="returns-metric">
+									<view class="returns-metric-label">会员到账金额</view>
+									<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmountMember) }}</view>
+								</view>
+								<view class="returns-metric returns-metric--rate">
+									<view class="returns-metric-label">会员提现率</view>
+									<view class="returns-metric-value">{{ withdrawRateMemberPerWan }}</view>
+								</view>
+								<view class="returns-metric">
+									<view class="returns-metric-label">非会员到账金额</view>
+									<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmountNonMember) }}</view>
+								</view>
+								<view class="returns-metric returns-metric--rate">
+									<view class="returns-metric-label">非会员提现率</view>
+									<view class="returns-metric-value">{{ withdrawRateNonMemberPerWan }}</view>
+								</view>
+							</view>
 						</view>
 					</view>
-				</view>
-
-				<view class="summary-card">
-					<view class="summary-title">数据说明</view>
-					<view class="summary-item">资金汇总：已提现为到账金额；总刷卡与「品牌-刷卡记录」页顶部交易额一致；提现率＝已提现÷总刷卡。下方「流水统计」与刷卡记录同一套过滤规则</view>
-					<view class="summary-item">提现：按提现记录汇总，金额保留两位小数</view>
-					<view class="summary-item">激活：今日激活按当天 00:00 后时间统计</view>
-					<view class="summary-item">会员率：会员数 / 用户数</view>
 				</view>
 			</view>
 
@@ -170,6 +184,8 @@
 					returnDue: 0,
 					returnRate: '0.00',
 					arrivedWithdrawAmount: 0,
+					arrivedWithdrawAmountMember: 0,
+					arrivedWithdrawAmountNonMember: 0,
 					boundMerchantTradeAmount: 0,
 					totalRechargeAmount: 0,
 					totalRefundAmount: 0
@@ -348,6 +364,8 @@
 						returnDue: 0,
 						returnRate: '0.00',
 						arrivedWithdrawAmount: Number(sum.arrivedWithdrawAmount || 0),
+						arrivedWithdrawAmountMember: Number(sum.arrivedWithdrawAmountMember || 0),
+						arrivedWithdrawAmountNonMember: Number(sum.arrivedWithdrawAmountNonMember || 0),
 						boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
 						totalRechargeAmount: Number(sum.totalRechargeAmount || 0),
 						totalRefundAmount: Number(sum.totalRefundAmount || 0)
@@ -650,12 +668,30 @@
 			trendRangeLabel() {
 				return this.trendRangeLabelText();
 			},
-			/** 已提现金额 / 总刷卡金额 × 100，分母为 0 时显示 0.00 */
-			withdrawRatePercent() {
+			/** 每万元刷卡对应的提现已到账金额：已提现÷总刷卡×10000，显示「X.XX元/万」 */
+			withdrawRatePerWan() {
 				const w = Number(this.dashboard.arrivedWithdrawAmount || 0);
 				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
-				if (!Number.isFinite(s) || s <= 0) return '0.00';
-				return ((w / s) * 100).toFixed(2);
+				if (!Number.isFinite(w) || !Number.isFinite(s) || s <= 0) return '0.00元/万';
+				const yuanPerWan = (w / s) * 10000;
+				if (!Number.isFinite(yuanPerWan)) return '0.00元/万';
+				return `${yuanPerWan.toFixed(2)}元/万`;
+			},
+			withdrawRateMemberPerWan() {
+				const w = Number(this.dashboard.arrivedWithdrawAmountMember || 0);
+				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
+				if (!Number.isFinite(w) || !Number.isFinite(s) || s <= 0) return '0.00元/万';
+				const yuanPerWan = (w / s) * 10000;
+				if (!Number.isFinite(yuanPerWan)) return '0.00元/万';
+				return `${yuanPerWan.toFixed(2)}元/万`;
+			},
+			withdrawRateNonMemberPerWan() {
+				const w = Number(this.dashboard.arrivedWithdrawAmountNonMember || 0);
+				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
+				if (!Number.isFinite(w) || !Number.isFinite(s) || s <= 0) return '0.00元/万';
+				const yuanPerWan = (w / s) * 10000;
+				if (!Number.isFinite(yuanPerWan)) return '0.00元/万';
+				return `${yuanPerWan.toFixed(2)}元/万`;
 			}
 		}
 	};
@@ -670,9 +706,12 @@
 
 .dashboard-page {
 	min-height: 420px;
-	padding: 12px 8px 28px;
+	min-width: 0;
+	width: 100%;
 	max-width: 1480px;
 	margin: 0 auto;
+	padding: 12px 8px 28px;
+	box-sizing: border-box;
 }
 
 	.title-wrap {
@@ -777,12 +816,16 @@
 	}
 
 	.returns-card {
+		box-sizing: border-box;
 		min-width: 0;
-		padding: 12px 14px;
-		border-radius: 8px;
+		width: 100%;
+		max-width: 100%;
+		padding: 12px 14px 14px;
+		border-radius: 10px;
 		color: #fff;
 		background: linear-gradient(180deg, #ef3d86 0%, #d81b60 100%);
 		box-shadow: 0 10px 24px rgba(216, 27, 96, 0.25);
+		overflow: hidden;
 	}
 
 	.returns-title {
@@ -791,19 +834,60 @@
 		margin-bottom: 0;
 	}
 
-	.returns-metrics {
+	.returns-stack {
+		margin-top: 12px;
+		display: flex;
+		flex-direction: column;
+		gap: 14px;
+		min-width: 0;
+	}
+
+	.returns-metrics--overview {
+		box-sizing: border-box;
 		display: grid;
+		width: 100%;
+		min-width: 0;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 8px 10px;
-		margin-top: 10px;
+		gap: 10px 12px;
+	}
+
+	.returns-tier-wrap {
+		padding-top: 12px;
+		border-top: 1px solid rgba(255, 255, 255, 0.22);
+		min-width: 0;
+	}
+
+	/* 会员/非会员四项同一行；极窄屏降为 2×2，仍为「金额+率」相邻 */
+	.returns-metrics--tier {
+		box-sizing: border-box;
+		display: grid;
+		width: 100%;
+		min-width: 0;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 10px 12px;
+	}
+
+	@media (max-width: 560px) {
+		.returns-metrics--tier {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 
 	.returns-metric {
 		min-width: 0;
-		padding: 7px 8px;
-		border-radius: 6px;
+		max-width: 100%;
+		padding: 10px 12px 12px;
+		border-radius: 8px;
 		background: rgba(255, 255, 255, 0.12);
 		border: 1px solid rgba(255, 255, 255, 0.18);
+		box-sizing: border-box;
+		overflow: hidden;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		text-align: center;
+		min-height: 76px;
 	}
 
 	.returns-metric--rate .returns-metric-value {
@@ -812,49 +896,29 @@
 
 	.returns-metric-label {
 		font-size: 11px;
-		line-height: 1.25;
-		opacity: 0.88;
-		margin-bottom: 4px;
+		line-height: 1.35;
+		opacity: 0.9;
+		margin-bottom: 6px;
+		white-space: normal;
+		word-break: break-word;
+		text-align: center;
+		width: 100%;
 	}
 
 	.returns-metric-value {
 		font-size: clamp(13px, 1.35vw, 17px);
 		font-weight: 700;
-		line-height: 1.2;
+		line-height: 1.25;
 		font-variant-numeric: tabular-nums;
 		word-break: break-word;
+		overflow-wrap: anywhere;
+		text-align: center;
+		width: 100%;
 	}
 
 .bottom-row {
 	margin-top: 16px;
-	display: grid;
-	grid-template-columns: minmax(320px, 1.05fr) 1fr;
-	gap: 12px;
-	align-items: stretch;
 }
-
-	.summary-card {
-		flex: 1;
-		min-width: 260px;
-		border-radius: 14px;
-		background: #fff;
-		border: 1px solid rgba(148, 163, 184, 0.22);
-		padding: 16px 18px;
-		box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
-	}
-
-	.summary-title {
-		font-size: 15px;
-		font-weight: 600;
-		color: #334155;
-		margin-bottom: 12px;
-	}
-
-	.summary-item {
-		font-size: 13px;
-		line-height: 1.85;
-		color: #64748b;
-	}
 
 	.chart-panel {
 		margin-top: 16px;
@@ -956,22 +1020,10 @@
 			grid-template-columns: 1fr;
 		}
 		.bottom-row {
-			grid-template-columns: 1fr;
+			margin-top: 14px;
 		}
 		.returns-card {
 			width: 100%;
-		}
-	}
-
-	@media screen and (max-width: 680px) {
-		.returns-metrics {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-	}
-
-	@media screen and (max-width: 420px) {
-		.returns-metrics {
-			grid-template-columns: 1fr;
 		}
 	}
 

@@ -6,6 +6,7 @@
 				<view class="header-actions">
 					<button size="mini" @click="reset">重置</button>
 					<button size="mini" type="warn" @click="runDataCorrect">数据矫正</button>
+					<button size="mini" type="primary" plain @click="runSyncPendingRechargeFromWx">更新会员状态</button>
 					<view class="export-dropdown" @mouseleave="showExportMenu = false">
 						<button size="mini" class="export-trigger" @click="toggleExportMenu">
 							<text class="bi bi-download export-icon"></text>
@@ -44,7 +45,7 @@
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag2')">2</uni-th>
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
-							<uni-th align="center" width="140">操作</uni-th>
+							<uni-th align="center" width="180">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
@@ -92,6 +93,7 @@
 							<uni-td align="center">
 								<view class="cell-actions">
 									<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
+									<button size="mini" plain @click="openRefundWindow(item)">退款窗口</button>
 									<button
 										v-if="item.agreementSigned"
 										size="mini"
@@ -346,6 +348,43 @@ export default {
 					{ text: '普通会员', value: '普通会员', checked: false },
 					{ text: '白银会员', value: '白银会员', checked: false }
 				];
+			}
+		},
+		async runSyncPendingRechargeFromWx() {
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '更新会员状态',
+					content:
+						'将对近 7 天内 uni-pay-orders 中 status=0、provider=wxpay 的订单逐笔向微信查单；若微信侧已支付，将补写本地订单并触发额度同步（H5 额度充值会更新会员状态）。单次最多处理 150 条，是否继续？',
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			uni.showLoading({ title: '正在向微信查单…', mask: true });
+			try {
+				const ret = await this.$request('adminSyncPendingRechargeFromWx', {}, { functionName: 'merchant' });
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '同步失败', icon: 'none' });
+					return;
+				}
+				const d = ret.data || {};
+				const lines = [
+					`扫描：${Number(d.scanned || 0)} 笔`,
+					`已补同步：${Number(d.synced || 0)} 笔`,
+					`微信仍非成功：${Number(d.stillPending || 0)} 笔`,
+					`查单异常：${Number(d.errors || 0)} 笔`,
+					d.truncated ? '（已达单次上限，可再次执行）' : ''
+				].filter(Boolean);
+				uni.showModal({
+					title: '查单完成',
+					content: lines.join('\n'),
+					showCancel: false
+				});
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '同步失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
 			}
 		},
 		async runDataCorrect() {
@@ -915,6 +954,29 @@ export default {
 		},
 		closePointsInsight() {
 			if (this.$refs.pointsInsightPopup) this.$refs.pointsInsightPopup.close();
+		},
+		async openRefundWindow(item) {
+			if (!item || !item.id) return;
+			uni.showLoading({ title: '查询中...', mask: true });
+			try {
+				const ret = await this.$request(
+					'adminMerchantRefundWindow',
+					{ merchantId: item.id },
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '查询失败', icon: 'none' });
+					return;
+				}
+				const summary = String((ret.data && ret.data.summary) || '暂无说明').trim();
+				uni.showModal({
+					title: '退款窗口',
+					content: summary,
+					showCancel: false
+				});
+			} finally {
+				uni.hideLoading();
+			}
 		}
 	}
 };
