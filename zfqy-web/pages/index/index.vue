@@ -163,6 +163,7 @@
 
 <script>
 	import adminConfig from '@/admin.config.js';
+	import { canAccessAdminHome, canAccessPortal } from '@/js_sdk/uni-admin/resolveAdminEntryUrl.js';
 
 	export default {
 		data() {
@@ -248,19 +249,9 @@
 		},
 		onShow() {
 			if (!this.allowRender) return;
-			const ids = adminConfig.permissionIds || {};
 			const portalUrl = (adminConfig.portal && adminConfig.portal.url) || '/pages/portal/index';
-			const homeIds = ids.adminHome != null ? ids.adminHome : 'console.home';
-			const portalIds = ids.portalHome != null ? ids.portalHome : 'console.portal';
-			const homeList = Array.isArray(homeIds) ? homeIds : [homeIds];
-			const portalList = Array.isArray(portalIds) ? portalIds : [portalIds];
-			const hasPerm = (list) =>
-				typeof this.$hasPermission === 'function' &&
-				list.some((id) => id && this.$hasPermission(id));
-			const canAdminHome =
-				(typeof this.$hasRole === 'function' && this.$hasRole('admin')) || hasPerm.call(this, homeList);
-			if (!canAdminHome) {
-				if (hasPerm.call(this, portalList)) {
+			if (!canAccessAdminHome(this)) {
+				if (canAccessPortal(this)) {
 					uni.redirectTo({
 						url: portalUrl,
 						fail: () => {

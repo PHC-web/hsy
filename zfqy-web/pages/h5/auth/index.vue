@@ -28,15 +28,14 @@
 
 				<view v-else-if="!isWechat" class="browser-login">
 					<view class="card h5-glass-panel tip-card">
-						<text class="tip-title">请使用「微信」打开本页面</text>
+						<text class="tip-title">请使用微信打开</text>
 						<text class="tip-text">
-							公众号网页授权（snsapi_userinfo）仅能在微信内置浏览器中完成。当前为普通浏览器（如 Chrome 模拟器），无法发起真实授权，因此不会显示微信一键登录。
+							商户中心需在微信内登录使用。请打开微信，从「慧收盈」公众号菜单进入；也可将本页链接复制到微信聊天中，再点击链接打开。
 						</text>
-						<text class="tip-text">正式验证：把本页链接发到微信聊天或配置到公众号菜单，在微信中打开即可。</text>
-						<button class="btn-outline" @click="copyPageLink">复制当前页链接</button>
+						<button class="btn-outline" @click="copyPageLink">复制页面链接</button>
 					</view>
 
-					<view class="card h5-glass-panel mock-dev">
+					<view v-if="showDevTools" class="card h5-glass-panel mock-dev">
 						<text class="mock-title">本地调试 · Mock 登录</text>
 						<text class="mock-desc">模拟微信身份，无需手机号；进入后需绑定机具号。</text>
 						<view class="field">
@@ -50,7 +49,7 @@
 						<button class="btn-primary" type="primary" @click="submitAuth">Mock 进入并同步</button>
 					</view>
 
-					<view class="card h5-glass-panel mock-dev">
+					<view v-if="showDevTools" class="card h5-glass-panel mock-dev">
 						<text class="mock-title">本地调试 · 使用授权 code</text>
 						<text class="mock-desc">
 							在微信内完成一次授权后，地址栏会带有 ?code=（一次性、约 5 分钟内有效）。可复制整段 URL 或只粘贴 code，在下方提交以便在电脑浏览器里联调。
@@ -77,6 +76,7 @@
 import { h5AuthSync, h5BindMachine, h5WechatLogin } from '@/pages/h5/common/api';
 import { saveSession, getSession } from '@/pages/h5/common/session';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
+import { isH5DevToolsEnabled } from '@/pages/h5/common/env';
 
 const WX_MP_APPID = 'wxeeb5a3a25894c4e1';
 
@@ -133,6 +133,11 @@ export default {
 			devCodeInput: ''
 		};
 	},
+	computed: {
+		showDevTools() {
+			return isH5DevToolsEnabled();
+		}
+	},
 	onShow() {
 		this.bootstrapH5();
 	},
@@ -184,6 +189,10 @@ export default {
 		},
 		submitDevCode() {
 			// #ifdef H5
+			if (!this.showDevTools) {
+				uni.showToast({ title: '请使用微信打开本页面', icon: 'none' });
+				return;
+			}
 			let raw = String(this.devCodeInput || '').trim();
 			if (!raw) {
 				uni.showToast({ title: '请粘贴 code 或完整 URL', icon: 'none' });
@@ -254,6 +263,10 @@ export default {
 			uni.showToast({ title: '请在 H5 环境使用', icon: 'none' });
 			return;
 			// #endif
+			if (!this.showDevTools) {
+				uni.showToast({ title: '请使用微信打开本页面', icon: 'none' });
+				return;
+			}
 			uni.showLoading({ title: '登录中...', mask: true });
 			try {
 				const res = await h5AuthSync({

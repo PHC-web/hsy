@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <script>
+      (function () {
+        var pathname = window.location.pathname || '/';
+        var isAdminPath = pathname === '/admin' || pathname.indexOf('/admin/') === 0;
+        if (isAdminPath) return;
+        var hash = window.location.hash || '';
+        if (hash.indexOf('/pages/h5/') !== -1) return;
+        var search = window.location.search || '';
+        window.location.replace(pathname + search + '#/pages/h5/auth/index');
+      })();
+    </script>
+    <script>
       var coverSupport = 'CSS' in window && typeof CSS.supports === 'function' && (CSS.supports('top: env(a)') ||
         CSS.supports('top: constant(a)'))
       document.write(

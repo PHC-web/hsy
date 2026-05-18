@@ -1951,6 +1951,55 @@ async function buildCardRecordAlignedTradeBaseWhere(_) {
 	}
 }
 
+/** 首页趋势：分页拉全量刷卡记录（规避单次 get 默认/上限约 1000 条） */
+const ADMIN_TREND_TRADE_PAGE = 1000;
+const ADMIN_TREND_TRADE_MAX_ROWS = 2000000;
+
+async function adminForEachTradeRowPaged(where, field, onBatch) {
+	if (!where || typeof onBatch !== 'function') return 0;
+	let skip = 0;
+	let total = 0;
+	for (;;) {
+		const r = await machineTradeCollection
+			.where(where)
+			.field(field)
+			.skip(skip)
+			.limit(ADMIN_TREND_TRADE_PAGE)
+			.get();
+		const rows = r.data || [];
+		if (rows.length) {
+			onBatch(rows);
+			total += rows.length;
+		}
+		if (rows.length < ADMIN_TREND_TRADE_PAGE) break;
+		skip += ADMIN_TREND_TRADE_PAGE;
+		if (skip >= ADMIN_TREND_TRADE_MAX_ROWS) break;
+	}
+	return total;
+}
+
+async function adminCountTradesWhere(where) {
+	if (!where) return 0;
+	const res = await machineTradeCollection.where(where).count();
+	return Number(res.total || res.result?.total || 0);
+}
+
+async function adminSumTradeAmountWhere(where) {
+	if (!where) return 0;
+	const $ = db.command.aggregate;
+	try {
+		const agg = await machineTradeCollection
+			.aggregate()
+			.match(where)
+			.group({ _id: null, total: $.sum('$amount') })
+			.end();
+		return Number(Number((((agg.data || [])[0] || {}).total || 0)).toFixed(2));
+	} catch (e) {
+		console.error('adminSumTradeAmountWhere failed', e);
+		return 0;
+	}
+}
+
 async function adminDashboardTrend30d(data = {}) {
 	try {
 		const now = nowTs();
@@ -1977,16 +2026,14 @@ async function adminDashboardTrend30d(data = {}) {
 					{ create_time: _.lte(endTs) }
 			  ])
 			: null;
-		const tradeQueryPromise =
-			cardBase.ok && tradeRangeWhere
-				? machineTradeCollection
-						.where(tradeRangeWhere)
-						.field({ create_time: true, amount: true, trade_type: true, paychannel: true, paychannel_text: true })
-						.limit(50000)
-						.get()
-				: Promise.resolve({ data: [] });
-		const [tradeRes, bindRes, payRes, logRes, wdRes] = await Promise.all([
-			tradeQueryPromise,
+		const tradeRowField = {
+			create_time: true,
+			amount: true,
+			trade_type: true,
+			paychannel: true,
+			paychannel_text: true
+		};
+		const [bindRes, payRes, logRes, wdRes] = await Promise.all([
 			merchantCollection
 				.where(
 					_.and([
@@ -2203,24 +2250,18 @@ async function adminDashboardTrend30d(data = {}) {
 		}
 		try {
 			if (cardBase.ok) {
-				const allCountRes = await machineTradeCollection.where(cardBase.baseWhere).count();
-				const allTotal = Number(allCountRes.total || allCountRes.result?.total || 0);
-				const batchSize = 5000;
-				for (let offset = 0; offset < allTotal; offset += batchSize) {
-					const batchRes = await machineTradeCollection
-						.where(cardBase.baseWhere)
-						.field({ trade_type: true, paychannel: true, amount: true })
-						.skip(offset)
-						.limit(batchSize)
-						.get();
-					(batchRes.data || []).forEach((row) => {
-						const k = normalizeTrendTradeType(row);
-						if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
-						allTimeTradeTypeStats[k].count += 1;
-						allTimeTradeTypeStats[k].amount += Number(row.amount || 0);
-					});
-					if ((batchRes.data || []).length < batchSize) break;
-				}
+				await adminForEachTradeRowPaged(
+					cardBase.baseWhere,
+					{ trade_type: true, paychannel: true, amount: true },
+					(rows) => {
+						rows.forEach((row) => {
+							const k = normalizeTrendTradeType(row);
+							if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
+							allTimeTradeTypeStats[k].count += 1;
+							allTimeTradeTypeStats[k].amount += Number(row.amount || 0);
+						});
+					}
+				);
 			} else {
 				allTimeTradeTypeStats = {};
 			}
@@ -2252,19 +2293,23 @@ async function adminDashboardTrend30d(data = {}) {
 			dayTradeTypeAmount[d] = {};
 		});
 
-		(tradeRes.data || []).forEach((row) => {
-			const d = bucketKeyByRange(row.create_time, range);
-			if (!dayFlow[d] && dayFlow[d] !== 0) return;
-			dayFlow[d] += Number(row.amount || 0);
-			const typeKey = normalizeTrendTradeType(row);
-			if (!rangeTradeTypeStats[typeKey]) rangeTradeTypeStats[typeKey] = { count: 0, amount: 0 };
-			rangeTradeTypeStats[typeKey].count += 1;
-			rangeTradeTypeStats[typeKey].amount += Number(row.amount || 0);
-			if (!dayTradeTypeCount[d][typeKey]) dayTradeTypeCount[d][typeKey] = 0;
-			if (!dayTradeTypeAmount[d][typeKey]) dayTradeTypeAmount[d][typeKey] = 0;
-			dayTradeTypeCount[d][typeKey] += 1;
-			dayTradeTypeAmount[d][typeKey] += Number(row.amount || 0);
-		});
+		if (cardBase.ok && tradeRangeWhere) {
+			await adminForEachTradeRowPaged(tradeRangeWhere, tradeRowField, (rows) => {
+				rows.forEach((row) => {
+					const d = bucketKeyByRange(row.create_time, range);
+					if (!dayFlow[d] && dayFlow[d] !== 0) return;
+					dayFlow[d] += Number(row.amount || 0);
+					const typeKey = normalizeTrendTradeType(row);
+					if (!rangeTradeTypeStats[typeKey]) rangeTradeTypeStats[typeKey] = { count: 0, amount: 0 };
+					rangeTradeTypeStats[typeKey].count += 1;
+					rangeTradeTypeStats[typeKey].amount += Number(row.amount || 0);
+					if (!dayTradeTypeCount[d][typeKey]) dayTradeTypeCount[d][typeKey] = 0;
+					if (!dayTradeTypeAmount[d][typeKey]) dayTradeTypeAmount[d][typeKey] = 0;
+					dayTradeTypeCount[d][typeKey] += 1;
+					dayTradeTypeAmount[d][typeKey] += Number(row.amount || 0);
+				});
+			});
+		}
 
 		const bindSeenByDay = {};
 		(bindRes.data || []).forEach((row) => {
@@ -2370,9 +2415,14 @@ async function adminDashboardTrend30d(data = {}) {
 				};
 			}),
 			summary: {
-				totalFlow: Number(
-					(tradeRes.data || []).reduce((sum, row) => sum + Number(row.amount || 0), 0).toFixed(2)
-				),
+				totalFlow:
+					cardBase.ok && tradeRangeWhere
+						? await adminSumTradeAmountWhere(tradeRangeWhere)
+						: Number(
+								Object.values(dayFlow)
+									.reduce((sum, n) => sum + Number(n || 0), 0)
+									.toFixed(2)
+						  ),
 				allTimeTotalFlow: Number(Number(allTimeTotalFlow || 0).toFixed(2)),
 				totalBindMerchantCount: Number(rangeBindMerchants.size || 0),
 				totalRechargeMerchantCount: Number(rangeRechargeMerchants.size || 0),
@@ -2386,12 +2436,12 @@ async function adminDashboardTrend30d(data = {}) {
 				totalExchangeNetAmount: Number(exchangeNetAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
 				allTimeExchangeCount: Number(allTimeExchangeCount || 0),
 				allTimeExchangeNetAmount: Number(Number(allTimeExchangeNetAmount || 0).toFixed(2)),
-				totalTradeCount: Number((tradeRes.data || []).length || 0),
-				allTimeTradeCount: Number(Object.values(allTimeTradeTypeStats).reduce((sum, x) => sum + Number(x.count || 0), 0)),
-				totalTradeAmount: Number(
-					(tradeRes.data || []).reduce((sum, row) => sum + Number(row.amount || 0), 0).toFixed(2)
-				),
-				allTimeTradeAmount: Number(Object.values(allTimeTradeTypeStats).reduce((sum, x) => sum + Number(x.amount || 0), 0).toFixed(2))
+				totalTradeCount:
+					cardBase.ok && tradeRangeWhere ? await adminCountTradesWhere(tradeRangeWhere) : 0,
+				allTimeTradeCount: cardBase.ok ? await adminCountTradesWhere(cardBase.baseWhere) : 0,
+				totalTradeAmount:
+					cardBase.ok && tradeRangeWhere ? await adminSumTradeAmountWhere(tradeRangeWhere) : 0,
+				allTimeTradeAmount: cardBase.ok ? await adminSumTradeAmountWhere(cardBase.baseWhere) : 0
 			},
 			series: {
 				dailyFlow,
@@ -4386,8 +4436,17 @@ async function applyRechargeByOrder(orderDoc) {
 	}
 }
 
+/** H5 Mock 登录仅开发云函数或显式环境变量时允许（正式空间勿配置 HSY_ALLOW_H5_MOCK） */
+function isH5MockAuthAllowed() {
+	if (process.env.HSY_ALLOW_H5_MOCK === '1') return true;
+	return process.env.NODE_ENV === 'development';
+}
+
 function pickAuthProfile(data) {
 	const authMode = safeText(data?.authMode || 'mock', 20) || 'mock';
+	if (authMode === 'mock' && !isH5MockAuthAllowed()) {
+		return { authMode: 'mock', blocked: true };
+	}
 	if (authMode === 'wechat') {
 		// 真授权阶段由网关完成 code->openid/手机号换取；这里保留兼容入参。
 		const openid = safeText(data?.openid, 80);
@@ -4949,6 +5008,9 @@ async function h5SetMobileDirect(data) {
 async function h5AuthSync(data) {
 	try {
 		const profile = pickAuthProfile(data);
+		if (profile.blocked) {
+			return { code: 403, message: '请使用微信打开并完成授权登录' };
+		}
 		if (!profile.openid) {
 			return { code: 400, message: '未获取到用户身份信息，请重试' };
 		}

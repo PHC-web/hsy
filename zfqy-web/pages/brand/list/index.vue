@@ -29,12 +29,9 @@
 						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'brandId')">品牌ID</uni-th>
 						<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'brandName')">品牌名称</uni-th>
 						<uni-th align="center" width="120px">激活条件</uni-th>
-						<uni-th align="center" width="80px">返佣费</uni-th>
 						<uni-th align="center" width="80px">入库台数</uni-th>
 						<uni-th align="center" width="80px">绑定数</uni-th>
 						<uni-th align="center" width="80px">激活台数</uni-th>
-						<uni-th align="center" width="80px">返邮机具</uni-th>
-						<uni-th align="center" width="80px">返邮到账</uni-th>
 						<uni-th align="center" width="90" filter-type="select" :filter-data="statusFilterData" @filter-change="headerFilterChange($event, 'status')">使用状态</uni-th>
 						<uni-th align="center" width="200px">状态时间</uni-th>
 						<uni-th align="center" width="200px">添加时间</uni-th>
@@ -44,14 +41,11 @@
 						<uni-td align="center">{{ item.id }}</uni-td>
 						<uni-td align="center">{{ item.brandName }}</uni-td>
 						<uni-td align="center">{{ item.activationCondition }}</uni-td>
-						<uni-td align="center">{{ item.commission }}</uni-td>
 						<uni-td align="center">{{ item.inStockCount }}</uni-td>
 						<uni-td align="center">{{ item.bindCount }}</uni-td>
 						<uni-td align="center">{{ item.activatedCount }}</uni-td>
-						<uni-td align="center">{{ item.returnMachine }}</uni-td>
-						<uni-td align="center">{{ item.returnPayment }}</uni-td>
 						<uni-td align="center">
-							<switch v-model="item.status" @change="changeStatus(item.id, item.status)" />
+							<switch :checked="!!item.status" @change="onStatusSwitch(item, $event)" />
 						</uni-td>
 						<uni-td align="center">{{ item.statusTime }}</uni-td>
 						<uni-td align="center">{{ item.addTime }}</uni-td>
@@ -154,19 +148,24 @@ export default {
 				}
 			});
 		},
-		changeStatus(id, status) {
-			this.$request('updateStatus', { id, status }, {
-				functionName: 'brand'
-			}).then(res => {
-				if (res.code !== 0) {
-					uni.showToast({ title: res.message || '更新状态失败', icon: 'none' });
-					this.getBrandList();
-				}
-			}).catch(err => {
-				uni.showToast({ title: '网络错误', icon: 'none' });
-				console.error('更新品牌状态失败:', err);
-				this.getBrandList();
-			});
+		onStatusSwitch(item, e) {
+			if (!item || !item.id) return;
+			const next = !!(e && e.detail && e.detail.value);
+			const prev = !!item.status;
+			if (next === prev) return;
+			item.status = next;
+			this.$request('updateStatus', { id: item.id, status: next }, { functionName: 'brand' })
+				.then((res) => {
+					if (res.code !== 0) {
+						item.status = prev;
+						uni.showToast({ title: res.message || '更新状态失败', icon: 'none' });
+					}
+				})
+				.catch((err) => {
+					item.status = prev;
+					uni.showToast({ title: '网络错误', icon: 'none' });
+					console.error('更新品牌状态失败:', err);
+				});
 		},
 		reset() {
 			this.searchForm = {
@@ -246,12 +245,9 @@ export default {
 				品牌ID: x.id || '',
 				品牌名称: x.brandName || '',
 				激活条件: x.activationCondition || '',
-				返佣费: x.commission || '',
 				入库台数: x.inStockCount || 0,
 				绑定数: x.bindCount || 0,
 				激活台数: x.activatedCount || 0,
-				返邮机具: x.returnMachine || 0,
-				返邮到账: x.returnPayment || 0,
 				使用状态: x.status ? '启用' : '禁用',
 				状态时间: x.statusTime || '',
 				添加时间: x.addTime || ''

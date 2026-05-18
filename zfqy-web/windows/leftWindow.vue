@@ -12,6 +12,7 @@
 		mapActions
 	} from 'vuex'
 	import config from '@/admin.config.js'
+	import { resolveAdminEntryUrl } from '@/js_sdk/uni-admin/resolveAdminEntryUrl.js'
 	export default {
 		data() {
 			return {
@@ -79,11 +80,10 @@
 				if (url[0] !== '/' && url.indexOf('http') !== 0) {
 					url = '/' + url
 				}
-				// #ifndef H5
-				if (url === "/") {
-					url = config.index.url;
+				const indexUrl = (config.index && config.index.url) || '/pages/index/index';
+				if (url === '/' || url === indexUrl) {
+					url = resolveAdminEntryUrl(this);
 				}
-				// #endif
 				// TODO 后续要调整
 				uni.redirectTo({
 					url: url,

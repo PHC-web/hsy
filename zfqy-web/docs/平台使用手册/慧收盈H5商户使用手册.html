@@ -1,0 +1,679 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>慧收盈H5商户使用手册</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid #1a1a1a;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">慧收盈H5商户使用手册</h1>
+</header>
+<h1 id="慧收盈-h5-商户使用手册">慧收盈 H5 商户使用手册</h1>
+<p><strong>版本：</strong> 1.0<br />
+<strong>更新日期：</strong> 2026年5月<br />
+<strong>适用对象：</strong>
+使用微信公众号进入「慧收盈」的商户（店主、收银员等）</p>
+<hr />
+<h2 id="一平台是做什么的">一、平台是做什么的？</h2>
+<p>「慧收盈」是面向商户的<strong>微信 H5
+商户中心</strong>，与您的收款机具（码牌）配合使用，主要帮助您：</p>
+<ul>
+<li>查看收款补贴、积分与奖励<br />
+</li>
+<li>领取交易产生的补贴奖励<br />
+</li>
+<li>购买或升级<strong>额度包</strong>，获得更高交易补贴额度<br />
+</li>
+<li>将积分兑换提现到微信零钱<br />
+</li>
+<li>绑定/管理码牌、查看财务流水<br />
+</li>
+<li>联系客服、办理退款等</li>
+</ul>
+<blockquote>
+<p><strong>重要提示：</strong>
+本平台仅针对<strong>正常商户真实交易</strong>进行补贴。套现等异常行为可能触发风控，将无法享受补贴。</p>
+</blockquote>
+<hr />
+<h2 id="二如何进入商户中心">二、如何进入商户中心</h2>
+<h3 id="推荐方式在微信中打开">2.1 推荐方式：在微信中打开</h3>
+<ol type="1">
+<li>关注慧收盈<strong>微信公众号</strong>（服务号）。<br />
+</li>
+<li>通过公众号菜单或客服发送的链接，在<strong>微信内置浏览器</strong>中打开商户中心页面。<br />
+</li>
+<li>首次进入时，系统会引导您完成<strong>微信授权登录</strong>（使用您的微信昵称与头像）。</li>
+</ol>
+<blockquote>
+<p>请务必使用<strong>微信</strong>打开链接。在电脑普通浏览器（如
+Chrome）中直接打开，无法正常完成微信登录。</p>
+</blockquote>
+<h3 id="首次使用绑定机具码牌">2.2 首次使用：绑定机具（码牌）</h3>
+<p>登录成功后，若尚未绑定机具，页面会提示<strong>「绑定机具」</strong>：</p>
+<ol type="1">
+<li>在输入框中填写您的<strong>机具号码</strong>（码牌号，可向业务员或机具包装盒上查看）。<br />
+</li>
+<li>点击 <strong>「绑定并进入」</strong>。<br />
+</li>
+<li>绑定成功后自动进入商户中心首页。</li>
+</ol>
+<p>之后可在 <strong>「我的 → 码牌绑定」</strong>
+中新增绑定多台码牌，或解绑不再使用的码牌。</p>
+<hr />
+<h2 id="三界面总览底部三个标签">三、界面总览：底部三个标签</h2>
+<p>进入商户中心后，底部固定有三个标签：</p>
+<table>
+<colgroup>
+<col style="width: 27%" />
+<col style="width: 27%" />
+<col style="width: 45%" />
+</colgroup>
+<thead>
+<tr>
+<th>标签</th>
+<th>名称</th>
+<th>主要作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>左</td>
+<td><strong>首页</strong></td>
+<td>查看会员身份、提现统计、待提现金额、剩余额度、额度包入口</td>
+</tr>
+<tr>
+<td>中</td>
+<td><strong>收益</strong></td>
+<td>领取交易补贴奖励（气泡/一键领取）、查看奖励明细</td>
+</tr>
+<tr>
+<td>右</td>
+<td><strong>我的</strong></td>
+<td>账户信息、各类功能菜单入口</td>
+</tr>
+</tbody>
+</table>
+<p>各页面右上角一般有 <strong>「刷新」</strong>，用于更新最新数据。</p>
+<hr />
+<h2 id="四首页">四、首页</h2>
+<h3 id="顶部信息">4.1 顶部信息</h3>
+<ul>
+<li><strong>微信昵称、手机号</strong>（未绑定时显示「手机号未绑定」）<br />
+</li>
+<li><strong>会员级别</strong>（如普通会员、银卡会员等）<br />
+</li>
+<li><strong>品牌名称 · 机具号码</strong></li>
+</ul>
+<p>部分银卡会员还会显示<strong>当月流水统计</strong>。</p>
+<h3 id="提现累积">4.2 提现累积</h3>
+<p>展示您已到账提现金额的统计（按北京时间自然日/月/年）：</p>
+<ul>
+<li>今日 / 本月 / 本年</li>
+</ul>
+<h3 id="待提现与剩余额度">4.3 待提现与剩余额度</h3>
+<ul>
+<li><strong>待提现金额：</strong> 已产生、尚未完成提现流程的金额<br />
+</li>
+<li><strong>剩余提现额度：</strong>
+当前还可用于提现的额度上限；若已购买额度包，会显示总额度与已用额度及进度条</li>
+</ul>
+<h3 id="额度包入口">4.4 额度包入口</h3>
+<p>点击 <strong>「额度包」</strong>
+卡片，进入充值/升级页面，选择套餐并完成微信支付。</p>
+<hr />
+<h2 id="五收益页领取补贴奖励">五、收益页：领取补贴奖励</h2>
+<h3 id="页面说明">5.1 页面说明</h3>
+<p>收益页宣传「商家收款免手续费」等活动信息，核心是：</p>
+<ul>
+<li>屏幕上的<strong>金色气泡</strong>：每笔待领取的补贴，点击单个气泡可领取<br />
+</li>
+<li><strong>「一键领取」</strong> 按钮：一次性领取全部待领奖励<br />
+</li>
+<li>下方 <strong>「奖励明细」</strong>：已入账的历史记录</li>
+</ul>
+<h3 id="如何领取">5.2 如何领取</h3>
+<ol type="1">
+<li>打开底部 <strong>「收益」</strong> 标签。<br />
+</li>
+<li>若有待领奖励，点击气泡或 <strong>「一键领取」</strong>。<br />
+</li>
+<li>领取成功后，积分会计入您的账户，可在「我的」中查看。</li>
+</ol>
+<p>若无待领奖励，按钮会显示「暂无奖励」。</p>
+<h3 id="联系客服">5.3 联系客服</h3>
+<p>收益页顶部有
+<strong>「联系客服」</strong>，点击可拨打客服电话（以页面显示号码为准）。</p>
+<h3 id="温馨提示">5.4 温馨提示</h3>
+<p>补贴与您的<strong>真实刷卡/收款流水</strong>相关。请保持机具正常收款；达标后奖励会以气泡形式出现在收益页，请及时领取。</p>
+<hr />
+<h2 id="六我的">六、我的</h2>
+<h3 id="账户卡片">6.1 账户卡片</h3>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>项目</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>可用奖励</td>
+<td>当前可用于兑换提现的积分（1 积分 ≈ 1 元），点击可进入
+<strong>奖励提现</strong></td>
+</tr>
+<tr>
+<td>额度包</td>
+<td>您当前享有的交易补贴额度规模</td>
+</tr>
+<tr>
+<td>账号积分</td>
+<td>账户积分余额</td>
+</tr>
+<tr>
+<td>权益费</td>
+<td>与已购额度包/充值相关的权益费用展示</td>
+</tr>
+</tbody>
+</table>
+<h3 id="功能菜单">6.2 功能菜单</h3>
+<table>
+<thead>
+<tr>
+<th>菜单</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>额度包</strong></td>
+<td>购买或升级充值套餐</td>
+</tr>
+<tr>
+<td><strong>财务管理</strong></td>
+<td>按日期查询充值、提现、退款等流水记录</td>
+</tr>
+<tr>
+<td><strong>待返积分</strong></td>
+<td>查看按月汇总、尚未返还的积分</td>
+</tr>
+<tr>
+<td><strong>优惠券</strong></td>
+<td>查看已发放的优惠券及达标进度</td>
+</tr>
+<tr>
+<td><strong>兑换码</strong></td>
+<td>输入兑换码领取权益（需先签署协议）</td>
+</tr>
+<tr>
+<td><strong>手机号维护</strong></td>
+<td>填写或修改绑定的 11 位手机号</td>
+</tr>
+<tr>
+<td><strong>码牌绑定</strong></td>
+<td>绑定、解绑机具，查看操作记录</td>
+</tr>
+<tr>
+<td><strong>售后反馈</strong></td>
+<td>与客服在线沟通，可发文字、图片、视频</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="七额度包充值-升级">七、额度包（充值 / 升级）</h2>
+<h3 id="进入方式">7.1 进入方式</h3>
+<ul>
+<li>首页 → 额度包卡片<br />
+</li>
+<li>我的 → 额度包</li>
+</ul>
+<h3 id="操作步骤">7.2 操作步骤</h3>
+<ol type="1">
+<li>浏览可选套餐，查看<strong>额度、价格、会员档位、权益说明</strong>。<br />
+</li>
+<li>点击选择某一档位（高亮表示已选）。<br />
+</li>
+<li>若套餐含<strong>实物赠品</strong>（如碰一碰音响、扫码 POS
+机等），需<strong>任选其一</strong>。<br />
+</li>
+<li>若您已有较低档位套餐，更高档位可能显示
+<strong>「补差价升级」</strong>，只需支付差价。<br />
+</li>
+<li>点击 <strong>「立即升级」</strong> 或
+<strong>「补差价升级」</strong>，按提示完成<strong>微信支付</strong>。<br />
+</li>
+<li>支付成功后进入 <strong>「充值成功」</strong>
+页，可返回首页查看新额度。</li>
+</ol>
+<h3 id="签署协议">7.3 签署协议</h3>
+<p>首次充值或系统要求时，会弹出
+<strong>《开户优惠活动计划书》</strong>：</p>
+<ol type="1">
+<li>请仔细阅读协议内容（可上下滑动查看）。<br />
+</li>
+<li>在底部签名区域<strong>手写签名</strong>并确认。<br />
+</li>
+<li>签署完成后方可继续支付。</li>
+</ol>
+<h3 id="注意事项">7.4 注意事项</h3>
+<ul>
+<li>不能选择<strong>低于或等于</strong>当前已购档位的套餐重复购买。<br />
+</li>
+<li>赠品发货进度可联系客服查询。<br />
+</li>
+<li>充值与退款周期相关规则，见下文「退款与周期」。</li>
+</ul>
+<hr />
+<h2 id="八奖励提现">八、奖励提现</h2>
+<h3 id="进入方式-1">8.1 进入方式</h3>
+<p><strong>我的 → 可用奖励</strong>（点击金额区域）→
+<strong>奖励提现</strong> 页面。</p>
+<h3 id="提现规则页面展示为准">8.2 提现规则（页面展示为准）</h3>
+<ul>
+<li><strong>可兑换积分：</strong> 当前账户可用于提现的积分<br />
+</li>
+<li><strong>会员类型：</strong> 影响单笔最低/最高积分限制<br />
+</li>
+<li><strong>1 积分 = 1 元</strong>（兑换按积分计算）<br />
+</li>
+<li><strong>单笔手续费：</strong>
+每笔固定扣除一定金额（以页面显示为准）<br />
+</li>
+<li><strong>办理时间：</strong> 一般为工作日
+9:00–18:00（北京时间）；非办理时间无法提交</li>
+</ul>
+<h3 id="操作步骤-1">8.3 操作步骤</h3>
+<ol type="1">
+<li>在输入框填写要兑换的<strong>积分（整数）</strong>。<br />
+</li>
+<li>确认在允许范围内（页面会提示本次最低～最高积分）。<br />
+</li>
+<li>点击 <strong>「提交申请」</strong>。<br />
+</li>
+<li>若平台开启人工审核，需等待审核通过后，资金才会打款至您的微信零钱。<br />
+</li>
+<li>可在 <strong>财务管理</strong> 中查看提现记录与状态。</li>
+</ol>
+<hr />
+<h2 id="九退款与周期">九、退款与周期</h2>
+<h3 id="什么是退款窗口">9.1 什么是「退款窗口」</h3>
+<p>购买额度包后，通常有：</p>
+<ul>
+<li><strong>锁定期：</strong> 一段时间内不可按正常规则全额退款<br />
+</li>
+<li><strong>开放窗口：</strong>
+满期后的一段短时间内，可申请<strong>全额退款</strong>并重置相关权益</li>
+</ul>
+<p>具体天数以页面 <strong>「退款规则说明」</strong>
+及您签署的协议为准（常见为满一定天数后开放数天窗口）。</p>
+<h3 id="如何进入">9.2 如何进入</h3>
+<ul>
+<li>通过 <strong>售后反馈</strong> 中客服发送的「退款」入口链接<br />
+</li>
+<li>或由运营人员指引的专用链接</li>
+</ul>
+<h3 id="页面内容">9.3 页面内容</h3>
+<ul>
+<li><strong>退款规则说明</strong>（多条文字规则）<br />
+</li>
+<li><strong>查看协议</strong>：查看您已签署的协议<br />
+</li>
+<li>主按钮根据状态变化，例如：
+<ul>
+<li>「申请退款并重置权益数据」<br />
+</li>
+<li>「审核中」<br />
+</li>
+<li>「审核通过，点击提取」（需在微信中确认收款）<br />
+</li>
+<li>「退款已完成」等</li>
+</ul></li>
+</ul>
+<h3 id="锁定期内退款">9.4 锁定期内退款</h3>
+<p>若在锁定期内坚持退款，可能需扣除<strong>违约金</strong>后返还剩余款项，具体比例见规则说明。</p>
+<h3 id="温馨提示-1">9.5 温馨提示</h3>
+<ul>
+<li>未充值用户无法使用正常退款流程。<br />
+</li>
+<li>退款审核与打款需要一定时间，请耐心等待。<br />
+</li>
+<li>如有疑问，请通过 <strong>售后反馈</strong> 联系客服。</li>
+</ul>
+<hr />
+<h2 id="十码牌绑定">十、码牌绑定</h2>
+<p><strong>路径：</strong> 我的 → 码牌绑定</p>
+<h3 id="查看已绑定码牌">10.1 查看已绑定码牌</h3>
+<p>列表显示机具号、品牌、绑定时间。</p>
+<h3 id="新增绑定">10.2 新增绑定</h3>
+<ol type="1">
+<li>在「新机具号」输入框填写机具号码。<br />
+</li>
+<li>点击 <strong>「新增绑定」</strong>。<br />
+</li>
+<li>支持绑定<strong>多台</strong>码牌，流水按同一商户合并统计。</li>
+</ol>
+<h3 id="解绑">10.3 解绑</h3>
+<p>在对应码牌行点击
+<strong>「解绑」</strong>，按提示确认。解绑某一台不影响其他已绑定码牌。</p>
+<h3 id="绑定记录">10.4 绑定记录</h3>
+<p>页面下方可查看历史绑定/解绑记录，支持加载更多。</p>
+<hr />
+<h2 id="十一财务管理">十一、财务管理</h2>
+<p><strong>路径：</strong> 我的 → 财务管理</p>
+<h3 id="查询流水">11.1 查询流水</h3>
+<ol type="1">
+<li>选择 <strong>开始日期</strong> 与
+<strong>结束日期</strong>（默认约近 90 天）。<br />
+</li>
+<li>点击 <strong>「查询」</strong>。<br />
+</li>
+<li>列表展示各类记录：类型、时间、标题、金额、状态等。</li>
+</ol>
+<h3 id="记录类型">11.2 记录类型</h3>
+<p>可能包括：充值、提现、退款、补贴等相关记录（以页面显示为准）。</p>
+<h3 id="待确认收款">11.3 待确认收款</h3>
+<p>部分提现记录在审核通过后，需在列表中<strong>点击该条记录</strong>，按微信提示<strong>确认收款</strong>才能完成到账。</p>
+<hr />
+<h2 id="十二待返积分">十二、待返积分</h2>
+<p><strong>路径：</strong> 我的 → 待返积分</p>
+<ul>
+<li>展示<strong>当前月起待返合计</strong>（积分）<br />
+</li>
+<li>按月份列出待返还分摊<br />
+</li>
+<li>需已绑定机具并产生合理真实流水后，系统才会按月汇总展示</li>
+</ul>
+<hr />
+<h2 id="十三优惠券">十三、优惠券</h2>
+<p><strong>路径：</strong> 我的 → 优惠券</p>
+<ul>
+<li>查看已获得的优惠券名称、状态、门槛与奖励金额<br />
+</li>
+<li><strong>进行中</strong> 的券可能显示本月达标进度条<br />
+</li>
+<li>达标后请到 <strong>「收益」</strong>
+页领取相关奖励（与平台规则一致）</li>
+</ul>
+<hr />
+<h2 id="十四兑换码">十四、兑换码</h2>
+<p><strong>路径：</strong> 我的 → 兑换码（若菜单中有显示）</p>
+<ol type="1">
+<li>输入兑换码（不区分大小写，系统会自动处理）。<br />
+</li>
+<li>若需签署协议，先完成协议签署。<br />
+</li>
+<li>点击 <strong>「立即兑换」</strong>。<br />
+</li>
+<li>兑换成功后返回「我的」查看权益变化。</li>
+</ol>
+<hr />
+<h2 id="十五手机号维护">十五、手机号维护</h2>
+<p><strong>路径：</strong> 我的 → 手机号维护</p>
+<ol type="1">
+<li>输入 <strong>11 位中国大陆手机号</strong>。<br />
+</li>
+<li>点击 <strong>「保存」</strong>。<br />
+</li>
+<li>请确保号码正确，便于客服联系与部分业务校验。</li>
+</ol>
+<hr />
+<h2 id="十六售后反馈">十六、售后反馈</h2>
+<p><strong>路径：</strong> 我的 → 售后反馈</p>
+<h3 id="发起咨询">16.1 发起咨询</h3>
+<ul>
+<li>在底部输入框描述问题，可附带<strong>图片</strong>或<strong>视频</strong><br />
+</li>
+<li>点击 <strong>「发送」</strong> 即可创建会话</li>
+</ul>
+<h3 id="查看回复">16.2 查看回复</h3>
+<p>客服回复会显示在对话列表中；有新回复时，「我的」菜单旁可能出现红点提示。</p>
+<h3 id="退款入口">16.3 退款入口</h3>
+<p>客服可能在对话中发送 <strong>「退款」</strong>
+按钮，点击后进入「退款与周期」页面（链接有时效，请及时使用）。</p>
+<h3 id="结束反馈">16.4 结束反馈</h3>
+<p>问题已解决时，可点击右上角 <strong>「结束反馈」</strong>
+关闭当前会话。</p>
+<hr />
+<h2 id="十七典型使用场景">十七、典型使用场景</h2>
+<h3 id="场景-1新商户第一次使用">场景 1：新商户第一次使用</h3>
+<ol type="1">
+<li>微信打开链接 → 授权登录<br />
+</li>
+<li>绑定机具号 → 进入首页<br />
+</li>
+<li>签署协议（如提示）→ 购买额度包（可选）<br />
+</li>
+<li>正常收款后 → 到「收益」领取补贴</li>
+</ol>
+<h3 id="场景-2每天领取补贴">场景 2：每天领取补贴</h3>
+<ol type="1">
+<li>打开 <strong>收益</strong><br />
+</li>
+<li>点击气泡或 <strong>一键领取</strong><br />
+</li>
+<li>在 <strong>我的</strong> 查看可用奖励与积分</li>
+</ol>
+<h3 id="场景-3积分提现到微信">场景 3：积分提现到微信</h3>
+<ol type="1">
+<li><strong>我的</strong> → 点击 <strong>可用奖励</strong><br />
+</li>
+<li>填写积分 → <strong>提交申请</strong>（注意办理时间）<br />
+</li>
+<li>如需确认收款，到 <strong>财务管理</strong> 点击对应记录完成确认</li>
+</ol>
+<h3 id="场景-4升级更高额度包">场景 4：升级更高额度包</h3>
+<ol type="1">
+<li><strong>首页</strong> 或 <strong>我的</strong> →
+<strong>额度包</strong><br />
+</li>
+<li>选择更高档位 → 支付差价<br />
+</li>
+<li>返回首页查看剩余额度变化</li>
+</ol>
+<h3 id="场景-5更换或增加码牌">场景 5：更换或增加码牌</h3>
+<ol type="1">
+<li><strong>我的</strong> → <strong>码牌绑定</strong><br />
+</li>
+<li>新增绑定或解绑旧码牌</li>
+</ol>
+<hr />
+<h2 id="十八常见问题">十八、常见问题</h2>
+<p><strong>Q1：打不开页面或无法登录？</strong><br />
+A：请确认使用<strong>微信</strong>打开；检查网络；取消后重新从公众号菜单进入。</p>
+<p><strong>Q2：提示要绑定机具，不知道机具号？</strong><br />
+A：查看码牌机身标签、包装盒或咨询为您装机的工作人员/业务员。</p>
+<p><strong>Q3：收益页没有气泡？</strong><br />
+A：可能暂无待领补贴，或流水未达标、触发风控；请继续正常收款或联系客服。</p>
+<p><strong>Q4：提现按钮是灰色的？</strong><br />
+A：可能不在办理时间、积分不足、超出单笔限额，或积分扣除手续费后金额无效。</p>
+<p><strong>Q5：提现提交了，钱没到微信？</strong><br />
+A：可能待审核、待您确认收款，或银行/微信处理中；请在「财务管理」查看状态，或联系客服。</p>
+<p><strong>Q6：为什么不能退款？</strong><br />
+A：可能处于锁定期、未在开放窗口内，或尚有进行中的退款单；请阅读「退款与周期」页规则说明。</p>
+<p><strong>Q7：充值时提示要签协议？</strong><br />
+A：属正常流程，请阅读协议后手写签名再支付。</p>
+<p><strong>Q8：手机号显示未绑定？</strong><br />
+A：进入 <strong>手机号维护</strong> 填写并保存。</p>
+<p><strong>Q9：平台提示套现将不允补贴？</strong><br />
+A：请使用机具进行真实经营收款，避免违规操作。</p>
+<hr />
+<h2 id="十九客服与帮助">十九、客服与帮助</h2>
+<ul>
+<li><strong>收益页「联系客服」</strong>：可拨打页面显示电话<br />
+</li>
+<li><strong>售后反馈</strong>：图文在线咨询，适合复杂问题与退款指引<br />
+</li>
+<li><strong>后台客服/运营人员</strong>：可协助查询额度、提现、退款进度（您需提供微信昵称、机具号或手机号）</li>
+</ul>
+<hr />
+<p><em>本手册根据当前 H5
+功能整理，界面文案与规则以实际页面及您签署的协议为准。活动规则、天数、手续费等可能随平台调整，请以最新页面显示为准。</em></p>
+</body>
+</html>

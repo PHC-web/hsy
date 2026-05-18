@@ -40,6 +40,7 @@
 <script>
 import { buildMenus } from '@/components/uni-data-menu/util.js';
 import adminConfig from '@/admin.config.js';
+import { canAccessAdminHome, canAccessPortal } from '@/js_sdk/uni-admin/resolveAdminEntryUrl.js';
 
 export default {
 	data() {
@@ -82,21 +83,9 @@ export default {
 	},
 	onShow() {
 		if (!this.allowRender) return;
-		const ids = adminConfig.permissionIds || {};
 		const indexUrl = (adminConfig.index && adminConfig.index.url) || '/pages/index/index';
-		const homeIds = ids.adminHome != null ? ids.adminHome : 'console.home';
-		const portalIds = ids.portalHome != null ? ids.portalHome : 'console.portal';
-		const homeList = Array.isArray(homeIds) ? homeIds : [homeIds];
-		const portalList = Array.isArray(portalIds) ? portalIds : [portalIds];
-		const hasPerm = (list) =>
-			typeof this.$hasPermission === 'function' &&
-			list.some((id) => id && this.$hasPermission(id));
-		const canPortal =
-			(typeof this.$hasRole === 'function' && this.$hasRole('admin')) || hasPerm.call(this, portalList);
-		if (!canPortal) {
-			const canHome =
-				(typeof this.$hasRole === 'function' && this.$hasRole('admin')) || hasPerm.call(this, homeList);
-			if (canHome) {
+		if (!canAccessPortal(this)) {
+			if (canAccessAdminHome(this)) {
 				uni.redirectTo({ url: indexUrl });
 			} else {
 				uni.showToast({ title: '无门户访问权限', icon: 'none' });

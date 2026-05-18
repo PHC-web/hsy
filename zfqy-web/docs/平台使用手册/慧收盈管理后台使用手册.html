@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>慧收盈管理后台使用手册</title>
+  <style>
+    body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; line-height: 1.6; max-width: 900px; margin: 2em auto; padding: 0 1.5em; color: #222; }
+    h1 { font-size: 1.8em; border-bottom: 2px solid #2563eb; padding-bottom: 0.3em; }
+    h2 { font-size: 1.35em; margin-top: 1.5em; color: #1e40af; }
+    h3 { font-size: 1.1em; margin-top: 1.2em; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 0.95em; }
+    th, td { border: 1px solid #ccc; padding: 8px 10px; text-align: left; }
+    th { background: #f3f4f6; }
+    blockquote { border-left: 4px solid #93c5fd; margin: 1em 0; padding: 0.5em 1em; background: #f8fafc; color: #334155; }
+    @media print { body { max-width: none; } h2 { page-break-after: avoid; } }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="/dev/null" />
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">慧收盈管理后台使用手册</h1>
+</header>
+<h1 id="慧收盈管理后台使用手册">慧收盈管理后台使用手册</h1>
+<p><strong>版本：</strong> 1.0<br />
+<strong>更新日期：</strong> 2026年5月<br />
+<strong>适用对象：</strong>
+运营、客服、财务审核、品牌与机具管理人员等日常使用后台的工作人员</p>
+<hr />
+<h2 id="一平台简介">一、平台简介</h2>
+<p>「慧收盈」管理后台用于日常运营管理，主要包括：</p>
+<ul>
+<li>查看经营数据与资金概况<br />
+</li>
+<li>管理品牌、机具与商户<br />
+</li>
+<li>处理商户提现、退款申请<br />
+</li>
+<li>维护商品、额度包、优惠券等营销配置<br />
+</li>
+<li>查询交易账单与流水记录</li>
+</ul>
+<p>商户在微信端（H5）完成注册、绑机、充值、提现、退款等操作；本手册说明的是<strong>后台网页端</strong>的使用方法。</p>
+<blockquote>
+<p><strong>说明：</strong>
+您登录后左侧菜单可能与他人不同，这是由管理员分配的角色权限决定的。看不到某菜单时，请联系管理员开通。</p>
+</blockquote>
+<hr />
+<h2 id="二登录与基本操作">二、登录与基本操作</h2>
+<h3 id="如何登录">2.1 如何登录</h3>
+<ol type="1">
+<li>在浏览器中打开管理员提供的后台地址（一般为 <code>/admin</code>
+路径）。<br />
+</li>
+<li>输入<strong>账号</strong>和<strong>密码</strong>，点击登录。<br />
+</li>
+<li>若忘记密码，请使用「找回密码」或联系管理员重置。</li>
+</ol>
+<h3 id="登录后进入哪里">2.2 登录后进入哪里</h3>
+<ul>
+<li><strong>控制台（首页）：</strong>
+有数据看板权限的用户，登录后通常进入「首页」，可查看统计卡片与趋势图。<br />
+</li>
+<li><strong>门户中心：</strong>
+仅有部分功能权限的用户，可能进入「门户中心」，以卡片形式展示可进入的功能模块，点击即可跳转。</li>
+</ul>
+<h3 id="界面说明">2.3 界面说明</h3>
+<table>
+<thead>
+<tr>
+<th>区域</th>
+<th>作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>顶部</td>
+<td>显示当前位置（面包屑）、语言/主题（如有）、个人头像与退出</td>
+</tr>
+<tr>
+<td>左侧菜单</td>
+<td>按模块分类的功能入口</td>
+</tr>
+<tr>
+<td>中间内容区</td>
+<td>列表、表单、图表等具体操作区域</td>
+</tr>
+</tbody>
+</table>
+<h3 id="列表页的通用操作">2.4 列表页的通用操作</h3>
+<p>多数列表页支持：</p>
+<ul>
+<li><strong>表头筛选：</strong>
+在列标题处输入关键字或选择条件后查询<br />
+</li>
+<li><strong>分页：</strong> 底部可翻页、调整每页条数<br />
+</li>
+<li><strong>导出：</strong>
+部分页面右上角有「导出」，可将当前筛选结果导出为表格文件<br />
+</li>
+<li><strong>刷新 / 重置：</strong> 重新加载数据或清空筛选条件</li>
+</ul>
+<hr />
+<h2 id="三控制台首页">三、控制台（首页）</h2>
+<p><strong>菜单路径：</strong> 首页</p>
+<p>用于快速了解整体经营情况，主要包括：</p>
+<h3 id="数据预览">3.1 数据预览</h3>
+<ul>
+<li><strong>品牌数 / 机具数 / 激活数 / 绑定数</strong><br />
+</li>
+<li><strong>提现成功单数 / 提现成功金额</strong><br />
+</li>
+<li><strong>用户数 / 会员数 / 会员率</strong> 等</li>
+</ul>
+<h3 id="资金汇总">3.2 资金汇总</h3>
+<p>展示已提现金额、绑定商户刷卡总额、提现率，以及会员与非会员的到账与提现率对比。</p>
+<h3 id="趋势图表">3.3 趋势图表</h3>
+<p>可切换时间范围（如近 7 天、近 30 天），查看：</p>
+<ul>
+<li>流水统计<br />
+</li>
+<li>新增商户与充值商户趋势<br />
+</li>
+<li>交易类型金额分布等</li>
+</ul>
+<blockquote>
+<p>首页数据为汇总展示，明细请到对应业务菜单查询。</p>
+</blockquote>
+<hr />
+<h2 id="四门户中心">四、门户中心</h2>
+<p><strong>菜单路径：</strong> 门户中心</p>
+<p>将您有权限的功能按模块做成卡片，点击卡片可快速进入该模块下的第一个功能页。适合权限较多、需要快捷入口的场景。</p>
+<p>若显示「暂无可用入口」，说明当前账号未分配业务菜单，请联系管理员。</p>
+<hr />
+<h2 id="五品牌管理">五、品牌管理</h2>
+<p>用于维护支付品牌、机具及刷卡相关数据。</p>
+<table>
+<thead>
+<tr>
+<th>子菜单</th>
+<th>主要用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>品牌列表</td>
+<td>新增、编辑品牌；查看入库、绑定、激活数量；绑定机具</td>
+</tr>
+<tr>
+<td>机具列表</td>
+<td>查看与管理机具信息</td>
+</tr>
+<tr>
+<td>刷卡记录</td>
+<td>查询机具刷卡流水</td>
+</tr>
+<tr>
+<td>风控管理</td>
+<td>查看与处理风险相关配置与记录</td>
+</tr>
+<tr>
+<td>协议管理</td>
+<td>维护商户需签署的协议内容</td>
+</tr>
+</tbody>
+</table>
+<h3 id="品牌列表常用操作">5.1 品牌列表常用操作</h3>
+<ul>
+<li><strong>添加品牌：</strong> 填写品牌名称、激活条件、返佣等信息<br />
+</li>
+<li><strong>编辑：</strong> 修改品牌资料<br />
+</li>
+<li><strong>绑定机具：</strong> 为品牌关联机具号码<br />
+</li>
+<li><strong>使用状态开关：</strong>
+关闭后该品牌相关能力可能受限，请谨慎操作</li>
+</ul>
+<hr />
+<h2 id="六商户管理核心模块">六、商户管理（核心模块）</h2>
+<p>日常运营最常使用的模块之一。</p>
+<table>
+<thead>
+<tr>
+<th>子菜单</th>
+<th>主要用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>商户列表</td>
+<td>查看商户资料、额度与资金状态，执行日常操作</td>
+</tr>
+<tr>
+<td>提现列表</td>
+<td>审核与跟踪商户提现</td>
+</tr>
+<tr>
+<td>退款列表</td>
+<td>审核商户充值后的全额退款申请</td>
+</tr>
+<tr>
+<td>兑换券管理</td>
+<td>管理兑换券发放与使用</td>
+</tr>
+<tr>
+<td>充值赠品发货</td>
+<td>处理充值活动赠品的发货状态</td>
+</tr>
+<tr>
+<td>商品管理</td>
+<td>维护 H5 端可选商品</td>
+</tr>
+<tr>
+<td>额度包管理</td>
+<td>维护充值套餐（额度、价格、说明等）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="商户列表">6.1 商户列表</h3>
+<h4 id="列表字段说明常用">6.1.1 列表字段说明（常用）</h4>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>机具号码</td>
+<td>商户绑定的机具</td>
+</tr>
+<tr>
+<td>微信用户</td>
+<td>商户在微信侧的昵称/标识</td>
+</tr>
+<tr>
+<td>会员级别</td>
+<td>如普通会员、银卡会员等及开通时间</td>
+</tr>
+<tr>
+<td>剩余额度</td>
+<td>当前可用于业务的额度</td>
+</tr>
+<tr>
+<td>充值金额</td>
+<td>累计充值相关金额</td>
+</tr>
+<tr>
+<td>待提现 / 已提现</td>
+<td>提现中及已到账金额</td>
+</tr>
+<tr>
+<td>冻结金额</td>
+<td>暂不可用的资金</td>
+</tr>
+<tr>
+<td>使用状态</td>
+<td>开关控制商户是否可用（1/2/3 为业务标记位）</td>
+</tr>
+<tr>
+<td>协议</td>
+<td>「已签署」可点击查看协议图片</td>
+</tr>
+</tbody>
+</table>
+<h4 id="顶部按钮">6.1.2 顶部按钮</h4>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>按钮</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>重置</td>
+<td>清空表头筛选，恢复默认列表</td>
+</tr>
+<tr>
+<td>数据矫正</td>
+<td><strong>高级功能</strong>，批量修正历史数据，一般仅运维使用，勿随意点击</td>
+</tr>
+<tr>
+<td>更新会员状态</td>
+<td>同步微信支付侧的待处理充值/会员状态</td>
+</tr>
+<tr>
+<td>导出</td>
+<td>按类型导出商户相关数据</td>
+</tr>
+<tr>
+<td>线下首冲额度</td>
+<td>为指定手机号商户办理线下首次充值（选套餐提交）</td>
+</tr>
+<tr>
+<td>模拟商户注册</td>
+<td>测试用，模拟一名新商户注册</td>
+</tr>
+</tbody>
+</table>
+<h4 id="行内操作">6.1.3 行内操作</h4>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>操作</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>积分明细</td>
+<td>查看该商户积分按月汇总及明细</td>
+</tr>
+<tr>
+<td>退款窗口</td>
+<td>查看该商户距离「可退款窗口」还有多久，或窗口内还剩多少天；<strong>未充值商户</strong>会提示「该商户未充值」</td>
+</tr>
+<tr>
+<td>删除协议</td>
+<td>仅对已签署协议的商户：清空签署记录，商户需在 H5 重新签署</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关于「退款窗口」：</strong><br />
+商户充值后，在约定的锁定期满之后会进入短暂的「退款窗口」，窗口内可申请全额退款。点击「退款窗口」可查看当前处于锁定期还是窗口期，以及大约剩余天数，便于客服解答商户咨询。</p>
+<h3 id="提现列表">6.2 提现列表</h3>
+<p>用于处理商户从平台提现到微信零钱的申请。</p>
+<p><strong>页面顶部：</strong></p>
+<ul>
+<li><strong>会员提现需审核 / 非会员提现需审核：</strong>
+开关控制该类提现是否必须先经后台同意<br />
+</li>
+<li><strong>查询、刷新、导出</strong></li>
+</ul>
+<p><strong>列表关注字段：</strong></p>
+<ul>
+<li>提现金额、税费与手续费、应付金额<br />
+</li>
+<li>是否打款、是否到账<br />
+</li>
+<li>审核状态（如待审核、已通过、已拒绝等）</li>
+</ul>
+<p><strong>管理员操作（常见）：</strong></p>
+<ul>
+<li>对待审核记录进行<strong>同意</strong>或<strong>拒绝</strong><br />
+</li>
+<li>查看失败原因（转账失败时）</li>
+</ul>
+<p>页面顶部会汇总：总提现、总手续费+税费、总付款金额。</p>
+<h3 id="退款列表">6.3 退款列表</h3>
+<p>用于审核商户在 H5
+发起的<strong>充值全额退款</strong>（资金退回微信零钱）。</p>
+<ul>
+<li>审核流程与提现列表类似<br />
+</li>
+<li>可配置「会员退款需审核」「非会员退款需审核」<br />
+</li>
+<li>支持查看失败原因；部分环境在参数配置开启后，可对已同意的记录做开发联调用的撤销（一般生产环境勿用）</li>
+</ul>
+<h3 id="额度包管理">6.4 额度包管理</h3>
+<p>维护商户在 H5
+充值时可选的套餐，包括额度、售价、套餐说明、关联商品等。修改后会影响新发起的充值，请与运营规则保持一致。</p>
+<h3 id="商品管理兑换券充值赠品发货">6.5
+商品管理、兑换券、充值赠品发货</h3>
+<ul>
+<li><strong>商品管理：</strong> 配置展示商品、价格、库存等<br />
+</li>
+<li><strong>兑换券管理：</strong> 发放规则与核销情况<br />
+</li>
+<li><strong>充值赠品发货：</strong>
+充值活动实物赠品的收货与发货状态</li>
+</ul>
+<hr />
+<h2 id="七财务管理">七、财务管理</h2>
+<table>
+<thead>
+<tr>
+<th>子菜单</th>
+<th>主要用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>设备订单</td>
+<td>查看设备相关订单（菜单名称以系统为准）</td>
+</tr>
+<tr>
+<td>交易账单</td>
+<td>查询平台交易账单汇总</td>
+</tr>
+<tr>
+<td>交易记录</td>
+<td>按商户查看更细的交易流水</td>
+</tr>
+</tbody>
+</table>
+<p>适合财务对账、核查某笔交易或某商户流水时使用。可使用表头筛选缩小范围后导出（若页面支持）。</p>
+<hr />
+<h2 id="八运维管理">八、运维管理</h2>
+<p>面向技术人员或高级运维，一般运营人员仅作了解：</p>
+<table>
+<thead>
+<tr>
+<th>子菜单</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>H5 页面模拟</td>
+<td>在后台模拟 H5 页面环境，便于排查展示问题</td>
+</tr>
+<tr>
+<td>星驿推送数据</td>
+<td>查看第三方推送的原始数据</td>
+</tr>
+<tr>
+<td>积分记录</td>
+<td>全平台积分变动记录</td>
+</tr>
+<tr>
+<td>日志管理</td>
+<td>系统运行日志</td>
+</tr>
+<tr>
+<td>充值 / 退款 / 提现日志</td>
+<td>对应业务的操作与状态日志</td>
+</tr>
+</tbody>
+</table>
+<p>日常业务问题请优先在「商户列表」「提现列表」「退款列表」处理；需查历史技术日志时再使用本模块。</p>
+<hr />
+<h2 id="九系统管理管理员">九、系统管理（管理员）</h2>
+<p>以下功能通常仅<strong>系统管理员</strong>使用：</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>功能</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>用户管理</td>
+<td>后台登录账号的增删改</td>
+</tr>
+<tr>
+<td>角色管理</td>
+<td>定义角色并分配权限</td>
+</tr>
+<tr>
+<td>权限管理</td>
+<td>细粒度功能权限</td>
+</tr>
+<tr>
+<td>菜单管理</td>
+<td>配置左侧菜单显示与路径</td>
+</tr>
+<tr>
+<td>参数配置</td>
+<td>提现限额、退款周期与窗口天数、风控比例等业务参数（修改会影响全平台规则，需谨慎）</td>
+</tr>
+<tr>
+<td>安全审计 / 用户日志</td>
+<td>查看后台操作记录</td>
+</tr>
+</tbody>
+</table>
+<p><strong>参数配置</strong>中与商户相关的常见项包括：各阶段提现金额上下限、退款锁定周期（天）、退款窗口（天）、H5
+退款规则说明文案等。修改前请与业务负责人确认。</p>
+<hr />
+<h2 id="十典型工作流程">十、典型工作流程</h2>
+<h3 id="客服商户咨询什么时候能退款">10.1
+客服：商户咨询「什么时候能退款」</h3>
+<ol type="1">
+<li>打开 <strong>商户管理 → 商户列表</strong><br />
+</li>
+<li>按微信昵称或机具号找到商户<br />
+</li>
+<li>点击 <strong>退款窗口</strong><br />
+</li>
+<li>将弹窗中的说明转告商户；若提示「该商户未充值」，说明尚未完成额度充值</li>
+</ol>
+<h3 id="财务处理一笔待审核提现">10.2 财务：处理一笔待审核提现</h3>
+<ol type="1">
+<li>打开 <strong>商户管理 → 提现列表</strong><br />
+</li>
+<li>筛选「待审核」<br />
+</li>
+<li>核对金额、商户身份与机具信息<br />
+</li>
+<li>点击 <strong>同意</strong> 或
+<strong>拒绝</strong>（拒绝请填写原因）<br />
+</li>
+<li>后续在列表中查看是否打款、是否到账</li>
+</ol>
+<h3 id="运营为商户办理线下首充">10.3 运营：为商户办理线下首充</h3>
+<ol type="1">
+<li>打开 <strong>商户列表</strong> → <strong>线下首冲额度</strong><br />
+</li>
+<li>输入商户手机号，选择套餐<br />
+</li>
+<li>提交成功后，让商户在 H5 确认相关状态（如有）</li>
+</ol>
+<h3 id="运营新增充值套餐">10.4 运营：新增充值套餐</h3>
+<ol type="1">
+<li>打开 <strong>额度包管理</strong><br />
+</li>
+<li>新增或编辑套餐，填写额度、价格、说明<br />
+</li>
+<li>保存后，H5 充值页将展示新套餐</li>
+</ol>
+<hr />
+<h2 id="十一常见问题">十一、常见问题</h2>
+<p><strong>Q1：登录后菜单很少或没有业务菜单？</strong><br />
+A：联系管理员检查您的<strong>角色</strong>与<strong>菜单权限</strong>是否已分配。</p>
+<p><strong>Q2：点击某页面提示无权限？</strong><br />
+A：您的角色未包含该功能权限，需管理员在「角色管理」中勾选对应权限。</p>
+<p><strong>Q3：商户说提现一直不到账？</strong><br />
+A：在「提现列表」查该单：是否已审核通过、是否已打款、到账状态及失败原因；必要时查「提现日志」。</p>
+<p><strong>Q4：「退款窗口」显示未充值，但商户称已付钱？</strong><br />
+A：可能为线下未录入、支付未成功或数据未同步；可先「更新会员状态」，仍异常则联系技术支持核查充值记录。</p>
+<p><strong>Q5：导出数据与页面不一致？</strong><br />
+A：导出一般按当前筛选条件生成；请确认筛选条件、时间范围后再导出。</p>
+<p><strong>Q6：误关了商户「使用状态」怎么办？</strong><br />
+A：在商户列表找到该商户，将对应开关重新打开（需有操作权限）。</p>
+<hr />
+<h2 id="十二联系与支持">十二、联系与支持</h2>
+<ul>
+<li>账号、权限、菜单问题：联系<strong>系统管理员</strong><br />
+</li>
+<li>业务规则（退款天数、提现限额等）：以<strong>参数配置</strong>及公司制度为准<br />
+</li>
+<li>系统故障、数据异常：联系<strong>技术支持</strong>，并提供商户手机号、单号、操作时间</li>
+</ul>
+<hr />
+<p><em>本手册根据当前系统功能整理，若菜单名称或按钮与线上一致性有差异，以实际页面为准。功能迭代后请以管理员通知或新版手册为准。</em></p>
+</body>
+</html>

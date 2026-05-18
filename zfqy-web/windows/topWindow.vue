@@ -110,6 +110,7 @@
 
 	import errorLog from '@/windows/components/error-log.vue'
 	import config from '@/admin.config.js'
+	import { resolveAdminEntryUrl } from '@/js_sdk/uni-admin/resolveAdminEntryUrl.js'
 
 	export default {
 		components: {
@@ -246,9 +247,13 @@
 				uni.setLocale(lang)
 			},
 			linkTo() {
+				const url = resolveAdminEntryUrl(this);
 				uni.reLaunch({
-					url: '/'
-				})
+					url,
+					fail: () => {
+						uni.showToast({ title: '跳转失败', icon: 'none' });
+					}
+				});
 			},
 			changeTheme(index) {
 				const theme = this.themes[index].value || 'default'

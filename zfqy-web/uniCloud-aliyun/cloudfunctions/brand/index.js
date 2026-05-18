@@ -102,6 +102,13 @@ function safeText(v, max = 200) {
 	return String(v == null ? '' : v).trim().slice(0, max);
 }
 
+/** 使用状态：库内未写入时按 schema 默认视为启用 */
+function normalizeBrandStatus(raw) {
+	if (raw === false || raw === 0 || raw === '0') return false;
+	if (raw === true || raw === 1 || raw === '1') return true;
+	return true;
+}
+
 function mkAgreementVersion() {
 	return `AG-${shanghaiCompactYmdHms()}`;
 }
@@ -422,7 +429,7 @@ async function getBrandList(data) {
 				activatedCount: st.activatedCount,
 				returnMachine: item.return_machine,
 				returnPayment: item.return_payment,
-				status: item.status,
+				status: normalizeBrandStatus(item.status),
 				statusTime: formatTime(item.status_time),
 				addTime: formatTime(item.add_time),
 				_id: item._id
@@ -584,12 +591,14 @@ async function getBrand(data) {
 async function updateBrandStatus(data) {
 	try {
 		const { id, status } = data;
+		if (!id) return { code: 400, message: '缺少品牌标识' };
+		const enabled = normalizeBrandStatus(status);
 		const now = new Date().getTime();
 		const result = await brandCollection.where({ 
 			brand_id: id,
 			is_deleted: false
 		}).update({
-			status,
+			status: enabled,
 			status_time: now
 		});
 		return {

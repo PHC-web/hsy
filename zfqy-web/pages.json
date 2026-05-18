@@ -876,7 +876,7 @@
 	"uniIdRouter": {
 		"loginPage": "uni_modules/uni-id-pages/pages/login/login-withpwd",
 		"needLogin": [
-			"^/?(pages\\/index\\/index|pages\\/(system|uni-stat|brand|merchant|finance|wechat|operations)\\/.*)$"
+			"^(?!pages\\/h5\\/)(?:pages\\/index\\/index|pages\\/(?:system|uni-stat|brand|merchant|finance|wechat|operations)\\/.*)$"
 		],
 		"resToLogin": true
 	}
