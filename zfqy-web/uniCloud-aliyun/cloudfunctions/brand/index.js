@@ -5,7 +5,7 @@ const machineCollection = db.collection('hsy-machine');
 const operationLogCollection = db.collection('hsy-operation-logs');
 const agreementCollection = db.collection('hsy-agreements');
 const merchantCollection = db.collection('hsy-merchant-users');
-const { formatTimeMs: formatTime, shanghaiCompactYmdHms } = require('../common/format-time-cn.js');
+const { formatTimeMs: formatTime, shanghaiCompactYmdHms } = require('./format-time-cn.js');
 
 exports.main = async (event, context) => {
 	const { action, data, params } = event;
