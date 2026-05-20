@@ -6,6 +6,9 @@
 		<title>
 			<%= htmlWebpackPlugin.options.title %>
 		</title>
+		<!-- 浏览器标签图标：与 static/logo.png 同源；部署在 /admin/ 时为 /admin/static/logo.png -->
+		<link rel="icon" type="image/png" href="<%= BASE_URL %>static/logo.png" />
+		<link rel="apple-touch-icon" href="<%= BASE_URL %>static/logo.png" />
 		<script>
 			// 根路径为公众号 H5，须在 Vue/uniIdRouter 启动前写入 hash，避免先打开管理后台首页而跳转账号登录
 			(function () {
