@@ -140,6 +140,8 @@
 </template>
 
 <script>
+import { syncOpsListPageSize } from '../utils/sync-page-size.js';
+
 function defaultRange() {
 	const end = new Date();
 	const start = new Date();
@@ -245,6 +247,7 @@ export default {
 					const d = res.data || {};
 					this.list = d.list || [];
 					this.pageInfo.total = Number(d.total) || 0;
+					syncOpsListPageSize(this.pageInfo, d);
 				})
 				.catch(() => {
 					this.loading = false;

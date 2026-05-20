@@ -77,8 +77,8 @@
 							class="dm-row"
 							:class="m.role === 'user' ? 'dm-row--user' : 'dm-row--admin'"
 						>
-							<view class="dm-bubble">
-								<text v-if="m.role === 'admin'" class="dm-meta">客服 · {{ m.adminName || '管理员' }}</text>
+							<view class="dm-bubble" :class="m.role === 'user' ? 'dm-bubble--user' : 'dm-bubble--admin'">
+								<text v-if="m.role === 'admin'" class="dm-meta">客服 · {{ displayAdminName(m) }}</text>
 								<text v-if="m.role === 'user'" class="dm-meta">用户</text>
 								<text v-if="m.content" class="dm-text">{{ m.content }}</text>
 								<view v-if="m.images && m.images.length" class="dm-imgs">
@@ -134,6 +134,8 @@
 </template>
 
 <script>
+import { store as uniIdStore } from '@/uni_modules/uni-id-pages/common/store.js';
+
 export default {
 	data() {
 		return {
@@ -173,6 +175,16 @@ export default {
 		this.search();
 	},
 	methods: {
+		currentAdminDisplayName() {
+			const u = uniIdStore.userInfo || {};
+			const n = String(u.nickname || u.username || '').trim();
+			return n || '管理员';
+		},
+		displayAdminName(m) {
+			const n = String((m && m.adminName) || '').trim();
+			if (!n || n === 'system') return '管理员';
+			return n;
+		},
 		search() {
 			this.pageInfo.currentPage = 1;
 			this.loadList();
@@ -312,7 +324,13 @@ export default {
 				}
 				const ret = await this.$request(
 					'feedbackAdminReply',
-					{ feedbackId: this.currentId, text, images: imageIds, video: videoId },
+					{
+						feedbackId: this.currentId,
+						text,
+						images: imageIds,
+						video: videoId,
+						adminDisplayName: this.currentAdminDisplayName()
+					},
 					{ functionName: 'merchant' }
 				);
 				if (ret.code !== 0) {
@@ -345,7 +363,10 @@ export default {
 			try {
 				const ret = await this.$request(
 					'feedbackAdminSendRefundEntry',
-					{ feedbackId: this.currentId },
+					{
+						feedbackId: this.currentId,
+						adminDisplayName: this.currentAdminDisplayName()
+					},
 					{ functionName: 'merchant' }
 				);
 				if (ret.code !== 0) {
@@ -492,10 +513,10 @@ export default {
 	margin-bottom: 10px;
 }
 .dm-row--user {
-	justify-content: flex-end;
+	justify-content: flex-start;
 }
 .dm-row--admin {
-	justify-content: flex-start;
+	justify-content: flex-end;
 }
 
 .dm-bubble {
@@ -504,6 +525,18 @@ export default {
 	border-radius: 8px;
 	background: #f8fafc;
 	border: 1px solid #e2e8f0;
+}
+.dm-bubble--user {
+	background: #f1f5f9;
+	border-color: #e2e8f0;
+}
+.dm-bubble--admin {
+	background: #eff6ff;
+	border-color: #bfdbfe;
+}
+.dm-row--admin .dm-meta,
+.dm-row--admin .dm-time {
+	text-align: right;
 }
 
 .dm-meta {

@@ -45,6 +45,7 @@
 						<uni-th align="center" width="170">关联商品</uni-th>
 						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'pickTotal')">可选数量</uni-th>
 						<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'pickRequired')">必选数量</uni-th>
+						<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'briefIntro')">套餐简介</uni-th>
 						<uni-th align="center" width="200" filter-type="search" @filter-change="headerFilterChange($event, 'description')">套餐说明</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">更新时间</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">创建时间</uni-th>
@@ -65,6 +66,7 @@
 						<uni-td align="center">{{ formatRelatedProducts(item.relatedProductIds) }}</uni-td>
 						<uni-td align="center">{{ Number(item.pickTotal || 0) }}</uni-td>
 						<uni-td align="center">{{ Number(item.pickRequired || 0) }}</uni-td>
+						<uni-td align="center">{{ item.briefIntro || '—' }}</uni-td>
 						<uni-td align="center">{{ item.description }}</uni-td>
 						<uni-td align="center">{{ item.updateTime }}</uni-td>
 						<uni-td align="center">{{ item.createTime }}</uni-td>
@@ -134,8 +136,21 @@
 						<uni-forms-item label="必选数量">
 							<uni-easyinput v-model="formData.pickRequired" type="number" placeholder="几选几中的“选几”" />
 						</uni-forms-item>
+						<uni-forms-item label="套餐简介">
+							<uni-easyinput
+								v-model.trim="formData.briefIntro"
+								type="textarea"
+								:autoHeight="true"
+								placeholder="选填；H5 首页额度包卡片优先展示此文案，未填则展示套餐说明"
+							/>
+						</uni-forms-item>
 						<uni-forms-item label="套餐说明" required>
-							<uni-easyinput v-model.trim="formData.description" placeholder="如图，一千元限时享一百五十万奖励额度，提现额度高达5700" />
+							<uni-easyinput
+								v-model.trim="formData.description"
+								type="textarea"
+								:autoHeight="true"
+								placeholder="如图，一千元限时享一百五十万奖励额度，提现额度高达5700"
+							/>
 						</uni-forms-item>
 						<uni-forms-item label="会员名称">
 							<uni-easyinput v-model.trim="formData.membershipName" placeholder="H5 展示用，如：白金会员、钻石会员" />
@@ -164,6 +179,7 @@ const defaultForm = () => ({
 	relatedProductIds: [],
 	pickTotal: 0,
 	pickRequired: 0,
+	briefIntro: '',
 	description: '',
 	membershipName: ''
 });
@@ -182,6 +198,7 @@ export default {
 				sortOrder: '',
 				pickTotal: '',
 				pickRequired: '',
+				briefIntro: '',
 				description: '',
 				updateTimeStart: '',
 				updateTimeEnd: '',
@@ -303,6 +320,7 @@ export default {
 				sortOrder: '',
 				pickTotal: '',
 				pickRequired: '',
+				briefIntro: '',
 				description: '',
 				updateTimeStart: '',
 				updateTimeEnd: '',
@@ -320,7 +338,7 @@ export default {
 		headerFilterChange(e, field) {
 			const { filterType, filter } = e || {};
 			const sf = this.searchForm;
-			if (filterType === 'search' && ['packageId', 'title', 'membershipName', 'bonusQuota', 'realQuota', 'price', 'sortOrder', 'pickTotal', 'pickRequired', 'description'].includes(field)) {
+			if (filterType === 'search' && ['packageId', 'title', 'membershipName', 'bonusQuota', 'realQuota', 'price', 'sortOrder', 'pickTotal', 'pickRequired', 'briefIntro', 'description'].includes(field)) {
 				sf[field] = String(filter == null ? '' : filter).trim();
 			} else if (field === 'updateTime' && filterType === 'timestamp') {
 				const { start, end } = this.parseTimestampRange(filter);
@@ -350,6 +368,7 @@ export default {
 				relatedProductIds,
 				pickTotal: relatedProductIds.length,
 				pickRequired: Number(row.pickRequired || 0),
+				briefIntro: row.briefIntro || '',
 				description: row.description,
 				membershipName: row.membershipName || ''
 			};
@@ -369,6 +388,7 @@ export default {
 				relatedProductIds,
 				pickTotal: relatedProductIds.length,
 				pickRequired: Number(this.formData.pickRequired || 0),
+				briefIntro: (this.formData.briefIntro || '').trim(),
 				description: this.formData.description,
 				membershipName: (this.formData.membershipName || '').trim()
 			};
@@ -429,6 +449,7 @@ export default {
 				关联商品: this.formatRelatedProducts(item.relatedProductIds),
 				可选数量: Number(item.pickTotal || 0),
 				必选数量: Number(item.pickRequired || 0),
+				套餐简介: item.briefIntro || '',
 				套餐说明: item.description,
 				会员名称: item.membershipName || '',
 				更新时间: item.updateTime,

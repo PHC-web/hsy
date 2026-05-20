@@ -31,6 +31,7 @@ const gzipAsync = promisify(zlib.gzip);
 const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 const subsidyEngine = require('./subsidy-engine.js');
 const redisH5 = require('./redis-h5.js');
+const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
 /** Redis 键：与云函数多实例共享热点，未开通 Redis 时自动跳过 */
 const REDIS_KEY_QUOTA_PKGS = 'hsy:h5:quota:pkgs';
 const REDIS_KEY_PRODUCTS = 'hsy:products:list';
@@ -46,6 +47,12 @@ const REDIS_EX_H5_SILVER_TRADE_SEC = 45;
 const REDIS_EX_H5_RECHARGE_HINT_SEC = 25;
 /** 管理端交易账单列表缓存（秒），减轻重复筛选下的云函数+DB 压力 */
 const REDIS_EX_TRADE_BILL_SEC = 22;
+const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v2';
+const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
+const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 55;
+const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 180;
+const ADMIN_HOME_SUMMARY_CACHE_MS = 45000;
+const ADMIN_MEMBERSHIP_TIER_CACHE_MS = 180000;
 /** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
 
@@ -291,26 +298,70 @@ function getOperator(event) {
 	);
 }
 
-async function getAdminDisplayName(context = {}) {
+function normalizeFeedbackAdminName(raw) {
+	const n = safeText(raw, 80);
+	if (!n || n === 'system') return '';
+	return n;
+}
+
+async function lookupUniIdUserDisplayName(uid) {
+	const id = safeText(uid, 80);
+	if (!id) return '';
 	try {
-		const nick = safeText(context?.userInfo?.nickname || '', 80);
-		if (nick) return nick;
-		const uid = safeText(context?.uid || context?.userInfo?._id || '', 80);
-		if (uid) {
-			const r = await adminUserCollection.doc(uid).get();
-			const row = r.data && r.data[0];
-			if (row) return safeText(row.nickname || row.username || '', 80) || 'system';
+		const r = await adminUserCollection.doc(id).field({ nickname: true, username: true }).get();
+		const row = r.data && r.data[0];
+		return safeText(row?.nickname || row?.username || '', 80);
+	} catch (e) {
+		return '';
+	}
+}
+
+/** 后台客服回复展示名：优先 uniIdToken 对应用户昵称，其次请求体 adminDisplayName */
+async function getAdminDisplayName(event = {}, context = {}, data = {}) {
+	try {
+		const ctx = context && typeof context === 'object' ? context : {};
+		const passed = normalizeFeedbackAdminName(
+			data?.adminDisplayName || event?.adminDisplayName || event?.params?.adminDisplayName || ''
+		);
+		const token = safeText(
+			event?.uniIdToken || event?.args?.uniIdToken || ctx?.uniIdToken || '',
+			4000
+		);
+		if (token) {
+			try {
+				const uniID = require('uni-id-common');
+				const uniIDIns = uniID.createInstance({ context: ctx });
+				const tr = await uniIDIns.checkToken(token);
+				if (tr && tr.errCode === 0) {
+					const fromUid = await lookupUniIdUserDisplayName(tr.uid);
+					if (fromUid) return fromUid;
+				}
+			} catch (e) {
+				console.error('getAdminDisplayName checkToken', e);
+			}
 		}
-		const uname = safeText(context?.userInfo?.username || '', 80);
+		if (passed) return passed;
+		const nick = safeText(ctx?.userInfo?.nickname || '', 80);
+		if (nick) return nick;
+		const uid = safeText(ctx?.uid || ctx?.userInfo?._id || '', 80);
+		if (uid) {
+			const fromUid = await lookupUniIdUserDisplayName(uid);
+			if (fromUid) return fromUid;
+		}
+		const uname = safeText(ctx?.userInfo?.username || '', 80);
 		if (uname) {
 			const ru = await adminUserCollection.where({ username: uname }).limit(1).get();
 			const rowU = ru.data && ru.data[0];
-			if (rowU) return safeText(rowU.nickname || rowU.username || '', 80) || 'system';
+			if (rowU) {
+				const n = safeText(rowU.nickname || rowU.username || '', 80);
+				if (n) return n;
+			}
 			return uname;
 		}
-		return 'system';
+		return '管理员';
 	} catch (e) {
-		return safeText(context?.userInfo?.username || '', 80) || 'system';
+		console.error('getAdminDisplayName', e);
+		return normalizeFeedbackAdminName(data?.adminDisplayName || '') || '管理员';
 	}
 }
 
@@ -1761,6 +1812,8 @@ async function tradeBillDelete(data, event) {
 
 const ADMIN_DASHBOARD_TREND_CACHE_MS = 60000;
 let adminDashboardTrendCache = { at: 0, key: '', data: null };
+let adminHomeSummaryCache = { at: 0, data: null };
+let adminMembershipTierCache = { at: 0, data: null };
 
 function shDayKey(ts) {
 	const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -2514,6 +2567,60 @@ async function backfillWithdrawMemberBucketChunk(limit = 160) {
 	}
 }
 
+/** 控制台首页：历史刷卡流水回填 trade_member_bucket（按商户当前身份；新流水在落库时已写入） */
+async function backfillTradeMemberBucketChunk(limit = 200) {
+	const _ = db.command;
+	try {
+		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
+		if (!cardBase.ok) return 0;
+		const res = await machineTradeCollection
+			.where(
+				_.and([
+					cardBase.baseWhere,
+					_.or([
+						{ trade_member_bucket: _.exists(false) },
+						{ trade_member_bucket: _.nin(['member', 'non_member']) }
+					])
+				])
+			)
+			.field({ user_id: true })
+			.limit(Math.min(400, Math.max(1, Number(limit) || 200)))
+			.get();
+		const rows = res.data || [];
+		if (!rows.length) return 0;
+		const uids = [...new Set(rows.map((r) => String(r.user_id || '').trim()).filter(Boolean))];
+		const merchantByUid = {};
+		if (uids.length) {
+			const mRes = await merchantCollection.where({ user_id: _.in(uids) }).limit(uids.length).get();
+			(mRes.data || []).forEach((m) => {
+				const k = String(m.user_id || '');
+				if (k) merchantByUid[k] = m;
+			});
+			const missing = uids.filter((u) => !merchantByUid[u]);
+			if (missing.length) {
+				const m2 = await merchantCollection.where({ _id: _.in(missing) }).limit(missing.length).get();
+				(m2.data || []).forEach((m) => {
+					merchantByUid[String(m._id)] = m;
+					const uk = String(m.user_id || '');
+					if (uk && !merchantByUid[uk]) merchantByUid[uk] = m;
+				});
+			}
+		}
+		const now = nowTs();
+		const tasks = rows.map((row) => {
+			const uid = String(row.user_id || '').trim();
+			const m = uid ? merchantByUid[uid] : null;
+			const bucket = tradeMemberBucketForMerchant(m);
+			return machineTradeCollection.doc(row._id).update({ trade_member_bucket: bucket });
+		});
+		await Promise.all(tasks);
+		return rows.length;
+	} catch (e) {
+		console.error('backfillTradeMemberBucketChunk failed', e);
+		return 0;
+	}
+}
+
 /** 管理端商户列表：退款窗口倒计时（与 H5 退款页同一套周期/窗口逻辑） */
 function merchantHasQuotaRechargeForRefundWindow(merchant) {
 	if (!merchant) return false;
@@ -2584,143 +2691,296 @@ async function adminMerchantRefundWindow(data) {
 	}
 }
 
+/** 曾充值但当前额度包目录无法匹配 package_id/价格档位 →「其他会员」 */
+function merchantHasOrphanRechargeMembership(merchant, packages = []) {
+	const list = Array.isArray(packages) ? packages : [];
+	const totalYuan = Number(merchant?.recharge_total_yuan || 0);
+	const price = Number(merchant?.recharge_package_price || 0);
+	const pkgId = String(merchant?.recharge_package_id || '').trim();
+	const hasRechargeTrail = totalYuan > 0 || price > 0.1 || !!pkgId;
+	if (!hasRechargeTrail) return false;
+	if (pkgId && pickRechargePackage(pkgId, list)) return false;
+	if (price > 0.1 && getRechargePackageByPrice(price, list)) return false;
+	if (pkgId && !pickRechargePackage(pkgId, list)) return true;
+	if (totalYuan > 0 && price <= 0.1 && !pkgId) return true;
+	return false;
+}
+
+/**
+ * 首页会员分档人数（与业务口径一致，非 H5 展示名）：
+ * 黄金会员＝600 元档；白金会员＝800 元档；钻石＝1000 元档。
+ */
+function resolveAdminHomeMembershipCategory(merchant, packages = []) {
+	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
+	if (merchantHasOrphanRechargeMembership(merchant, list)) return 'other';
+
+	const info = h5MembershipInfo(merchant, list);
+	const tier = String(info.tier || 'normal');
+	const name = String(info.name || '');
+	if (tier === 'silver' || hasH5SilverMemberIdentity(merchant)) return 'silver';
+	const pkg =
+		pickRechargePackage(merchant.recharge_package_id, list) ||
+		getRechargePackageByPrice(merchant.recharge_package_price, list);
+	let price = Number((pkg && pkg.price) || merchant.recharge_package_price || 0);
+	if (pkg && pkg.id === H5_RECHARGE_TEST_AS_1000_PKG_ID) price = 1000;
+
+	if (price >= 1000 || tier === 'diamond' || name.includes('钻石')) return 'diamond';
+	if (price >= 800 || tier === 'platinum' || name.includes('铂金')) return 'white_gold';
+	if (price >= 600 || price === 0.1 || tier === 'white_gold' || name.includes('黄金') || name.includes('白金')) {
+		return 'gold';
+	}
+	return 'normal';
+}
+
+async function invalidateAdminHomeSummaryCache() {
+	adminHomeSummaryCache = { at: 0, data: null };
+	adminMembershipTierCache = { at: 0, data: null };
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_SUMMARY);
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_MEMBERSHIP_TIER);
+}
+
+/** 历史 withdraw/trade 分档回填：勿在首页热路径调用，可手动触发 action adminHomeBackfillBuckets */
+async function adminHomeBackfillBuckets(data = {}) {
+	const maxWRounds = Math.min(50, Math.max(1, Number(data.maxWithdrawRounds) || 15));
+	const maxTRounds = Math.min(80, Math.max(1, Number(data.maxTradeRounds) || 25));
+	let withdrawUpdated = 0;
+	let tradeUpdated = 0;
+	for (let i = 0; i < maxWRounds; i++) {
+		const n = await backfillWithdrawMemberBucketChunk(200);
+		if (!n) break;
+		withdrawUpdated += n;
+	}
+	for (let i = 0; i < maxTRounds; i++) {
+		const n = await backfillTradeMemberBucketChunk(250);
+		if (!n) break;
+		tradeUpdated += n;
+	}
+	await invalidateAdminHomeSummaryCache();
+	return { code: 0, message: 'ok', data: { withdrawUpdated, tradeUpdated } };
+}
+
+async function adminCountMembershipTierCounts() {
+	const packages = await loadRechargePackagesFromQuota();
+	const counts = { normal: 0, silver: 0, gold: 0, white_gold: 0, diamond: 0, other: 0 };
+	const pageSize = 500;
+	let skip = 0;
+	const merchantFields = {
+		recharge_total_yuan: true,
+		recharge_package_price: true,
+		recharge_package_id: true,
+		membership_name: true,
+		silver_member: true,
+		silver_member_end_at: true,
+		member_tier: true,
+		membership_tier: true,
+		h5_member_tier: true,
+		redeem_code_claimed: true,
+		exchange_code_claimed: true
+	};
+	for (;;) {
+		const res = await merchantCollection
+			.orderBy('_id', 'asc')
+			.field(merchantFields)
+			.skip(skip)
+			.limit(pageSize)
+			.get();
+		const rows = res.data || [];
+		if (!rows.length) break;
+		for (const row of rows) {
+			try {
+				const cat = resolveAdminHomeMembershipCategory(row, packages);
+				if (Object.prototype.hasOwnProperty.call(counts, cat)) counts[cat] += 1;
+				else counts.normal += 1;
+			} catch (rowErr) {
+				console.error('resolveAdminHomeMembershipCategory row', row._id, rowErr);
+				counts.normal += 1;
+			}
+		}
+		if (rows.length < pageSize) break;
+		skip += pageSize;
+		if (skip > 100000) break;
+	}
+	return counts;
+}
+
+async function adminCountMembershipTierCountsCached(forceRefresh = false) {
+	const now = nowTs();
+	if (!forceRefresh && adminMembershipTierCache.data && now - adminMembershipTierCache.at < ADMIN_MEMBERSHIP_TIER_CACHE_MS) {
+		return adminMembershipTierCache.data;
+	}
+	if (!forceRefresh) {
+		const hit = await redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_MEMBERSHIP_TIER);
+		if (hit && typeof hit.normal === 'number') {
+			adminMembershipTierCache = { at: now, data: hit };
+			return hit;
+		}
+	}
+	const counts = await adminCountMembershipTierCounts();
+	adminMembershipTierCache = { at: now, data: counts };
+	await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_MEMBERSHIP_TIER, counts, REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC);
+	return counts;
+}
+
 /** 控制台首页粉卡：已提现(到账)/已绑定商户机具刷卡额/累计充值/累计退款 — 总刷卡与 cloudfunctions/machine#getCardRecordList 默认列表求和口径一致 */
-async function adminHomeSummary() {
+async function adminHomeSummary(data = {}) {
 	try {
+		const forceRefresh = !!(data && data.refresh);
+		const now = nowTs();
+		if (!forceRefresh) {
+			if (adminHomeSummaryCache.data && now - adminHomeSummaryCache.at < ADMIN_HOME_SUMMARY_CACHE_MS) {
+				return { code: 0, message: 'ok', data: adminHomeSummaryCache.data };
+			}
+			const redisHit = await redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_SUMMARY);
+			if (redisHit && redisHit.membershipCounts) {
+				adminHomeSummaryCache = { at: now, data: redisHit };
+				adminMembershipTierCache = { at: now, data: redisHit.membershipCounts || null };
+				return { code: 0, message: 'ok', data: redisHit };
+			}
+		}
+
 		const _ = db.command;
 		const $ = db.command.aggregate;
+		const wdMatch = _.and([{ is_deleted: _.neq(true) }, { is_paid: true }, { arrival_status: 'received' }]);
+		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
 
-		for (let i = 0; i < 5; i++) {
-			const n = await backfillWithdrawMemberBucketChunk(200);
-			if (!n) break;
-		}
+		const rechargeMatch = _.and([
+			{ type: 'h5_quota_recharge' },
+			{ status: 1 },
+			{ user_order_success: true },
+			{ is_deleted: _.neq(true) },
+			{ out_trade_no: _.exists(true) },
+			{ out_trade_no: _.neq('') }
+		]);
+		const refundMatch = _.and([
+			{ action: 'h5_refund_reset' },
+			{ is_deleted: _.neq(true) },
+			{ platform_no: _.exists(true) },
+			{ platform_no: _.neq('') }
+		]);
 
-		let arrivedWithdrawAmount = 0;
-		let arrivedWithdrawAmountMember = 0;
-		let arrivedWithdrawAmountNonMember = 0;
-		let boundMerchantTradeAmount = 0;
-		let totalRechargeAmount = 0;
-		let totalRefundAmount = 0;
+		const membershipPromise = adminCountMembershipTierCountsCached(forceRefresh);
 
-		try {
-			const wdAgg = await withdrawCollection
-				.aggregate()
-				.match(
-					_.and([{ is_deleted: _.neq(true) }, { is_paid: true }, { arrival_status: 'received' }])
-				)
-				.group({
-					_id: null,
-					total: $.sum('$payable')
-				})
-				.end();
-			arrivedWithdrawAmount = Number(Number((((wdAgg.data || [])[0] || {}).total || 0)).toFixed(2));
-		} catch (eAgg) {
-			arrivedWithdrawAmount = 0;
-		}
+		const wdTotalPromise = withdrawCollection
+			.aggregate()
+			.match(wdMatch)
+			.group({ _id: null, total: $.sum('$payable') })
+			.end()
+			.catch((e) => {
+				console.error('adminHomeSummary wdAgg', e);
+				return { data: [] };
+			});
 
-		try {
-			const splitAgg = await withdrawCollection
-				.aggregate()
-				.match(_.and([{ is_deleted: _.neq(true) }, { is_paid: true }, { arrival_status: 'received' }]))
-				.group({
-					_id: '$withdraw_member_bucket',
-					total: $.sum('$payable')
-				})
-				.end();
-			for (const row of splitAgg.data || []) {
-				const key = row._id;
-				const t = Number(Number((row.total || 0)).toFixed(2));
-				if (key === 'member') arrivedWithdrawAmountMember = t;
-				else if (key === 'non_member') arrivedWithdrawAmountNonMember = t;
-			}
-		} catch (eSplit) {
-			arrivedWithdrawAmountMember = 0;
-			arrivedWithdrawAmountNonMember = 0;
-		}
+		const wdSplitPromise = withdrawCollection
+			.aggregate()
+			.match(wdMatch)
+			.group({ _id: '$withdraw_member_bucket', total: $.sum('$payable') })
+			.end()
+			.catch((e) => {
+				console.error('adminHomeSummary wdSplit', e);
+				return { data: [] };
+			});
 
-		try {
-			const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
-			if (!cardBase.ok) {
-				boundMerchantTradeAmount = 0;
-			} else {
-				const tradeAgg = await machineTradeCollection
+		const tradeTotalPromise =
+			cardBase.ok ?
+				machineTradeCollection
 					.aggregate()
 					.match(cardBase.baseWhere)
-					.group({
-						_id: null,
-						total: $.sum('$amount')
+					.group({ _id: null, total: $.sum('$amount') })
+					.end()
+					.catch((e) => {
+						console.error('adminHomeSummary tradeAgg', e);
+						return { data: [] };
 					})
-					.end();
-				boundMerchantTradeAmount = Number(Number((((tradeAgg.data || [])[0] || {}).total || 0)).toFixed(2));
+			:	Promise.resolve({ data: [] });
+
+		const tradeSplitPromise =
+			cardBase.ok ?
+				machineTradeCollection
+					.aggregate()
+					.match(cardBase.baseWhere)
+					.group({ _id: '$trade_member_bucket', total: $.sum('$amount') })
+					.end()
+					.catch((e) => {
+						console.error('adminHomeSummary tradeSplit', e);
+						return { data: [] };
+					})
+			:	Promise.resolve({ data: [] });
+
+		const rechargePromise = uniPayOrderCollection
+			.aggregate()
+			.match(rechargeMatch)
+			.group({ _id: '$out_trade_no', amount: $.max('$total_fee') })
+			.group({ _id: null, total: $.sum('$amount') })
+			.end()
+			.catch((e) => {
+				console.error('adminHomeSummary rechargeAgg', e);
+				return { data: [] };
+			});
+
+		const refundPromise = operationLogCollection
+			.aggregate()
+			.match(refundMatch)
+			.group({ _id: '$platform_no', amount: $.max('$refund_final_amount') })
+			.group({ _id: null, total: $.sum('$amount') })
+			.end()
+			.catch((e) => {
+				console.error('adminHomeSummary refundAgg', e);
+				return { data: [] };
+			});
+
+		const [membershipCounts, wdAgg, splitAgg, tradeAgg, tradeSplitAgg, rechargeAgg, refundAgg] = await Promise.all([
+			membershipPromise.catch((e) => {
+				console.error('adminCountMembershipTierCountsCached', e);
+				return { normal: 0, silver: 0, gold: 0, white_gold: 0, diamond: 0, other: 0, _error: safeText(e?.message, 200) };
+			}),
+			wdTotalPromise,
+			wdSplitPromise,
+			tradeTotalPromise,
+			tradeSplitPromise,
+			rechargePromise,
+			refundPromise
+		]);
+
+		let arrivedWithdrawAmount = Number(Number((((wdAgg.data || [])[0] || {}).total || 0)).toFixed(2));
+		let arrivedWithdrawAmountMember = 0;
+		let arrivedWithdrawAmountNonMember = 0;
+		for (const row of splitAgg.data || []) {
+			const key = row._id;
+			const t = Number(Number((row.total || 0)).toFixed(2));
+			if (key === 'member') arrivedWithdrawAmountMember = t;
+			else if (key === 'non_member') arrivedWithdrawAmountNonMember = t;
+		}
+
+		let boundMerchantTradeAmount = 0;
+		let boundMerchantTradeAmountMember = 0;
+		let boundMerchantTradeAmountNonMember = 0;
+		if (cardBase.ok) {
+			boundMerchantTradeAmount = Number(Number((((tradeAgg.data || [])[0] || {}).total || 0)).toFixed(2));
+			for (const row of tradeSplitAgg.data || []) {
+				const key = row._id;
+				const t = Number(Number((row.total || 0)).toFixed(2));
+				if (key === 'member') boundMerchantTradeAmountMember = t;
+				else if (key === 'non_member') boundMerchantTradeAmountNonMember = t;
 			}
-		} catch (eAgg) {
-			boundMerchantTradeAmount = 0;
 		}
 
-		try {
-			const rechargeAgg = await uniPayOrderCollection
-				.aggregate()
-				.match(
-					_.and([
-						{ type: 'h5_quota_recharge' },
-						{ status: 1 },
-						{ user_order_success: true },
-						{ is_deleted: _.neq(true) },
-						{ out_trade_no: _.exists(true) },
-						{ out_trade_no: _.neq('') }
-					])
-				)
-				.group({
-					_id: '$out_trade_no',
-					amount: $.max('$total_fee')
-				})
-				.group({
-					_id: null,
-					total: $.sum('$amount')
-				})
-				.end();
-			totalRechargeAmount = Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
-		} catch (eAgg) {
-			totalRechargeAmount = 0;
-		}
+		const totalRechargeAmount = Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
+		const totalRefundAmount = Number((((refundAgg.data || [])[0] || {}).total || 0).toFixed(2));
 
-		try {
-			const refundAgg = await operationLogCollection
-				.aggregate()
-				.match(
-					_.and([
-						{ action: 'h5_refund_reset' },
-						{ is_deleted: _.neq(true) },
-						{ platform_no: _.exists(true) },
-						{ platform_no: _.neq('') }
-					])
-				)
-				.group({
-					_id: '$platform_no',
-					amount: $.max('$refund_final_amount')
-				})
-				.group({
-					_id: null,
-					total: $.sum('$amount')
-				})
-				.end();
-			totalRefundAmount = Number((((refundAgg.data || [])[0] || {}).total || 0).toFixed(2));
-		} catch (eAgg) {
-			totalRefundAmount = 0;
-		}
-
-		return {
-			code: 0,
-			message: 'ok',
-			data: {
-				arrivedWithdrawAmount,
-				arrivedWithdrawAmountMember,
-				arrivedWithdrawAmountNonMember,
-				boundMerchantTradeAmount,
-				totalRechargeAmount,
-				totalRefundAmount
-			}
+		const payload = {
+			membershipCounts,
+			arrivedWithdrawAmount,
+			arrivedWithdrawAmountMember,
+			arrivedWithdrawAmountNonMember,
+			boundMerchantTradeAmount,
+			boundMerchantTradeAmountMember,
+			boundMerchantTradeAmountNonMember,
+			totalRechargeAmount,
+			totalRefundAmount
 		};
+		adminHomeSummaryCache = { at: now, data: payload };
+		await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_HOME_SUMMARY, payload, REDIS_EX_ADMIN_HOME_SUMMARY_SEC);
+		return { code: 0, message: 'ok', data: payload };
 	} catch (e) {
 		console.error('adminHomeSummary failed', e);
 		return { code: 500, message: '获取首页汇总失败' };
@@ -6019,9 +6279,7 @@ function resolveH5WithdrawRole(merchant) {
  * member＝充值会员（钻石/铂金/白金等付费档）；non_member＝普通会员、白银会员。
  */
 function withdrawMemberBucketForSummary(merchant) {
-	if (!merchant) return 'non_member';
-	if (resolveH5WithdrawRole(merchant) === 'recharge_member') return 'member';
-	return 'non_member';
+	return tradeMemberBucketForMerchant(merchant);
 }
 
 /** 兑换券/兑换码开通白银（exchange / redeem claimed）：提现计算侧可用的隐藏剩余额度下限（界面仍不展示） */
@@ -6679,7 +6937,7 @@ async function h5HomeDashboard(data) {
 					id: safeText(x.id, 40),
 					title: safeText(x.title, 80),
 					price: Number(x.price || 0),
-					benefitTip: safeText(x.benefitTip || '', 300),
+					benefitTip: safeText(x.homeBenefitTip || x.benefitTip || '', 300),
 					membershipName: safeText(x.membershipName || '', 40),
 					giftChoiceRequired: !!x.giftChoiceRequired
 				})),
@@ -6866,6 +7124,7 @@ async function loadRechargePackagesFromQuota() {
 			quota: parseBonusQuotaYuan(x.bonus_quota),
 			rewardYuan: Number(x.real_quota || 0),
 			benefitTip: safeText(x.description, 300),
+			homeBenefitTip: safeText(x.brief_intro, 300) || safeText(x.description, 300),
 			membershipName: safeText(x.membership_name, 40),
 			relatedProductIds: Array.isArray(x.related_product_ids) ? x.related_product_ids.map((s) => safeText(s, 80)).filter(Boolean) : [],
 			pickTotal: Number(x.pick_total || 0),
@@ -6892,6 +7151,7 @@ async function loadRechargePackagesFromQuota() {
 async function invalidateH5QuotaPackagesCache() {
 	rechargePackagesListCache = { at: 0, data: null };
 	await redisH5.h5RedisDel(REDIS_KEY_QUOTA_PKGS);
+	await invalidateAdminHomeSummaryCache();
 }
 
 let productsListCache = { at: 0, data: null };
@@ -11169,7 +11429,7 @@ async function feedbackMapMessageRow(row) {
 		images: imgResolved,
 		videoUrl,
 		videoFileID: row.video || '',
-		adminName: row.admin_name || '',
+		adminName: normalizeFeedbackAdminName(row.admin_name),
 		createTime: row.create_time,
 		createTimeText: formatTime(row.create_time)
 	};
@@ -11287,6 +11547,8 @@ async function h5FeedbackSend(data) {
 			last_message_at: now,
 			update_time: now
 		});
+		const merchantName = maybeMerchantDisplayName(merchant);
+		await sendWecomRobotText(`收到商户 ${merchantName} 的售后反馈，请及时在「反馈管理」处理！`);
 		const messages = await feedbackLoadMessagesMapped(ticket._id);
 		return {
 			code: 0,
@@ -11421,7 +11683,7 @@ async function feedbackAdminMessages(data) {
 	}
 }
 
-async function feedbackAdminReply(data, context) {
+async function feedbackAdminReply(data, event, context) {
 	try {
 		const fid = safeText(data?.feedbackId, 80);
 		const text = safeText(data?.text || '', 2000);
@@ -11435,7 +11697,7 @@ async function feedbackAdminReply(data, context) {
 		if (!ticket || ticket.is_deleted) return { code: 404, message: '工单不存在' };
 		if (ticket.status !== 'open') return { code: 400, message: '工单已结束' };
 		const now = nowTs();
-		const operator = await getAdminDisplayName(context);
+		const operator = await getAdminDisplayName(event, context, data);
 		const preview = feedbackPreviewFromPayload(text, images, video);
 		await feedbackMessageCollection.add({
 			feedback_id: fid,
@@ -11462,7 +11724,7 @@ async function feedbackAdminReply(data, context) {
 	}
 }
 
-async function feedbackAdminSendRefundEntry(data, context) {
+async function feedbackAdminSendRefundEntry(data, event, context) {
 	try {
 		const fid = safeText(data?.feedbackId, 80);
 		if (!fid) return { code: 400, message: '缺少工单ID' };
@@ -11485,7 +11747,7 @@ async function feedbackAdminSendRefundEntry(data, context) {
 		}
 		const now = nowTs();
 		const expireAt = now + 3 * 24 * 60 * 60 * 1000;
-		const operator = await getAdminDisplayName(context);
+		const operator = await getAdminDisplayName(event, context, data);
 		const token = `${randomStr(24)}${randomStr(12)}${String(now).slice(-6)}`;
 		await refundEntryTokenCollection.where({
 			feedback_id: fid,
@@ -11924,6 +12186,7 @@ async function quotaList(data) {
 			realQuota = '',
 			price = '',
 			sortOrder = '',
+			briefIntro = '',
 			description = '',
 			membershipName = '',
 			pickTotal = '',
@@ -11937,6 +12200,7 @@ async function quotaList(data) {
 		if (packageId) where.package_id = new RegExp(escapeReg(packageId), 'i');
 		if (title) where.title = new RegExp(escapeReg(title), 'i');
 		if (bonusQuota) where.bonus_quota = new RegExp(escapeReg(bonusQuota), 'i');
+		if (briefIntro) where.brief_intro = new RegExp(escapeReg(briefIntro), 'i');
 		if (description) where.description = new RegExp(escapeReg(description), 'i');
 		if (membershipName) where.membership_name = new RegExp(escapeReg(membershipName), 'i');
 		if (realQuota !== '' && realQuota !== null && realQuota !== undefined) where.real_quota = Number(realQuota);
@@ -11969,6 +12233,7 @@ async function quotaList(data) {
 			price: Number(item.price || 0),
 			sortOrder: parseSortOrder(item.sort_order, Number(item.price || 0)),
 			description: item.description || '',
+			briefIntro: item.brief_intro || '',
 			membershipName: item.membership_name || '',
 			relatedProductIds: Array.isArray(item.related_product_ids) ? item.related_product_ids : [],
 			pickTotal: Number(item.pick_total || 0),
@@ -12012,6 +12277,7 @@ async function quotaSave(data) {
 			pick_total: pickTotal,
 			pick_required: pickRequired,
 			description: safeText(data?.description, 300),
+			brief_intro: safeText(data?.briefIntro, 300),
 			membership_name: safeText(data?.membershipName, 40),
 			update_time: now
 		};
@@ -12183,6 +12449,8 @@ exports.main = async (event, context) => {
 			return await adminDashboardTrend30d(actualData);
 		case 'adminHomeSummary':
 			return await adminHomeSummary(actualData);
+		case 'adminHomeBackfillBuckets':
+			return await adminHomeBackfillBuckets(actualData);
 		case 'adminMerchantRefundWindow':
 			return await adminMerchantRefundWindow(actualData);
 		case 'financeMerchantFlowList':
@@ -12322,9 +12590,9 @@ exports.main = async (event, context) => {
 		case 'feedbackAdminMessages':
 			return await feedbackAdminMessages(actualData);
 		case 'feedbackAdminReply':
-			return await feedbackAdminReply(actualData, context);
+			return await feedbackAdminReply(actualData, event, context);
 		case 'feedbackAdminSendRefundEntry':
-			return await feedbackAdminSendRefundEntry(actualData, context);
+			return await feedbackAdminSendRefundEntry(actualData, event, context);
 		case 'bizConfigGet':
 			return await bizConfigGet();
 		case 'bizConfigSave':

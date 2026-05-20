@@ -64,7 +64,8 @@ function displayStatus(row, nowTs) {
 
 async function opsIncomePacketsList(data = {}) {
 	const page = Math.max(1, Number(data.page) || 1);
-	const pageSize = Math.min(100, Math.max(1, Number(data.pageSize) || 20));
+	// 与 uniCloud 单次 get 上限一致；须与前端 uni-pagination 可选条数对齐，避免 UI 按 500 算页、服务端仍按 100 查
+	const pageSize = Math.min(1000, Math.max(1, Number(data.pageSize) || 20));
 	const keyword = safeText(data.keyword, 100);
 	const statusFilter = safeText(data.statusFilter, 28) || 'all';
 	const timeStart = data.timeStart;

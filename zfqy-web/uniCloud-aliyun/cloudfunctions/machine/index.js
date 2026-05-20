@@ -8,6 +8,7 @@ const merchantCollection = db.collection('hsy-merchant-users');
 const incomePacketCollection = db.collection('hsy-income-packets');
 const withdrawCollection = db.collection('hsy-withdraw-records');
 const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-time-cn.js');
+const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
 
 const monthNo = shanghaiYearMonthFromTs;
 
@@ -459,18 +460,22 @@ async function virtualSwipe(data, event) {
 			total_transaction: newTotal,
 			frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
 		});
+		let tradeMemberBucket = 'non_member';
+		let mer = null;
+		if (machine.bind_user_id) {
+			const mRes = await merchantCollection
+				.where(db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }]))
+				.limit(1)
+				.get();
+			mer = mRes.data && mRes.data[0];
+			if (mer) tradeMemberBucket = tradeMemberBucketForMerchant(mer);
+		}
 		// 商户基础表 frozen_amount 同步累加，供商户管理列表直接读取
-		if (cashback > 0 && machine.bind_user_id) {
-			const mRes = await merchantCollection.where(
-				db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }])
-			).limit(1).get();
-			const mer = mRes.data && mRes.data[0];
-			if (mer) {
-				await merchantCollection.doc(mer._id).update({
-					frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
-					update_time: now
-				});
-			}
+		if (cashback > 0 && mer) {
+			await merchantCollection.doc(mer._id).update({
+				frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
+				update_time: now
+			});
 		}
 		const act = await tryActivateMachineByTotal(machine, newTotal, now);
 
@@ -487,6 +492,7 @@ async function virtualSwipe(data, event) {
 			is_risk_trade: false,
 			risk_audit_status: 'none',
 			stats_eligible: true,
+			trade_member_bucket: tradeMemberBucket,
 			amount: swipeAmount,
 			is_activated: !!act.activated,
 			total_transaction: newTotal,

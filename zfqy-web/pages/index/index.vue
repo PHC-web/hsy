@@ -11,38 +11,112 @@
 				<view class="page-desc">用于展示当前系统中的统计数据、统计报表及重要实时数据</view>
 			</view>
 
-			<view class="panel-wrap">
-				<view class="panel-title">数据预览中控台</view>
-				<view class="cards-row">
-					<view class="stat-card">
-						<view class="icon-box green"><text class="bi bi-speedometer2"></text></view>
-						<view class="card-content">
-							<view class="card-value">{{ dashboard.brandCount }} / {{ dashboard.machineCount }} / {{ dashboard.activatedCount }} / {{ dashboard.boundCount }}</view>
-							<view class="card-label">品牌数 / 机具数 / 激活数 / 绑定数</view>
+			<view class="panel-wrap preview-panel">
+				<view class="preview-panel-head">
+					<view class="panel-title mb0">数据预览中控台</view>
+					<view class="preview-panel-hint">核心指标一览</view>
+				</view>
+
+				<view class="preview-grid">
+					<view class="preview-card preview-card--accent-green">
+						<view class="preview-card-head">
+							<view class="preview-icon preview-icon--green"><text class="bi bi-speedometer2"></text></view>
+							<text class="preview-card-title">机具与绑定</text>
+						</view>
+						<view class="preview-metrics preview-metrics--quad">
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.brandCount }}</text>
+								<text class="preview-metric-label">品牌数</text>
+							</view>
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.machineCount }}</text>
+								<text class="preview-metric-label">机具数</text>
+							</view>
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.activatedCount }}</text>
+								<text class="preview-metric-label">激活数</text>
+							</view>
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.boundCount }}</text>
+								<text class="preview-metric-label">绑定数</text>
+							</view>
 						</view>
 					</view>
 
-					<view class="stat-card">
-						<view class="icon-box red"><text class="bi bi-currency-dollar"></text></view>
-						<view class="card-content">
-							<view class="card-value">{{ dashboard.withdrawCount }} / {{ toMoney(dashboard.withdrawAmount) }}</view>
-							<view class="card-label">提现成功单数 / 提现成功金额</view>
+					<view class="preview-card preview-card--accent-red">
+						<view class="preview-card-head">
+							<view class="preview-icon preview-icon--red"><text class="bi bi-currency-dollar"></text></view>
+							<text class="preview-card-title">提现成功</text>
+						</view>
+						<view class="preview-metrics preview-metrics--stack">
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.withdrawCount }}</text>
+								<text class="preview-metric-label">成功单数</text>
+							</view>
+							<view class="preview-metric">
+								<text class="preview-metric-value preview-metric-value--money">{{ toMoney(dashboard.withdrawAmount) }}</text>
+								<text class="preview-metric-label">成功金额</text>
+							</view>
 						</view>
 					</view>
 
-					<view class="stat-card">
-						<view class="icon-box purple"><text class="bi bi-tools"></text></view>
-						<view class="card-content">
-							<view class="card-value">{{ dashboard.activatedCount }} / {{ dashboard.todayActivatedCount }}</view>
-							<view class="card-label">激活总数 / 今日激活</view>
+					<view class="preview-card preview-card--accent-purple">
+						<view class="preview-card-head">
+							<view class="preview-icon preview-icon--purple"><text class="bi bi-tools"></text></view>
+							<text class="preview-card-title">激活概况</text>
+						</view>
+						<view class="preview-metrics preview-metrics--stack">
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.activatedCount }}</text>
+								<text class="preview-metric-label">激活总数</text>
+							</view>
+							<view class="preview-metric preview-metric--highlight">
+								<text class="preview-metric-value">{{ dashboard.todayActivatedCount }}</text>
+								<text class="preview-metric-label">今日激活</text>
+							</view>
 						</view>
 					</view>
 
-					<view class="stat-card">
-						<view class="icon-box blue"><text class="bi bi-bar-chart-line"></text></view>
-						<view class="card-content">
-							<view class="card-value">{{ dashboard.userCount }} / {{ dashboard.memberCount }} / {{ dashboard.memberRate }}%</view>
-							<view class="card-label">用户数 / 会员数 / 会员率</view>
+					<view class="preview-card preview-card--accent-blue">
+						<view class="preview-card-head">
+							<view class="preview-icon preview-icon--blue"><text class="bi bi-bar-chart-line"></text></view>
+							<text class="preview-card-title">用户与会员</text>
+						</view>
+						<view class="preview-metrics preview-metrics--user">
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.userCount }}</text>
+								<text class="preview-metric-label">用户数</text>
+							</view>
+							<view class="preview-metric">
+								<text class="preview-metric-value">{{ dashboard.memberCount }}</text>
+								<text class="preview-metric-label">会员数</text>
+							</view>
+							<view class="preview-metric preview-metric--rate">
+								<text class="preview-metric-value">{{ dashboard.memberRate }}<text class="preview-metric-unit">%</text></text>
+								<text class="preview-metric-label">会员率</text>
+							</view>
+						</view>
+					</view>
+				</view>
+
+				<view class="preview-membership">
+					<view class="preview-membership-head">
+						<view class="preview-icon preview-icon--orange"><text class="bi bi-people"></text></view>
+						<view class="preview-membership-titles">
+							<text class="preview-card-title">会员分档</text>
+							<text class="preview-membership-sub">按当前会员档位统计商户人数</text>
+						</view>
+						<text class="preview-membership-total">合计 {{ membershipTierTotal }}</text>
+					</view>
+					<view class="preview-tier-grid">
+						<view
+							v-for="item in membershipTierItems"
+							:key="item.key"
+							class="preview-tier"
+							:class="'preview-tier--' + item.key"
+						>
+							<text class="preview-tier-count">{{ item.count }}</text>
+							<text class="preview-tier-label">{{ item.shortLabel }}</text>
 						</view>
 					</view>
 				</view>
@@ -72,6 +146,10 @@
 									<view class="returns-metric-label">会员到账金额</view>
 									<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmountMember) }}</view>
 								</view>
+								<view class="returns-metric">
+									<view class="returns-metric-label">会员刷卡金额</view>
+									<view class="returns-metric-value">{{ toMoney(dashboard.boundMerchantTradeAmountMember) }}</view>
+								</view>
 								<view class="returns-metric returns-metric--rate">
 									<view class="returns-metric-label">会员提现率</view>
 									<view class="returns-metric-value">{{ withdrawRateMemberPerWan }}</view>
@@ -79,6 +157,10 @@
 								<view class="returns-metric">
 									<view class="returns-metric-label">非会员到账金额</view>
 									<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmountNonMember) }}</view>
+								</view>
+								<view class="returns-metric">
+									<view class="returns-metric-label">非会员刷卡金额</view>
+									<view class="returns-metric-value">{{ toMoney(dashboard.boundMerchantTradeAmountNonMember) }}</view>
 								</view>
 								<view class="returns-metric returns-metric--rate">
 									<view class="returns-metric-label">非会员提现率</view>
@@ -188,8 +270,18 @@
 					arrivedWithdrawAmountMember: 0,
 					arrivedWithdrawAmountNonMember: 0,
 					boundMerchantTradeAmount: 0,
+					boundMerchantTradeAmountMember: 0,
+					boundMerchantTradeAmountNonMember: 0,
 					totalRechargeAmount: 0,
-					totalRefundAmount: 0
+					totalRefundAmount: 0,
+					membershipCounts: {
+						normal: 0,
+						silver: 0,
+						gold: 0,
+						white_gold: 0,
+						diamond: 0,
+						other: 0
+					}
 				},
 				trendRangeType: '30d',
 				rangeOptions: [
@@ -339,6 +431,11 @@
 					const memberRate = userCount ? ((memberCount / userCount) * 100).toFixed(2) : '0.00';
 
 					const sum = summaryRes && summaryRes.code === 0 ? summaryRes.data || {} : {};
+					if (summaryRes && summaryRes.code !== 0) {
+						uni.showToast({ title: summaryRes.message || '资金汇总加载失败', icon: 'none' });
+					} else if (sum.membershipCounts && sum.membershipCounts._error) {
+						console.error('membershipCounts', sum.membershipCounts._error);
+					}
 
 					this.dashboard = {
 						brandCount: brandRes.result?.total || 0,
@@ -358,8 +455,21 @@
 						arrivedWithdrawAmountMember: Number(sum.arrivedWithdrawAmountMember || 0),
 						arrivedWithdrawAmountNonMember: Number(sum.arrivedWithdrawAmountNonMember || 0),
 						boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
+						boundMerchantTradeAmountMember: Number(sum.boundMerchantTradeAmountMember || 0),
+						boundMerchantTradeAmountNonMember: Number(sum.boundMerchantTradeAmountNonMember || 0),
 						totalRechargeAmount: Number(sum.totalRechargeAmount || 0),
-						totalRefundAmount: Number(sum.totalRefundAmount || 0)
+						totalRefundAmount: Number(sum.totalRefundAmount || 0),
+						membershipCounts: Object.assign(
+							{
+								normal: 0,
+								silver: 0,
+								gold: 0,
+								white_gold: 0,
+								diamond: 0,
+								other: 0
+							},
+							sum.membershipCounts || {}
+						)
 					};
 				} catch (err) {
 					uni.showModal({
@@ -656,6 +766,20 @@
 			}
 		},
 		computed: {
+			membershipTierItems() {
+				const c = this.dashboard.membershipCounts || {};
+				return [
+					{ key: 'normal', label: '普通会员', shortLabel: '普通', count: Number(c.normal) || 0 },
+					{ key: 'silver', label: '白银会员', shortLabel: '白银', count: Number(c.silver) || 0 },
+					{ key: 'gold', label: '黄金会员', shortLabel: '黄金', count: Number(c.gold) || 0 },
+					{ key: 'white_gold', label: '白金会员', shortLabel: '白金', count: Number(c.white_gold) || 0 },
+					{ key: 'diamond', label: '钻石会员', shortLabel: '钻石', count: Number(c.diamond) || 0 },
+					{ key: 'other', label: '其他会员', shortLabel: '其他', count: Number(c.other) || 0 }
+				];
+			},
+			membershipTierTotal() {
+				return this.membershipTierItems.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+			},
 			trendRangeLabel() {
 				return this.trendRangeLabelText();
 			},
@@ -670,7 +794,7 @@
 			},
 			withdrawRateMemberPerWan() {
 				const w = Number(this.dashboard.arrivedWithdrawAmountMember || 0);
-				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
+				const s = Number(this.dashboard.boundMerchantTradeAmountMember || 0);
 				if (!Number.isFinite(w) || !Number.isFinite(s) || s <= 0) return '0.00元/万';
 				const yuanPerWan = (w / s) * 10000;
 				if (!Number.isFinite(yuanPerWan)) return '0.00元/万';
@@ -678,7 +802,7 @@
 			},
 			withdrawRateNonMemberPerWan() {
 				const w = Number(this.dashboard.arrivedWithdrawAmountNonMember || 0);
-				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
+				const s = Number(this.dashboard.boundMerchantTradeAmountNonMember || 0);
 				if (!Number.isFinite(w) || !Number.isFinite(s) || s <= 0) return '0.00元/万';
 				const yuanPerWan = (w / s) * 10000;
 				if (!Number.isFinite(yuanPerWan)) return '0.00元/万';
@@ -752,59 +876,305 @@
 	box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
 }
 
-.cards-row {
-	display: grid;
-	grid-template-columns: repeat(4, minmax(240px, 1fr));
-	gap: 12px;
+.preview-panel .mb0 {
+	margin-bottom: 0;
 }
 
-.stat-card {
+.preview-panel-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
+
+.preview-panel-hint {
+	font-size: 12px;
+	color: #94a3b8;
+}
+
+.preview-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 14px;
+}
+
+.preview-card {
+	position: relative;
+	padding: 14px 14px 12px;
+	border-radius: 12px;
+	background: #fff;
+	border: 1px solid rgba(148, 163, 184, 0.18);
+	box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
+	overflow: hidden;
+	transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.preview-card::before {
+	content: '';
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	width: 3px;
+	border-radius: 12px 0 0 12px;
+}
+
+.preview-card--accent-green::before { background: linear-gradient(180deg, #22c55e, #16a34a); }
+.preview-card--accent-red::before { background: linear-gradient(180deg, #f87171, #dc2626); }
+.preview-card--accent-purple::before { background: linear-gradient(180deg, #a78bfa, #7c3aed); }
+.preview-card--accent-blue::before { background: linear-gradient(180deg, #38bdf8, #2563eb); }
+
+.preview-card:hover {
+	border-color: rgba(148, 163, 184, 0.35);
+	box-shadow: 0 8px 20px rgba(15, 23, 42, 0.07);
+}
+
+.preview-card-head {
 	display: flex;
 	align-items: center;
-	padding: 14px 14px;
-	border-radius: 12px;
-	background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%);
-	border: 1px solid rgba(148, 163, 184, 0.2);
-	box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
-	transition: box-shadow 0.2s ease, transform 0.2s ease;
-	min-height: 88px;
+	gap: 10px;
+	margin-bottom: 12px;
 }
 
-	.stat-card:hover {
-		box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-	}
+.preview-card-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: #334155;
+	line-height: 1.3;
+}
 
-	.icon-box {
-		width: 40px;
-		height: 40px;
-		border-radius: 10px;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: #fff;
-		font-size: 20px;
-		margin-right: 12px;
-	}
+.preview-icon {
+	width: 36px;
+	height: 36px;
+	border-radius: 10px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #fff;
+	font-size: 17px;
+	flex-shrink: 0;
+}
 
-	.icon-box.green { background: linear-gradient(145deg, #22c55e, #16a34a); }
-	.icon-box.red { background: linear-gradient(145deg, #f87171, #dc2626); }
-	.icon-box.purple { background: linear-gradient(145deg, #a78bfa, #7c3aed); }
-	.icon-box.blue { background: linear-gradient(145deg, #38bdf8, #2563eb); }
+.preview-icon--green { background: linear-gradient(145deg, #22c55e, #16a34a); }
+.preview-icon--red { background: linear-gradient(145deg, #f87171, #dc2626); }
+.preview-icon--purple { background: linear-gradient(145deg, #a78bfa, #7c3aed); }
+.preview-icon--blue { background: linear-gradient(145deg, #38bdf8, #2563eb); }
+.preview-icon--orange { background: linear-gradient(135deg, #f59e0b, #ea580c); }
 
-.card-value {
-	font-size: clamp(22px, 2.1vw, 32px);
-	line-height: 1.1;
-	color: #0f172a;
+.preview-metrics {
+	display: grid;
+	gap: 8px;
+}
+
+.preview-metrics--quad {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preview-metrics--stack {
+	grid-template-columns: 1fr;
+}
+
+.preview-metrics--user {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preview-metrics--user .preview-metric--rate {
+	grid-column: 1 / -1;
+}
+
+.preview-metric {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+	min-width: 0;
+	padding: 10px 6px 8px;
+	border-radius: 8px;
+	background: #f8fafc;
+	border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.preview-metric--highlight {
+	background: linear-gradient(145deg, #f5f3ff 0%, #ede9fe 100%);
+	border-color: rgba(124, 58, 237, 0.15);
+}
+
+.preview-metric--highlight .preview-metric-value {
+	color: #6d28d9;
+}
+
+.preview-metric--rate .preview-metric-value {
+	color: #1d4ed8;
+}
+
+.preview-metric-value {
+	font-size: clamp(18px, 1.6vw, 24px);
+	line-height: 1.15;
 	font-weight: 700;
+	color: #0f172a;
 	font-variant-numeric: tabular-nums;
-	word-break: break-word;
 }
 
-	.card-label {
-		margin-top: 6px;
-		font-size: 13px;
-		color: #64748b;
+.preview-metric-value--money {
+	font-size: clamp(15px, 1.35vw, 20px);
+}
+
+.preview-metric-unit {
+	font-size: 0.72em;
+	font-weight: 600;
+	margin-left: 1px;
+}
+
+.preview-metric-label {
+	margin-top: 5px;
+	font-size: 11px;
+	color: #64748b;
+	line-height: 1.3;
+}
+
+.preview-membership {
+	margin-top: 14px;
+	padding: 14px 14px 12px;
+	border-radius: 12px;
+	background: linear-gradient(145deg, #fafafa 0%, #f8fafc 100%);
+	border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.preview-membership-head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 12px;
+	flex-wrap: wrap;
+}
+
+.preview-membership-titles {
+	flex: 1;
+	min-width: 140px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.preview-membership-sub {
+	font-size: 11px;
+	color: #94a3b8;
+	line-height: 1.35;
+}
+
+.preview-membership-total {
+	font-size: 12px;
+	font-weight: 600;
+	color: #475569;
+	padding: 4px 10px;
+	border-radius: 999px;
+	background: #fff;
+	border: 1px solid rgba(148, 163, 184, 0.25);
+	font-variant-numeric: tabular-nums;
+}
+
+.preview-tier-grid {
+	display: grid;
+	grid-template-columns: repeat(6, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.preview-tier {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	padding: 12px 8px 10px;
+	border-radius: 10px;
+	border: 1px solid transparent;
+	min-width: 0;
+	transition: transform 0.15s ease;
+}
+
+.preview-tier:hover {
+	transform: translateY(-1px);
+}
+
+.preview-tier-count {
+	font-size: 22px;
+	font-weight: 700;
+	line-height: 1.1;
+	font-variant-numeric: tabular-nums;
+}
+
+.preview-tier-label {
+	margin-top: 6px;
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 1.2;
+}
+
+.preview-tier--normal {
+	background: #f1f5f9;
+	border-color: #e2e8f0;
+	color: #475569;
+}
+.preview-tier--normal .preview-tier-count { color: #334155; }
+
+.preview-tier--silver {
+	background: linear-gradient(145deg, #f8fafc 0%, #e2e8f0 100%);
+	border-color: #cbd5e1;
+	color: #64748b;
+}
+.preview-tier--silver .preview-tier-count { color: #475569; }
+
+.preview-tier--gold {
+	background: linear-gradient(145deg, #fffbeb 0%, #fef3c7 100%);
+	border-color: #fde68a;
+	color: #b45309;
+}
+.preview-tier--gold .preview-tier-count { color: #d97706; }
+
+.preview-tier--white_gold {
+	background: linear-gradient(145deg, #f0f9ff 0%, #e0f2fe 100%);
+	border-color: #bae6fd;
+	color: #0369a1;
+}
+.preview-tier--white_gold .preview-tier-count { color: #0284c7; }
+
+.preview-tier--diamond {
+	background: linear-gradient(145deg, #f5f3ff 0%, #ede9fe 100%);
+	border-color: #ddd6fe;
+	color: #6d28d9;
+}
+.preview-tier--diamond .preview-tier-count { color: #7c3aed; }
+
+.preview-tier--other {
+	background: linear-gradient(145deg, #fafaf9 0%, #f5f5f4 100%);
+	border-color: #e7e5e4;
+	color: #78716c;
+}
+.preview-tier--other .preview-tier-count { color: #57534e; }
+
+@media (max-width: 1200px) {
+	.preview-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
+}
+
+@media (max-width: 900px) {
+	.preview-tier-grid {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 560px) {
+	.preview-tier-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+	.preview-membership-total {
+		width: 100%;
+		text-align: center;
+	}
+}
 
 	.returns-card {
 		box-sizing: border-box;
@@ -854,8 +1224,14 @@
 		display: grid;
 		width: 100%;
 		min-width: 0;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
+		grid-template-columns: repeat(6, minmax(0, 1fr));
 		gap: 10px 12px;
+	}
+
+	@media (max-width: 900px) {
+		.returns-metrics--tier {
+			grid-template-columns: repeat(3, minmax(0, 1fr));
+		}
 	}
 
 	@media (max-width: 560px) {
@@ -1004,9 +1380,6 @@
 }
 
 	@media screen and (max-width: 1200px) {
-		.cards-row {
-			grid-template-columns: repeat(2, minmax(240px, 1fr));
-		}
 		.chart-grid {
 			grid-template-columns: 1fr;
 		}
@@ -1019,7 +1392,7 @@
 	}
 
 	@media screen and (max-width: 768px) {
-		.cards-row {
+		.preview-grid {
 			grid-template-columns: 1fr;
 		}
 		.panel-wrap {

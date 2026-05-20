@@ -29,6 +29,10 @@
 			"description": "是否参与统计与补贴（绑定后流水为true，未绑定仅落库为false）",
 			"default": true
 		},
+		"trade_member_bucket": {
+			"bsonType": "string",
+			"description": "首页资金汇总分档：member=充值会员刷卡，non_member=非充值会员刷卡；历史回填按当时商户当前身份，新流水在产生时写入"
+		},
 		"amount": { "bsonType": "number", "description": "交易金额" },
 		"is_activated": { "bsonType": "bool", "description": "是否激活" },
 		"total_transaction": { "bsonType": "number", "description": "累计交易（交易后）" },

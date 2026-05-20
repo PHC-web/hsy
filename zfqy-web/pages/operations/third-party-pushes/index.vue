@@ -295,6 +295,8 @@
 </template>
 
 <script>
+import { syncOpsListPageSize } from '../utils/sync-page-size.js';
+
 /** TYY0001 paychannel 展示（与星驿枚举一致） */
 const PAYCHANNEL_LABELS = {
 	'00': '未知，联系星驿支付排查',
@@ -579,6 +581,7 @@ export default {
 					const d = res.data || {};
 					const total = Number(d.total) || 0;
 					this.pageInfo.total = total;
+					syncOpsListPageSize(this.pageInfo, d);
 					const ps = Math.max(1, Number(this.pageInfo.pageSize) || 15);
 					const maxPage = Math.max(1, Math.ceil(total / ps) || 1);
 					const cur = Math.max(1, Number(this.pageInfo.currentPage) || 1);

@@ -10,6 +10,7 @@
 		"real_quota": { "bsonType": "number", "description": "实际额度", "default": 0 },
 		"price": { "bsonType": "number", "description": "套餐价格", "default": 0 },
 		"description": { "bsonType": "string", "description": "套餐说明" },
+		"brief_intro": { "bsonType": "string", "description": "套餐简介（H5 首页展示，非必填；未填时首页回退展示套餐说明）" },
 		"membership_name": { "bsonType": "string", "description": "会员名称（H5 展示，如白金会员、钻石会员）" },
 		"sort_order": { "bsonType": "number", "description": "排序值（越小越靠前）", "default": 0 },
 		"related_product_ids": {

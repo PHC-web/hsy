@@ -1,5 +1,6 @@
 'use strict';
 const { sm3 } = require('sm-crypto');
+const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
 
 /**
  * 国通星驿第三方数据推送接收
@@ -389,6 +390,20 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const releaseAmount = amount > 0 ? Number((cashback / installments).toFixed(4)) : 0;
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
+	let tradeMemberBucket = 'non_member';
+	if (bound && machine.bind_user_id) {
+		try {
+			const mr = await merchantCol
+				.where(db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }]))
+				.limit(1)
+				.get();
+			const mer = mr.data && mr.data[0];
+			if (mer) tradeMemberBucket = tradeMemberBucketForMerchant(mer);
+		} catch (e) {
+			console.error('maybeAddXingyiMachineTrade member bucket', e);
+		}
+	}
+
 	await machineTradesCol.add({
 		device_id: deviceId,
 		trade_no: String(d.logno),
@@ -402,6 +417,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		is_risk_trade: !!risk.is_risk,
 		risk_audit_status: risk.risk_audit_status,
 		stats_eligible: !!bound,
+		trade_member_bucket: tradeMemberBucket,
 		amount,
 		is_activated: !!activated,
 		total_transaction: newTotal,
