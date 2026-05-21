@@ -271,6 +271,7 @@ export default {
 			try {
 				const res = await h5AuthSync({
 					authMode: 'mock',
+					h5DevMock: true,
 					wxNickname: this.form.nickname || '微信用户',
 					wxAvatar: this.form.avatar || '',
 					mobile: ''

@@ -12,7 +12,7 @@
 		<view class="uni-container">
 			<view class="page-intro">
 				<text class="page-title">交易记录</text>
-				<text class="page-sub">仅展示已成功完成的充值、退款、提现记录（不含待审核/处理中/未确认）</text>
+				<text class="page-sub">仅展示已成功完成的充值、退款、提现记录（不含待审核/处理中/未确认）；未选完成时间时默认查询近 90 天</text>
 			</view>
 			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">
@@ -86,9 +86,16 @@ export default {
 		};
 	},
 	mounted() {
+		this.applyDefaultTimeRange();
 		this.search();
 	},
 	methods: {
+		applyDefaultTimeRange() {
+			const end = Date.now();
+			const start = end - 90 * 86400000;
+			this.searchForm.timeStart = start;
+			this.searchForm.timeEnd = end;
+		},
 		parseTimestampRange(filter) {
 			if (!Array.isArray(filter) || filter.length < 2) return { start: '', end: '' };
 			return { start: Number(filter[0]) || '', end: Number(filter[1]) || '' };
@@ -135,18 +142,31 @@ export default {
 				}
 				this.list = res.data?.list || [];
 				this.pageInfo.total = res.data?.total || 0;
+				if (res.data?.timeStart && res.data?.timeEnd) {
+					this.searchForm.timeStart = res.data.timeStart;
+					this.searchForm.timeEnd = res.data.timeEnd;
+				}
+				if (res.data?.truncated) {
+					uni.showToast({
+						title: '数据量较大，请缩小完成时间或筛选条件后查看更全结果',
+						icon: 'none',
+						duration: 3500
+					});
+				}
 			}).catch(() => {
 				this.loading = false;
 			});
 		},
 		reset() {
+			const end = Date.now();
+			const start = end - 90 * 86400000;
 			this.searchForm = {
 				bizType: '',
 				bizTypeList: [],
 				merchantKeyword: '',
 				orderNo: '',
-				timeStart: '',
-				timeEnd: ''
+				timeStart: start,
+				timeEnd: end
 			};
 			this.bizTypeFilterData = [
 				{ text: '充值', value: '充值', checked: false },

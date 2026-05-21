@@ -149,8 +149,11 @@
 								v-model.trim="formData.description"
 								type="textarea"
 								:autoHeight="true"
-								placeholder="如图，一千元限时享一百五十万奖励额度，提现额度高达5700"
+								placeholder="填写后将完整展示在 H5 额度包升级页，建议写清周期、额度与奖励，例如：每180天自动更新100万收款交易量奖励额度，提现奖励高达3800（政策周期 5 年）"
 							/>
+							<view class="desc-hint">
+								<text class="desc-hint-title">说明：此处文案会原样显示在商户 H5「额度包」页面（字号加大突出展示）。「套餐简介」仅用于 H5 首页卡片。</text>
+							</view>
 						</uni-forms-item>
 						<uni-forms-item label="会员名称">
 							<uni-easyinput v-model.trim="formData.membershipName" placeholder="H5 展示用，如：白金会员、钻石会员" />
@@ -250,7 +253,7 @@ export default {
 		previewTitle() {
 			const p = Number(this.formData.price || 0);
 			if (!p) return '';
-			return `${p}元套餐`;
+			return `预存 ${p} 元`;
 		},
 		productSelectOptions() {
 			return (this.productOptions || []).map((item) => ({
@@ -665,6 +668,30 @@ export default {
 	background: #111;
 	color: #fff;
 	font-size: 16px;
+}
+
+.desc-hint {
+	margin-top: 8px;
+	padding: 10px 12px;
+	border-radius: 8px;
+	background: #f5f7fa;
+	border: 1px solid #e4e7ed;
+}
+
+.desc-hint-title {
+	display: block;
+	font-size: 12px;
+	color: #606266;
+	margin-bottom: 6px;
+}
+
+.desc-hint-pre {
+	display: block;
+	font-size: 11px;
+	line-height: 1.5;
+	color: #909399;
+	white-space: pre-wrap;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .dialog-actions {

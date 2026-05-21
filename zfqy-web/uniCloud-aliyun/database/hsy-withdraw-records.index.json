@@ -1,0 +1,27 @@
+[
+	{
+		"IndexName": "arrival_status_paid_del_arrival_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "arrival_status",
+					"Direction": "1"
+				},
+				{
+					"Name": "is_paid",
+					"Direction": "1"
+				},
+				{
+					"Name": "is_deleted",
+					"Direction": "1"
+				},
+				{
+					"Name": "arrival_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	}
+]
