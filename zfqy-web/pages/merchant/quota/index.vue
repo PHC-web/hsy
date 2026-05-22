@@ -253,7 +253,7 @@ export default {
 		previewTitle() {
 			const p = Number(this.formData.price || 0);
 			if (!p) return '';
-			return `预存 ${p} 元`;
+			return `预存升级 ${p} 元`;
 		},
 		productSelectOptions() {
 			return (this.productOptions || []).map((item) => ({

@@ -7286,7 +7286,7 @@ const H5_RECHARGE_PACKAGES = [
 const DEFAULT_QUOTA_PACKAGES = [
 	{
 		package_id: 'pkg_600',
-		title: '预存 600 元',
+		title: '预存升级 600 元',
 		bonus_quota: '¥1000000.00',
 		real_quota: 3800,
 		price: 600,
@@ -7296,7 +7296,7 @@ const DEFAULT_QUOTA_PACKAGES = [
 	},
 	{
 		package_id: 'pkg_800',
-		title: '预存 800 元',
+		title: '预存升级 800 元',
 		bonus_quota: '¥1500000.00',
 		real_quota: 5700,
 		price: 800,
@@ -7306,7 +7306,7 @@ const DEFAULT_QUOTA_PACKAGES = [
 	},
 	{
 		package_id: 'pkg_1000',
-		title: '预存 1000 元',
+		title: '预存升级 1000 元',
 		bonus_quota: '¥2000000.00',
 		real_quota: 7600,
 		price: 1000,
@@ -7322,11 +7322,11 @@ function parseBonusQuotaYuan(raw) {
 	return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** 额度包标题：与后台表单预览一致，如「预存 600 元」 */
+/** 额度包标题：与后台表单预览一致，如「预存升级 600 元」 */
 function buildQuotaPackageTitle(price) {
 	const p = Number(price || 0);
 	if (!Number.isFinite(p) || p <= 0) return '';
-	return `预存 ${p} 元`;
+	return `预存升级 ${p} 元`;
 }
 
 /** 从免额度金额推导「100万」类展示值 */
@@ -11909,7 +11909,8 @@ async function feedbackMapMessageRow(row) {
 		images: imgResolved,
 		videoUrl,
 		videoFileID: row.video || '',
-		adminName: normalizeFeedbackAdminName(row.admin_name),
+		// admin_name 仅存库追溯；对 H5/管理端接口统一展示「客服」
+		adminName: row.role === 'admin' ? '客服' : '',
 		createTime: row.create_time,
 		createTimeText: formatTime(row.create_time)
 	};

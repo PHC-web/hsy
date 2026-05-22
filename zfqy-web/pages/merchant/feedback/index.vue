@@ -78,7 +78,7 @@
 							:class="m.role === 'user' ? 'dm-row--user' : 'dm-row--admin'"
 						>
 							<view class="dm-bubble" :class="m.role === 'user' ? 'dm-bubble--user' : 'dm-bubble--admin'">
-								<text v-if="m.role === 'admin'" class="dm-meta">客服 · {{ displayAdminName(m) }}</text>
+								<text v-if="m.role === 'admin'" class="dm-meta">客服</text>
 								<text v-if="m.role === 'user'" class="dm-meta">用户</text>
 								<text v-if="m.content" class="dm-text">{{ m.content }}</text>
 								<view v-if="m.images && m.images.length" class="dm-imgs">
@@ -179,11 +179,6 @@ export default {
 			const u = uniIdStore.userInfo || {};
 			const n = String(u.nickname || u.username || '').trim();
 			return n || '管理员';
-		},
-		displayAdminName(m) {
-			const n = String((m && m.adminName) || '').trim();
-			if (!n || n === 'system') return '管理员';
-			return n;
 		},
 		search() {
 			this.pageInfo.currentPage = 1;

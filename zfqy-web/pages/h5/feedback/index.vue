@@ -36,7 +36,7 @@
 					:class="m.role === 'user' ? 'msg-row--user' : 'msg-row--admin'"
 				>
 					<view class="bubble h5-glass-panel" :class="m.role === 'user' ? 'bubble--user' : 'bubble--admin'">
-						<text v-if="m.role === 'admin'" class="bubble-meta">客服 · {{ displayAdminName(m) }}</text>
+						<text v-if="m.role === 'admin'" class="bubble-meta">客服</text>
 						<text v-if="m.content && !m.refundEntryPath" class="bubble-text">{{ m.content }}</text>
 						<view v-if="m.images && m.images.length" class="img-grid">
 							<image
@@ -142,11 +142,6 @@ export default {
 		}
 	},
 	methods: {
-		displayAdminName(m) {
-			const n = String((m && m.adminName) || '').trim();
-			if (!n || n === 'system') return '管理员';
-			return n;
-		},
 		goBack() {
 			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' }) });
 		},

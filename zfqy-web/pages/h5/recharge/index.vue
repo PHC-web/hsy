@@ -27,27 +27,13 @@
 							:class="selectedId === item.id ? 'pkg-active' : ''"
 							@click="onSelectPackage(item)"
 						>
-							<view
-								v-if="item.descText"
-								class="pkg-desc"
-								:class="selectedId === item.id ? 'pkg-desc--active' : ''"
-							>
-								
-								<text class="pkg-desc-body">{{ item.descText }}</text>
+							<view class="pkg-head">
+								<text class="pkg-title">{{ item.title }}</text>
+								<text class="pkg-price">¥{{ item.price }}</text>
 							</view>
-
-							<view class="pkg-top">
-								<view class="pkg-top-main">
-									<text class="pkg-title">{{ item.title }}</text>
-									<text v-if="item.membershipName" class="pkg-member">会员 · {{ item.membershipName }}</text>
-								</view>
-								<view class="pkg-top-side">
-									<text class="pkg-price">¥{{ item.price }}</text>
-									<text class="pkg-check" :class="selectedId === item.id ? 'pkg-check--on' : ''">{{ selectedId === item.id ? '✓' : '' }}</text>
-								</view>
-							</view>
-
-							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价 ¥{{ item.price - currentPackage.price }}</text>
+							<text v-if="item.membershipName" class="pkg-member">会员：{{ item.membershipName }}</text>
+							<text v-if="item.benefitTip" class="pkg-tip">{{ item.benefitTip }}</text>
+							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价：¥{{ item.price - currentPackage.price }}</text>
 						</view>
 					</view>
 
@@ -85,7 +71,6 @@
 
 <script>
 import { h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefreshHomeCache } from '@/pages/h5/common/api';
-import { quotaDescriptionForH5Display } from '@/pages/h5/common/quota-description';
 import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
@@ -139,12 +124,6 @@ export default {
 			this.selectedId = item.id;
 			this.syncGiftChoice();
 		},
-		packageDescText(item) {
-			if (!item) return '';
-			const fromApi = String(item.benefitText || '').trim();
-			if (fromApi) return fromApi;
-			return quotaDescriptionForH5Display(item.benefitTip || '');
-		},
 		async initPage() {
 			this.rechargeReady = false;
 			this.gateText = '加载中…';
@@ -164,11 +143,7 @@ export default {
 				}
 				return;
 			}
-				const raw = (res.data && res.data.packages) || [];
-				this.packages = raw.map((p) => ({
-					...p,
-					descText: this.packageDescText(p)
-				}));
+			this.packages = (res.data && res.data.packages) || [];
 			this.currentPackage = res.data?.currentPackage || null;
 			this.refundCycleDays = Number(res.data?.refundCycle?.cycleDays || 180);
 			this.refundWindowDays = Number(res.data?.refundCycle?.windowDays || 3);
@@ -347,14 +322,11 @@ export default {
 }
 
 .pkg {
-	border: 1px solid rgba(255, 255, 255, 0.14);
-	border-radius: 16px;
-	padding: 14px 14px 12px;
-	margin-bottom: 12px;
-	background: rgba(15, 23, 42, 0.3);
-	display: flex;
-	flex-direction: column;
-	gap: 0;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	border-radius: 14px;
+	padding: 12px;
+	margin-bottom: 10px;
+	background: rgba(15, 23, 42, 0.25);
 }
 
 .pkg:last-child {
@@ -362,135 +334,55 @@ export default {
 }
 
 .pkg-active {
-	border-color: rgba(129, 140, 248, 0.75);
-	background: linear-gradient(145deg, rgba(99, 102, 241, 0.22) 0%, rgba(15, 23, 42, 0.35) 100%);
-	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.28), 0 12px 32px rgba(79, 70, 229, 0.18);
+	border-color: rgba(129, 140, 248, 0.65);
+	background: rgba(99, 102, 241, 0.18);
+	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2);
 }
 
-.pkg-top {
+.pkg-head {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
-	gap: 10px;
-	padding-top: 4px;
-}
-
-.pkg-top-main {
-	flex: 1;
-	min-width: 0;
-}
-
-.pkg-top-side {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	flex-shrink: 0;
 }
 
 .pkg-member {
 	display: block;
-	margin-top: 4px;
+	margin-top: 6px;
 	font-size: 12px;
 	color: rgba(192, 132, 252, 0.95);
-	letter-spacing: 0.02em;
 }
 
 .pkg-title {
 	font-size: 16px;
 	font-weight: 700;
-	color: #e2e8f0;
-	letter-spacing: 0.02em;
+	color: #f1f5f9;
 }
 
 .pkg-price {
 	font-size: 18px;
-	font-weight: 800;
-	color: #fda4af;
-}
-
-.pkg-check {
-	width: 22px;
-	height: 22px;
-	border-radius: 50%;
-	border: 1px solid rgba(255, 255, 255, 0.2);
-	display: flex;
-	align-items: center;
-	justify-content: center;
-	font-size: 12px;
 	font-weight: 700;
-	color: transparent;
-	background: rgba(15, 23, 42, 0.4);
+	color: #fca5a5;
 }
 
-.pkg-check--on {
-	color: #fff;
-	border-color: rgba(129, 140, 248, 0.9);
-	background: linear-gradient(145deg, #6366f1, #4f46e5);
-	box-shadow: 0 0 12px rgba(99, 102, 241, 0.45);
-}
-
-.pkg-desc {
-	margin-top: 0;
-	margin-bottom: 12px;
-	padding: 16px 16px 18px;
-	border-radius: 14px;
-	background: linear-gradient(160deg, rgba(30, 58, 95, 0.55) 0%, rgba(15, 23, 42, 0.75) 100%);
-	border: 1px solid rgba(125, 211, 252, 0.35);
-	border-left: 4px solid rgba(56, 189, 248, 0.85);
-	box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
-}
-
-.pkg-desc--active {
-	border-color: rgba(250, 204, 21, 0.5);
-	border-left-color: #fbbf24;
-	background: linear-gradient(160deg, rgba(66, 48, 12, 0.45) 0%, rgba(30, 27, 75, 0.65) 100%);
-	box-shadow: 0 0 0 1px rgba(250, 204, 21, 0.15), 0 12px 36px rgba(99, 102, 241, 0.2);
-}
-
-.pkg-desc-head {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	margin-bottom: 12px;
-	padding-bottom: 10px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.12);
-}
-
-.pkg-desc-title {
-	font-size: 16px;
-	font-weight: 800;
-	color: #fde68a;
-	letter-spacing: 0.06em;
-}
-
-.pkg-desc-body {
+.pkg-tip {
 	display: block;
-	font-size: 16px;
-	font-weight: 600;
-	line-height: 1.75;
-	color: #f8fafc;
-	letter-spacing: 0.02em;
+	margin-top: 8px;
+	color: #f1f5f9;
+	font-size: 13px;
+	font-weight: 900;
+	line-height: 1.55;
 	white-space: pre-wrap;
 	word-break: break-word;
-	text-align: left;
-}
-
-.pkg-desc--active .pkg-desc-body {
-	color: #fff;
-	font-size: 17px;
+	/* 部分系统字库无 900 字重时，用轻微描边阴影增强粗细 */
+	text-shadow: 0.25px 0 0 currentColor, -0.25px 0 0 currentColor;
+	-webkit-text-stroke: 0.2px rgba(241, 245, 249, 0.35);
 }
 
 .pkg-upgrade {
 	display: block;
-	margin-top: 10px;
-	padding: 6px 10px;
-	border-radius: 8px;
-	text-align: center;
-	color: #c7d2fe;
+	margin-top: 6px;
+	color: #a5b4fc;
 	font-size: 12px;
-	font-weight: 600;
-	background: rgba(99, 102, 241, 0.15);
-	border: 1px solid rgba(129, 140, 248, 0.25);
 }
 
 .actions {

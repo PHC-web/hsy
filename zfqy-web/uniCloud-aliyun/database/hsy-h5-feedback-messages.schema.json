@@ -18,7 +18,7 @@
 			"items": { "bsonType": "string" }
 		},
 		"video": { "bsonType": "string", "description": "单个视频 fileID" },
-		"admin_name": { "bsonType": "string", "description": "管理员回复显示名" },
+		"admin_name": { "bsonType": "string", "description": "管理员回复操作人（仅库内追溯，H5/后台界面统一展示「客服」）" },
 		"create_time": { "bsonType": "timestamp" },
 		"is_deleted": { "bsonType": "bool", "default": false }
 	}
