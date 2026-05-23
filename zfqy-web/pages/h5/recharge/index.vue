@@ -27,13 +27,26 @@
 							:class="selectedId === item.id ? 'pkg-active' : ''"
 							@click="onSelectPackage(item)"
 						>
-							<view class="pkg-head">
-								<text class="pkg-title">{{ item.title }}</text>
-								<text class="pkg-price">¥{{ item.price }}</text>
+							<view
+								v-if="item.descText"
+								class="pkg-desc"
+								:class="packageDescTierClass(item)"
+							>
+								<text class="pkg-desc-body">{{ item.descText }}</text>
 							</view>
-							<text v-if="item.membershipName" class="pkg-member">会员：{{ item.membershipName }}</text>
-							<text v-if="item.benefitTip" class="pkg-tip">{{ item.benefitTip }}</text>
-							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价：¥{{ item.price - currentPackage.price }}</text>
+
+							<view class="pkg-top">
+								<view class="pkg-top-main">
+									<text class="pkg-title">{{ item.title }}</text>
+									<text v-if="item.membershipName" class="pkg-member">会员 · {{ item.membershipName }}</text>
+								</view>
+								<view class="pkg-top-side">
+									<text class="pkg-price">¥{{ item.price }}</text>
+									<text class="pkg-check" :class="selectedId === item.id ? 'pkg-check--on' : ''">{{ selectedId === item.id ? '✓' : '' }}</text>
+								</view>
+							</view>
+
+							<text class="pkg-upgrade" v-if="currentPackage && item.price > currentPackage.price">升级仅需补差价 ¥{{ item.price - currentPackage.price }}</text>
 						</view>
 					</view>
 
@@ -124,6 +137,24 @@ export default {
 			this.selectedId = item.id;
 			this.syncGiftChoice();
 		},
+		packageDescText(item) {
+			if (!item) return '';
+			const tip = String(item.benefitTip || '').trim();
+			if (tip) return tip;
+			return String(item.benefitText || '').trim();
+		},
+		packageDescTierClass(item) {
+			const name = String(item?.membershipName || '').trim();
+			if (name.includes('钻石')) return 'pkg-desc--diamond';
+			if (name.includes('白金')) return 'pkg-desc--white-gold';
+			if (name.includes('铂金')) return 'pkg-desc--platinum';
+			if (name.includes('黄金')) return 'pkg-desc--gold';
+			const price = Number(item?.price || 0);
+			if (price >= 1000 || price === 0.2) return 'pkg-desc--diamond';
+			if (price >= 800) return 'pkg-desc--white-gold';
+			if (price >= 600 || price === 0.1) return 'pkg-desc--gold';
+			return 'pkg-desc--default';
+		},
 		async initPage() {
 			this.rechargeReady = false;
 			this.gateText = '加载中…';
@@ -143,7 +174,11 @@ export default {
 				}
 				return;
 			}
-			this.packages = (res.data && res.data.packages) || [];
+			const raw = (res.data && res.data.packages) || [];
+			this.packages = raw.map((p) => ({
+				...p,
+				descText: this.packageDescText(p)
+			}));
 			this.currentPackage = res.data?.currentPackage || null;
 			this.refundCycleDays = Number(res.data?.refundCycle?.cycleDays || 180);
 			this.refundWindowDays = Number(res.data?.refundCycle?.windowDays || 3);
@@ -322,11 +357,14 @@ export default {
 }
 
 .pkg {
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	border-radius: 14px;
-	padding: 12px;
-	margin-bottom: 10px;
-	background: rgba(15, 23, 42, 0.25);
+	border: 1px solid rgba(255, 255, 255, 0.14);
+	border-radius: 16px;
+	padding: 14px 14px 12px;
+	margin-bottom: 12px;
+	background: rgba(15, 23, 42, 0.3);
+	display: flex;
+	flex-direction: column;
+	gap: 0;
 }
 
 .pkg:last-child {
@@ -334,55 +372,134 @@ export default {
 }
 
 .pkg-active {
-	border-color: rgba(129, 140, 248, 0.65);
-	background: rgba(99, 102, 241, 0.18);
-	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.2);
+	border-color: rgba(129, 140, 248, 0.75);
+	background: linear-gradient(145deg, rgba(99, 102, 241, 0.22) 0%, rgba(15, 23, 42, 0.35) 100%);
+	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.28), 0 12px 32px rgba(79, 70, 229, 0.18);
 }
 
-.pkg-head {
+.pkg-top {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
+	gap: 10px;
+	padding-top: 4px;
+}
+
+.pkg-top-main {
+	flex: 1;
+	min-width: 0;
+}
+
+.pkg-top-side {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
 }
 
 .pkg-member {
 	display: block;
-	margin-top: 6px;
+	margin-top: 4px;
 	font-size: 12px;
 	color: rgba(192, 132, 252, 0.95);
+	letter-spacing: 0.02em;
 }
 
 .pkg-title {
 	font-size: 16px;
 	font-weight: 700;
-	color: #f1f5f9;
+	color: #e2e8f0;
+	letter-spacing: 0.02em;
 }
 
 .pkg-price {
 	font-size: 18px;
-	font-weight: 700;
-	color: #fca5a5;
+	font-weight: 800;
+	color: #fda4af;
 }
 
-.pkg-tip {
+.pkg-check {
+	width: 22px;
+	height: 22px;
+	border-radius: 50%;
+	border: 1px solid rgba(255, 255, 255, 0.2);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 12px;
+	font-weight: 700;
+	color: transparent;
+	background: rgba(15, 23, 42, 0.4);
+}
+
+.pkg-check--on {
+	color: #fff;
+	border-color: rgba(129, 140, 248, 0.9);
+	background: linear-gradient(145deg, #6366f1, #4f46e5);
+	box-shadow: 0 0 12px rgba(99, 102, 241, 0.45);
+}
+
+.pkg-desc {
+	margin-top: 0;
+	margin-bottom: 12px;
+	padding: 16px 16px 18px;
+	border-radius: 14px;
+	box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+}
+
+/* 黄金：暖金色 */
+.pkg-desc--gold {
+	background: linear-gradient(160deg, rgba(66, 48, 12, 0.4) 0%, rgba(15, 23, 42, 0.75) 100%);
+	border: 1px solid rgba(250, 204, 21, 0.42);
+	border-left: 4px solid rgba(251, 191, 36, 0.92);
+}
+
+/* 白金：银灰 */
+.pkg-desc--white-gold {
+	background: linear-gradient(160deg, rgba(71, 85, 105, 0.48) 0%, rgba(15, 23, 42, 0.78) 100%);
+	border: 1px solid rgba(226, 232, 240, 0.48);
+	border-left: 4px solid rgba(203, 213, 225, 0.95);
+}
+
+/* 铂金（若后台使用该名称） */
+.pkg-desc--platinum {
+	background: linear-gradient(160deg, rgba(76, 29, 149, 0.35) 0%, rgba(15, 23, 42, 0.78) 100%);
+	border: 1px solid rgba(192, 132, 252, 0.45);
+	border-left: 4px solid rgba(168, 85, 247, 0.9);
+}
+
+/* 钻石 / 默认：青蓝 */
+.pkg-desc--diamond,
+.pkg-desc--default {
+	background: linear-gradient(160deg, rgba(30, 58, 95, 0.55) 0%, rgba(15, 23, 42, 0.75) 100%);
+	border: 1px solid rgba(125, 211, 252, 0.35);
+	border-left: 4px solid rgba(56, 189, 248, 0.85);
+}
+
+.pkg-desc-body {
 	display: block;
-	margin-top: 8px;
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 1.75;
 	color: #f1f5f9;
-	font-size: 13px;
-	font-weight: 900;
-	line-height: 1.55;
+	letter-spacing: 0.01em;
 	white-space: pre-wrap;
 	word-break: break-word;
-	/* 部分系统字库无 900 字重时，用轻微描边阴影增强粗细 */
-	text-shadow: 0.25px 0 0 currentColor, -0.25px 0 0 currentColor;
-	-webkit-text-stroke: 0.2px rgba(241, 245, 249, 0.35);
+	text-align: left;
+	-webkit-font-smoothing: antialiased;
 }
 
 .pkg-upgrade {
 	display: block;
-	margin-top: 6px;
-	color: #a5b4fc;
+	margin-top: 10px;
+	padding: 6px 10px;
+	border-radius: 8px;
+	text-align: center;
+	color: #c7d2fe;
 	font-size: 12px;
+	font-weight: 600;
+	background: rgba(99, 102, 241, 0.15);
+	border: 1px solid rgba(129, 140, 248, 0.25);
 }
 
 .actions {

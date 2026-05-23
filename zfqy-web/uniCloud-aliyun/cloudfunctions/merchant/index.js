@@ -4295,19 +4295,19 @@ function ensureWxRechargePayConfig() {
 		return {
 			ok: false,
 			message:
-				'充值商户微信支付参数未配置完整（WX_PAY_RECHARGE_* 未填时回退 WX_PAY_*：商户号/AppID/证书序列号/私钥）'
+				'升级商户微信支付参数未配置完整（WX_PAY_RECHARGE_* 未填时回退 WX_PAY_*：商户号/AppID/证书序列号/私钥）'
 		};
 	}
 	if (!c.mchApiV3Key || String(c.mchApiV3Key).length !== 32) {
 		return {
 			ok: false,
-			message: '充值商户 APIv3 密钥必须是32位（WX_PAY_RECHARGE_MCH_API_V3_KEY 或回退的 WX_PAY_MCH_API_V3_KEY）'
+			message: '升级商户 APIv3 密钥必须是32位（WX_PAY_RECHARGE_MCH_API_V3_KEY 或回退的 WX_PAY_MCH_API_V3_KEY）'
 		};
 	}
 	if (!c.platformCert) {
 		return {
 			ok: false,
-			message: '充值商户未配置微信平台证书（WX_PAY_RECHARGE_PLATFORM_CERT 或回退的 WX_PAY_PLATFORM_CERT）'
+			message: '升级商户未配置微信平台证书（WX_PAY_RECHARGE_PLATFORM_CERT 或回退的 WX_PAY_PLATFORM_CERT）'
 		};
 	}
 	if (!isValidNotifyUrl(H5_PAY_NOTIFY_URL)) {

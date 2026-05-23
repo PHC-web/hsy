@@ -195,10 +195,10 @@
 					</view>
 					<view class="chart-card">
 						<view class="chart-head">
-							<view class="chart-title">新增商户 / 充值商户</view>
+							<view class="chart-title">新增商户 / 升级商户</view>
 							<view class="chart-summary chart-summary--multi">
-								<view>{{ trendRangeLabel }}累计新增绑定：{{ trendSummary.totalBindMerchantCount || 0 }} ｜ {{ trendRangeLabel }}累计充值商户：{{ trendSummary.totalRechargeMerchantCount || 0 }}</view>
-								<view>历史累计新增绑定：{{ trendSummary.allTimeBindMerchantCount || 0 }} ｜ 历史累计充值商户：{{ trendSummary.allTimeRechargeMerchantCount || 0 }}</view>
+								<view>{{ trendRangeLabel }}累计新增绑定：{{ trendSummary.totalBindMerchantCount || 0 }} ｜ {{ trendRangeLabel }}累计升级商户：{{ trendSummary.totalRechargeMerchantCount || 0 }}</view>
+								<view>历史累计新增绑定：{{ trendSummary.allTimeBindMerchantCount || 0 }} ｜ 历史累计升级商户：{{ trendSummary.allTimeRechargeMerchantCount || 0 }}</view>
 							</view>
 						</view>
 						<view ref="bindChart" class="echart-box"></view>
@@ -677,7 +677,7 @@
 				this.disposeEcharts();
 				const refs = [
 					{ el: this.$refs.flowChart, model: this.trendCharts.flow, title: '每日交易额（与刷卡记录一致）' },
-					{ el: this.$refs.bindChart, model: this.trendCharts.bindRechargeUsers, title: '每日新增绑定商户 / 每日充值商户' },
+					{ el: this.$refs.bindChart, model: this.trendCharts.bindRechargeUsers, title: '每日新增绑定商户 / 每日升级商户' },
 					{ el: this.$refs.rechargeChart, model: this.trendCharts.rechargeRefund, title: '每日充值金额 / 每日退款笔数' },
 					{ el: this.$refs.exchangeChart, model: this.trendCharts.exchange, title: '每日积分兑换数量 / 兑换到账金额' },
 					{ el: this.$refs.tradeTypeChart, model: this.trendCharts.tradeType, title: '不同交易类型次数及金额', custom: 'tradeType' }
@@ -730,7 +730,7 @@
 					]);
 					this.trendCharts.bindRechargeUsers = this.buildLineData(categories, [
 						{ name: '新增绑定商户数', data: s.newBindMerchantCount || [] },
-						{ name: '充值商户数', data: s.rechargeMerchantCount || [] }
+						{ name: '升级商户数', data: s.rechargeMerchantCount || [] }
 					]);
 					this.trendCharts.rechargeRefund = this.buildLineData(categories, [
 						{ name: '充值金额(元)', data: s.rechargeAmount || [] },
