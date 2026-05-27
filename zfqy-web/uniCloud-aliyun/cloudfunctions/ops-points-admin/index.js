@@ -8,6 +8,9 @@ const db = uniCloud.database();
 const _ = db.command;
 const incomePacketCollection = db.collection('hsy-income-packets');
 const merchantCollection = db.collection('hsy-merchant-users');
+const operationLogCollection = db.collection('hsy-operation-logs');
+
+const MEMBER_UPGRADE_POINTS_CLEAR_ACTION = 'member_upgrade_points_clear';
 
 function safeText(v, max = 200) {
 	return String(v == null ? '' : v)
@@ -192,6 +195,110 @@ async function opsIncomePacketsList(data = {}) {
 	};
 }
 
+function upgradeKindLabel(kind) {
+	const map = {
+		exchange_code_silver: '兑换码→白银',
+		paid_recharge: '付费→充值会员'
+	};
+	return map[String(kind || '')] || String(kind || '-');
+}
+
+async function opsMemberUpgradeClearLogsList(data = {}) {
+	const page = Math.max(1, Number(data.page) || 1);
+	const pageSize = Math.min(1000, Math.max(1, Number(data.pageSize) || 20));
+	const keyword = safeText(data.keyword, 100);
+	const timeStart = data.timeStart;
+	const timeEnd = data.timeEnd;
+
+	const whereParts = [{ action: MEMBER_UPGRADE_POINTS_CLEAR_ACTION }];
+	const tr = buildTimeRangeWhere('create_time', timeStart, timeEnd);
+	if (tr) whereParts.push(tr);
+	if (keyword) {
+		const r = new RegExp(escapeReg(keyword), 'i');
+		whereParts.push(
+			_.or([
+				{ user_id: r },
+				{ user_name: r },
+				{ target_id: r },
+				{ target_name: r },
+				{ content: r },
+				{ target_membership_name: r },
+				{ platform_no: r }
+			])
+		);
+	}
+	const where = whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
+
+	let total = 0;
+	try {
+		const countRes = await operationLogCollection.where(where).count();
+		total = countRes.total || 0;
+	} catch (e) {
+		console.error('opsMemberUpgradeClearLogsList count', e);
+	}
+
+	const skip = (page - 1) * pageSize;
+	let rows = [];
+	try {
+		const listRes = await operationLogCollection
+			.where(where)
+			.orderBy('create_time', 'desc')
+			.skip(skip)
+			.limit(pageSize)
+			.get();
+		rows = listRes.data || [];
+	} catch (e) {
+		console.error('opsMemberUpgradeClearLogsList get', e);
+		return { code: 500, message: e.message || '查询失败' };
+	}
+
+	const userIds = [...new Set(rows.map((x) => String(x.user_id || '')).filter(Boolean))];
+	const merchantMap = new Map();
+	if (userIds.length) {
+		try {
+			const mr = await merchantCollection
+				.where({ user_id: _.in(userIds) })
+				.field({ user_id: true, wx_nickname: true, mobile: true })
+				.get();
+			(mr.data || []).forEach((m) => {
+				merchantMap.set(String(m.user_id || ''), m);
+			});
+		} catch (e) {
+			console.error('opsMemberUpgradeClearLogsList merchants', e);
+		}
+	}
+
+	const list = rows.map((row) => {
+		const mid = String(row.user_id || '');
+		const m = merchantMap.get(mid) || {};
+		const clearedAp = Number(row.cleared_account_points != null ? row.cleared_account_points : 0);
+		const clearedFrozen = Number(row.cleared_frozen_amount != null ? row.cleared_frozen_amount : 0);
+		return {
+			_id: row._id,
+			merchant_user_id: mid,
+			merchant_name: String(m.wx_nickname || row.user_name || '').trim() || '-',
+			merchant_mobile: String(m.mobile || '').trim() || '-',
+			upgrade_kind: row.upgrade_kind || '',
+			upgrade_kind_label: upgradeKindLabel(row.upgrade_kind),
+			target_membership_name: row.target_membership_name || '-',
+			cleared_account_points: clearedAp,
+			cleared_account_points_text: clearedAp.toFixed(2),
+			cleared_frozen_amount: clearedFrozen,
+			cleared_frozen_amount_text: clearedFrozen.toFixed(2),
+			platform_no: row.platform_no || '',
+			content: row.content || '',
+			operator_source: row.operator_source || '',
+			create_time: row.create_time || null
+		};
+	});
+
+	return {
+		code: 0,
+		message: 'ok',
+		data: { list, total, page, pageSize }
+	};
+}
+
 async function opsIncomePacketDetail(data = {}) {
 	const id = safeText(data.id, 80);
 	if (!id) return { code: 400, message: '缺少 id' };
@@ -238,6 +345,8 @@ exports.main = async (event) => {
 			return await opsIncomePacketsList(actualData);
 		case 'opsIncomePacketDetail':
 			return await opsIncomePacketDetail(actualData);
+		case 'opsMemberUpgradeClearLogsList':
+			return await opsMemberUpgradeClearLogsList(actualData);
 		default:
 			return { code: 400, message: '无效操作' };
 	}

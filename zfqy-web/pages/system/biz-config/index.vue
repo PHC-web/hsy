@@ -21,6 +21,40 @@
 				<text class="intro-text">其中“退款周期”仅对新充值用户生效，已充值用户沿用原规则。</text>
 			</view>
 
+			<view class="card card-wx-mch">
+				<view class="card-title">微信支付商户号（升级 / 退款 / 提现）</view>
+				<text class="card-tip">切换后立即生效：新发起的充值、退款商家转账、积分提现将使用所选商户号及对应证书。历史订单仍按下单时记录的商户号处理。</text>
+				<view class="wx-mch-table">
+					<view class="wx-mch-head">
+						<text class="wx-mch-col-scene">业务场景</text>
+						<text class="wx-mch-col-opt">商户号选择</text>
+					</view>
+					<view v-for="row in wxPayMchRows" :key="row.key" class="wx-mch-row">
+						<view class="wx-mch-scene">
+							<text class="wx-mch-scene-title">{{ row.title }}</text>
+							<text class="wx-mch-scene-desc">{{ row.desc }}</text>
+						</view>
+						<view class="wx-mch-opts">
+							<button
+								v-for="opt in wxPayMchOptions"
+								:key="row.key + opt.mchId"
+								size="mini"
+								:type="form.wxPayMch[row.key] === opt.mchId ? 'primary' : 'default'"
+								@click="pickWxPayMch(row.key, opt.mchId)"
+							>
+								{{ opt.label }}（{{ opt.mchId }}）
+							</button>
+						</view>
+					</view>
+				</view>
+				<view class="wx-mch-summary">
+					<text>当前生效：</text>
+					<text>升级 {{ wxMchLabel(form.wxPayMch.recharge) }}</text>
+					<text>退款 {{ wxMchLabel(form.wxPayMch.refund) }}</text>
+					<text>提现 {{ wxMchLabel(form.wxPayMch.withdraw) }}</text>
+				</view>
+			</view>
+
 			<view class="card">
 				<view class="card-title">1）积分兑换区间</view>
 				<text class="card-tip">用于“奖励提现”页单笔兑换范围控制；最低值按提现次数分段生效。</text>
@@ -173,7 +207,14 @@
 </template>
 
 <script>
+const defaultWxPayMch = () => ({
+	recharge: '1111130439',
+	refund: '1646399792',
+	withdraw: '1646399792'
+});
+
 const defaultForm = () => ({
+	wxPayMch: defaultWxPayMch(),
 	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
 	withdrawMinByCount: {
 		memberFirst3: 10,
@@ -197,23 +238,68 @@ const defaultForm = () => ({
 
 export default {
 	data() {
-		return { loading: false, saving: false, form: defaultForm(), egressIp: '' };
+		return {
+			loading: false,
+			saving: false,
+			form: defaultForm(),
+			egressIp: '',
+			wxPayMchOptions: [
+				{ mchId: '1111130439', label: '帆帆电子' },
+				{ mchId: '1646399792', label: '志帆科技' }
+			]
+		};
+	},
+	computed: {
+		wxPayMchRows() {
+			return [
+				{
+					key: 'recharge',
+					title: '升级（充值）',
+					desc: 'H5 会员套餐 JSAPI 支付、支付回调入账'
+				},
+				{
+					key: 'refund',
+					title: '退款',
+					desc: 'H5 充值退款商家转账（用户确认收款）'
+				},
+				{
+					key: 'withdraw',
+					title: '提现',
+					desc: 'H5 积分兑换提现商家转账'
+				}
+			];
+		}
 	},
 	mounted() {
 		this.load();
 	},
 	methods: {
+		wxMchLabel(mchId) {
+			const hit = this.wxPayMchOptions.find((x) => x.mchId === mchId);
+			return hit ? `${hit.label}（${hit.mchId}）` : mchId || '-';
+		},
+		pickWxPayMch(scene, mchId) {
+			if (!this.form.wxPayMch) this.form.wxPayMch = defaultWxPayMch();
+			this.form.wxPayMch[scene] = mchId;
+		},
 		async load() {
 			this.loading = true;
 			try {
 				const res = await this.$request('bizConfigGet', {}, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 				const merged = Object.assign(defaultForm(), res.data || {});
+				if (Array.isArray(res.data?.wxPayMchOptions) && res.data.wxPayMchOptions.length) {
+					this.wxPayMchOptions = res.data.wxPayMchOptions;
+				}
+				merged.wxPayMch = Object.assign(defaultWxPayMch(), merged.wxPayMch || {});
 				const ids = Array.isArray(merged.testMerchantIds) ? merged.testMerchantIds : [];
 				merged.testMerchantIdsText = ids.join('\n');
 				const ruleLines = Array.isArray(merged.h5RefundRuleLines) ? merged.h5RefundRuleLines : [];
 				merged.refundRuleLinesText = ruleLines.join('\n');
 				delete merged.h5RefundRuleLines;
+				delete merged.wxPayMchOptions;
+				delete merged.wxPayMchDefaults;
+				delete merged.wxPayMchEffective;
 				this.form = merged;
 			} finally {
 				this.loading = false;
@@ -307,8 +393,35 @@ export default {
 .field-row-switch switch { align-self: flex-start; }
 .field-hint { font-size: 11px; color: #909399; line-height: 1.45; margin-top: 2px; }
 .label { font-size: 12px; color: #606266; }
+.card-wx-mch { border-color: #d9ecff; background: linear-gradient(180deg, #f5faff 0%, #fff 48px); }
+.wx-mch-table { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.wx-mch-head { display: none; }
+.wx-mch-row {
+	display: grid;
+	grid-template-columns: minmax(160px, 220px) 1fr;
+	gap: 12px;
+	align-items: center;
+	padding: 10px 0;
+	border-bottom: 1px dashed #ebeef5;
+}
+.wx-mch-row:last-child { border-bottom: none; }
+.wx-mch-scene-title { display: block; font-size: 13px; font-weight: 700; color: #303133; }
+.wx-mch-scene-desc { display: block; margin-top: 4px; font-size: 11px; color: #909399; line-height: 1.45; }
+.wx-mch-opts { display: flex; flex-wrap: wrap; gap: 8px; }
+.wx-mch-opts button { margin: 0; }
+.wx-mch-summary {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	font-size: 12px;
+	color: #606266;
+	padding-top: 8px;
+	border-top: 1px solid #ebeef5;
+}
+.wx-mch-summary text:first-child { font-weight: 700; color: #303133; }
 
 @media (max-width: 1200px) {
 	.form-grid { grid-template-columns: 1fr; }
+	.wx-mch-row { grid-template-columns: 1fr; }
 }
 </style>

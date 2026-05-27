@@ -4221,7 +4221,15 @@ function isValidNotifyUrl(url) {
 	return /^https:\/\/[^#\s]+$/i.test(s);
 }
 
-function wxWithdrawCredentials() {
+/** 平台已接入的微信商户号（证书在 pay.config / 环境变量中预置） */
+const WX_MCH_FANFAN = '1111130439';
+const WX_MCH_ZHIFAN = '1646399792';
+const WX_PAY_MCH_OPTIONS = [
+	{ mchId: WX_MCH_FANFAN, label: '帆帆电子' },
+	{ mchId: WX_MCH_ZHIFAN, label: '志帆科技' }
+];
+
+function wxCredentialsForZhifan() {
 	return {
 		mchId: WX_PAY_MCH_ID,
 		appId: WX_PAY_APPID,
@@ -4232,8 +4240,8 @@ function wxWithdrawCredentials() {
 	};
 }
 
-function wxRechargeCredentials() {
-	const fallback = wxWithdrawCredentials();
+function wxCredentialsForFanfan() {
+	const fallback = wxCredentialsForZhifan();
 	return {
 		mchId: WX_PAY_RECHARGE_MCH_ID || fallback.mchId,
 		appId: WX_PAY_RECHARGE_APPID || fallback.appId,
@@ -4242,6 +4250,59 @@ function wxRechargeCredentials() {
 		privateKey: WX_PAY_RECHARGE_PRIVATE_KEY || fallback.privateKey,
 		platformCert: WX_PAY_RECHARGE_PLATFORM_CERT || fallback.platformCert
 	};
+}
+
+function wxCredentialsByRegisteredMchId(mchId) {
+	const id = safeText(mchId, 40);
+	if (id === WX_MCH_FANFAN) return wxCredentialsForFanfan();
+	if (id === WX_MCH_ZHIFAN) return wxCredentialsForZhifan();
+	return null;
+}
+
+/** 与 pay.config 一致：未写入业务参数时的默认商户号 */
+function resolveDefaultWxPayMchIds() {
+	return {
+		recharge: safeText(WX_PAY_RECHARGE_MCH_ID || WX_PAY_MCH_ID, 40) || WX_MCH_FANFAN,
+		refund: safeText(WX_PAY_MCH_ID, 40) || WX_MCH_ZHIFAN,
+		withdraw: safeText(WX_PAY_MCH_ID, 40) || WX_MCH_ZHIFAN
+	};
+}
+
+function sanitizeWxPayMchSelection(raw, defaults) {
+	const defs = defaults || resolveDefaultWxPayMchIds();
+	const src = raw && typeof raw === 'object' ? raw : {};
+	const pick = (key) => {
+		const id = safeText(src[key], 40);
+		if (id === WX_MCH_FANFAN || id === WX_MCH_ZHIFAN) return id;
+		return defs[key] || defs.withdraw;
+	};
+	return {
+		recharge: pick('recharge'),
+		refund: pick('refund'),
+		withdraw: pick('withdraw')
+	};
+}
+
+function resolveWxPayMchIdsFromBiz(biz) {
+	return sanitizeWxPayMchSelection(biz?.wxPayMch, resolveDefaultWxPayMchIds());
+}
+
+function wxCredentialsForPaySceneSync(scene) {
+	const ids = bizSettingsCache ? resolveWxPayMchIdsFromBiz(bizSettingsCache) : resolveDefaultWxPayMchIds();
+	const mchId = ids[scene] || ids.withdraw;
+	return wxCredentialsByRegisteredMchId(mchId) || wxCredentialsForZhifan();
+}
+
+function wxWithdrawCredentials() {
+	return wxCredentialsForPaySceneSync('withdraw');
+}
+
+function wxRechargeCredentials() {
+	return wxCredentialsForPaySceneSync('recharge');
+}
+
+function wxRefundCredentials() {
+	return wxCredentialsForPaySceneSync('refund');
 }
 
 /** 未写入 wx_pay_profile 的旧 uni-pay 订单按「提现商户」证书与密钥处理（与历史单商户一致） */
@@ -4263,10 +4324,14 @@ function explicitMchIdOfOrder(order) {
 function wxCredentialsByMchId(mchId) {
 	const id = safeText(mchId, 40);
 	if (!id) return null;
+	const hit = wxCredentialsByRegisteredMchId(id);
+	if (hit) return hit;
 	const rc = wxRechargeCredentials();
 	if (id === rc.mchId) return rc;
 	const wc = wxWithdrawCredentials();
 	if (id === wc.mchId) return wc;
+	const rf = wxRefundCredentials();
+	if (id === rf.mchId) return rf;
 	return null;
 }
 
@@ -4275,48 +4340,47 @@ function isWxOrderNotExistsError(e) {
 	return msg.includes('订单不存在') || msg.includes('order_not_exist') || msg.includes('resource_not_exists');
 }
 
-function ensureWxWithdrawPayConfig() {
-	const c = wxWithdrawCredentials();
+function ensureWxPayConfigForCreds(c, sceneLabel) {
+	const label = safeText(sceneLabel, 40) || '微信';
 	if (!c.mchId || !c.appId || !c.mchSerialNo || !c.privateKey) {
-		return { ok: false, message: '提现商户微信支付参数未配置完整（WX_PAY_*：商户号/AppID/证书序列号/私钥）' };
+		return { ok: false, message: `${label}支付参数未配置完整（商户号/AppID/证书序列号/私钥）` };
 	}
 	if (!c.mchApiV3Key || String(c.mchApiV3Key).length !== 32) {
-		return { ok: false, message: '提现商户 WX_PAY_MCH_API_V3_KEY 必须是32位 APIv3 密钥（不是 PUB_KEY_ID）' };
+		return { ok: false, message: `${label} APIv3 密钥必须是32位` };
 	}
 	if (!c.platformCert) {
-		return { ok: false, message: '提现商户未配置 WX_PAY_PLATFORM_CERT，无法校验回调签名' };
+		return { ok: false, message: `${label}未配置微信平台证书，无法校验回调签名` };
 	}
 	return { ok: true, creds: c };
 }
 
+function wxPayMchLabel(mchId) {
+	const hit = WX_PAY_MCH_OPTIONS.find((x) => x.mchId === safeText(mchId, 40));
+	return hit ? hit.label : safeText(mchId, 40) || '-';
+}
+
+function ensureWxWithdrawPayConfig() {
+	const c = wxWithdrawCredentials();
+	const base = ensureWxPayConfigForCreds(c, `提现（${wxPayMchLabel(c.mchId)}）`);
+	return base;
+}
+
+function ensureWxRefundPayConfig() {
+	const c = wxRefundCredentials();
+	return ensureWxPayConfigForCreds(c, `退款（${wxPayMchLabel(c.mchId)}）`);
+}
+
 function ensureWxRechargePayConfig() {
 	const c = wxRechargeCredentials();
-	if (!c.mchId || !c.appId || !c.mchSerialNo || !c.privateKey) {
-		return {
-			ok: false,
-			message:
-				'升级商户微信支付参数未配置完整（WX_PAY_RECHARGE_* 未填时回退 WX_PAY_*：商户号/AppID/证书序列号/私钥）'
-		};
-	}
-	if (!c.mchApiV3Key || String(c.mchApiV3Key).length !== 32) {
-		return {
-			ok: false,
-			message: '升级商户 APIv3 密钥必须是32位（WX_PAY_RECHARGE_MCH_API_V3_KEY 或回退的 WX_PAY_MCH_API_V3_KEY）'
-		};
-	}
-	if (!c.platformCert) {
-		return {
-			ok: false,
-			message: '升级商户未配置微信平台证书（WX_PAY_RECHARGE_PLATFORM_CERT 或回退的 WX_PAY_PLATFORM_CERT）'
-		};
-	}
+	const base = ensureWxPayConfigForCreds(c, `升级充值（${wxPayMchLabel(c.mchId)}）`);
+	if (!base.ok) return base;
 	if (!isValidNotifyUrl(H5_PAY_NOTIFY_URL)) {
 		return { ok: false, message: 'WX_PAY_NOTIFY_URL 必须是可公网访问的 https 接口地址，且不能包含 # 哈希路由' };
 	}
 	if (H5_REFUND_NOTIFY_URL && !isValidNotifyUrl(H5_REFUND_NOTIFY_URL)) {
 		return { ok: false, message: 'WX_PAY_REFUND_NOTIFY_URL 必须是可公网访问的 https 接口地址，且不能包含 # 哈希路由' };
 	}
-	return { ok: true, creds: c };
+	return base;
 }
 
 function signWxV3MessageWithKey(privateKeyPem, message) {
@@ -4654,11 +4718,15 @@ function verifyWxCallbackSignatureFor(creds, headers, rawBody) {
 }
 
 function verifyWxCallbackSignatureDual(headers, rawBody) {
-	const r = ensureWxRechargePayConfig().ok ? verifyWxCallbackSignatureFor(wxRechargeCredentials(), headers, rawBody) : { ok: false };
-	if (r.ok) return { ok: true, creds: wxRechargeCredentials() };
-	const w = ensureWxWithdrawPayConfig().ok ? verifyWxCallbackSignatureFor(wxWithdrawCredentials(), headers, rawBody) : { ok: false };
-	if (w.ok) return { ok: true, creds: wxWithdrawCredentials() };
-	return { ok: false, message: r.message || w.message || '回调签名校验失败' };
+	const tried = [];
+	for (const opt of WX_PAY_MCH_OPTIONS) {
+		const creds = wxCredentialsByRegisteredMchId(opt.mchId);
+		if (!creds || !ensureWxPayConfigForCreds(creds, opt.label).ok) continue;
+		const r = verifyWxCallbackSignatureFor(creds, headers, rawBody);
+		if (r.ok) return { ok: true, creds };
+		tried.push(opt.label);
+	}
+	return { ok: false, message: tried.length ? '回调签名校验失败' : '未配置可用微信支付商户证书' };
 }
 
 function decryptWxResourceFor(creds, resource) {
@@ -4848,6 +4916,16 @@ async function applyRechargeByOrder(orderDoc) {
 		if (targetReward >= 7600 || Number(custom.target_quota || 0) >= 2000000 || targetPrice >= 1000) nextMembershipName = '钻石会员';
 		else if (targetReward >= 5700 || Number(custom.target_quota || 0) >= 1500000 || targetPrice >= 800) nextMembershipName = '铂金会员';
 		else if (targetReward >= 3800 || Number(custom.target_quota || 0) >= 1000000 || targetPrice >= 600 || targetPrice === 0.1) nextMembershipName = '白金会员';
+	}
+	if (isNormalMemberForUpgradePointsClear(merchant)) {
+		await clearNormalMemberPointsAndFrozenOnUpgrade(merchant, {
+			now,
+			upgradeKind: 'paid_recharge',
+			targetMembershipName: nextMembershipName || targetMembershipName || '充值会员',
+			orderNo: sourceOrder.out_trade_no || sourceOrder.order_no || '',
+			operatorSource: 'h5',
+			operator: 'wxpay_notify'
+		});
 	}
 	await merchantCollection.doc(merchant._id).update({
 		remaining_quota: afterRem,
@@ -5803,6 +5881,7 @@ async function h5FinanceRecords(data) {
 
 async function h5WithdrawConfirmPackage(data) {
 	try {
+		await getBizSettings();
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
@@ -6048,7 +6127,7 @@ const DEFAULT_RECHARGE_RULES = [
 /** H5「退款与周期」页规则说明，支持占位符 {cycleDays}、{windowDays}、{penaltyRate}（与参数配置中锁定周期/窗口/违约金一致） */
 const DEFAULT_H5_REFUND_RULE_LINES = [
 	'1）重置后 {cycleDays} 天内无法退款。',
-	'2）满 {cycleDays} 天后，系统会自动给客户 {windowDays} 天提取时间；若客户在窗口期内未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。',
+	'2）满 {cycleDays} 天后，系统会自动给客户 {windowDays} 天提取时间；若客户在窗口期内未提取，额度将自动保留并顺延，系统继续配置对应额度，以此类推。',
 	'3）如客户执意在 {cycleDays} 天内退款，将扣除 {penaltyRate}% 违约金后返还剩余款项。'
 ];
 
@@ -6106,7 +6185,8 @@ const DEFAULT_BIZ_SETTINGS = {
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	servicePhone: '400-668-5796',
-	h5RefundRuleLines: DEFAULT_H5_REFUND_RULE_LINES.slice()
+	h5RefundRuleLines: DEFAULT_H5_REFUND_RULE_LINES.slice(),
+	wxPayMch: sanitizeWxPayMchSelection(null, resolveDefaultWxPayMchIds())
 };
 const BIZ_SETTINGS_CACHE_TTL_MS = 60000;
 
@@ -6186,6 +6266,7 @@ function sanitizeBizSettings(raw = {}) {
 	const testMerchantIds = [...new Set(rawTestMerchantIds.map((x) => safeText(x, 80)).filter(Boolean))];
 	const servicePhone = safeText(raw.servicePhone || DEFAULT_BIZ_SETTINGS.servicePhone, 30);
 	const h5RefundRuleLines = sanitizeH5RefundRuleLines(raw.h5RefundRuleLines);
+	const wxPayMch = sanitizeWxPayMchSelection(raw.wxPayMch, resolveDefaultWxPayMchIds());
 	return {
 		rechargeRules: normRules,
 		withdrawRange,
@@ -6200,7 +6281,8 @@ function sanitizeBizSettings(raw = {}) {
 		riskRates,
 		testMerchantIds,
 		servicePhone,
-		h5RefundRuleLines
+		h5RefundRuleLines,
+		wxPayMch
 	};
 }
 
@@ -6515,6 +6597,93 @@ function resolveH5WithdrawRole(merchant) {
 	return 'normal_member';
 }
 
+/** 普通会员升级（兑换码白银 / 付费黄金及以上）前是否需清除已领待提现积分与冻结金额 */
+function isNormalMemberForUpgradePointsClear(merchant) {
+	return resolveH5WithdrawRole(merchant) === 'normal_member';
+}
+
+const MEMBER_UPGRADE_POINTS_CLEAR_ACTION = 'member_upgrade_points_clear';
+
+function upgradeKindLabelForPointsClear(kind) {
+	const map = {
+		exchange_code_silver: '兑换码开通白银',
+		paid_recharge: '付费升级充值会员'
+	};
+	return map[String(kind || '')] || String(kind || '会员升级');
+}
+
+/**
+ * 普通会员升级为白银（兑换码）或黄金/白金/钻石（付费）时，清除已领取的账号积分（待提现）与冻结金额。
+ * 白银付费升档、充值会员之间升档不调用本函数。
+ */
+async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
+	if (!merchant || !merchant._id) return { cleared: false, reason: 'no_merchant' };
+	const beforeAp = normalizePendingBalance(merchant);
+	const beforeFrozen = Number(Number(merchant.frozen_amount || 0).toFixed(4));
+	const beforePendingWithdraw = Number(Number(merchant.pending_withdraw || 0).toFixed(4));
+	const now = ctx.now != null ? ctx.now : nowTs();
+	const targetMembershipName = safeText(ctx.targetMembershipName || '', 40) || '会员';
+	const upgradeKind = safeText(ctx.upgradeKind || '', 40);
+	const kindLabel = upgradeKindLabelForPointsClear(upgradeKind);
+
+	const merchantPatch = {
+		account_points: 0,
+		withdraw_pending_balance: 0,
+		pending_withdraw: 0,
+		frozen_amount: 0,
+		update_time: now
+	};
+	await merchantCollection.doc(merchant._id).update(merchantPatch);
+
+	const boundMachines = await listBoundMachinesByMerchant(merchant);
+	const machineSnapshots = [];
+	for (const m of boundMachines) {
+		const prevFrozen = Number(Number(m.frozen_amount || 0).toFixed(4));
+		if (prevFrozen > 0) {
+			await machineCollection.doc(m._id).update({ frozen_amount: 0 });
+		}
+		machineSnapshots.push({
+			_id: m._id,
+			device_id: m.device_id || '',
+			frozen_amount_before: prevFrozen
+		});
+	}
+
+	const content = `普通会员${kindLabel}至${targetMembershipName}：清除账号积分（待提现）${beforeAp.toFixed(2)} 元、冻结金额 ${beforeFrozen.toFixed(2)} 元`;
+	await operationLogCollection.add({
+		user_id: merchant.user_id || merchant._id,
+		user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
+		action: MEMBER_UPGRADE_POINTS_CLEAR_ACTION,
+		module: 'points',
+		target_id: merchant._id,
+		target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+		content,
+		operator_source: safeText(ctx.operatorSource || 'h5', 20) || 'h5',
+		operator: safeText(ctx.operator || 'system', 40) || 'system',
+		upgrade_kind: upgradeKind,
+		target_membership_name: targetMembershipName,
+		cleared_account_points: beforeAp,
+		cleared_frozen_amount: beforeFrozen,
+		cleared_pending_withdraw: beforePendingWithdraw,
+		platform_no: safeText(ctx.orderNo || ctx.redeemCode || '', 64),
+		before_merchant_snapshot: {
+			account_points: beforeAp,
+			withdraw_pending_balance: Number(rawPendingBalance(merchant) || 0),
+			pending_withdraw: beforePendingWithdraw,
+			frozen_amount: beforeFrozen
+		},
+		before_machine_snapshot: machineSnapshots.slice(0, 10),
+		create_time: now
+	});
+
+	return {
+		cleared: true,
+		clearedAccountPoints: beforeAp,
+		clearedFrozenAmount: beforeFrozen,
+		clearedPendingWithdraw: beforePendingWithdraw
+	};
+}
+
 /**
  * 首页资金汇总：按提现发起时商户身份分档（与 resolveH5WithdrawRole 一致）。
  * member＝充值会员（钻石/铂金/白金等付费档）；non_member＝普通会员、白银会员。
@@ -6746,6 +6915,7 @@ async function h5WithdrawInfo(data) {
 
 async function h5WithdrawApply(data) {
 	try {
+		await getBizSettings();
 		const cfg = ensureWxWithdrawPayConfig();
 		if (!cfg.ok) return { code: 500, message: cfg.message };
 		const wc = cfg.creds;
@@ -7286,7 +7456,7 @@ const H5_RECHARGE_PACKAGES = [
 const DEFAULT_QUOTA_PACKAGES = [
 	{
 		package_id: 'pkg_600',
-		title: '预存升级 600 元',
+		title: '升级 600 元',
 		bonus_quota: '¥1000000.00',
 		real_quota: 3800,
 		price: 600,
@@ -7296,7 +7466,7 @@ const DEFAULT_QUOTA_PACKAGES = [
 	},
 	{
 		package_id: 'pkg_800',
-		title: '预存升级 800 元',
+		title: '升级 800 元',
 		bonus_quota: '¥1500000.00',
 		real_quota: 5700,
 		price: 800,
@@ -7306,7 +7476,7 @@ const DEFAULT_QUOTA_PACKAGES = [
 	},
 	{
 		package_id: 'pkg_1000',
-		title: '预存升级 1000 元',
+		title: '升级 1000 元',
 		bonus_quota: '¥2000000.00',
 		real_quota: 7600,
 		price: 1000,
@@ -7322,11 +7492,11 @@ function parseBonusQuotaYuan(raw) {
 	return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-/** 额度包标题：与后台表单预览一致，如「预存升级 600 元」 */
+/** 额度包标题：与后台表单预览一致，如「升级 600 元」 */
 function buildQuotaPackageTitle(price) {
 	const p = Number(price || 0);
 	if (!Number.isFinite(p) || p <= 0) return '';
-	return `预存升级 ${p} 元`;
+	return `升级 ${p} 元`;
 }
 
 /** 从免额度金额推导「100万」类展示值 */
@@ -7820,6 +7990,7 @@ async function h5RechargeOptions(data) {
 
 async function h5RechargeCreate(data, event) {
 	try {
+		await getBizSettings();
 		const cfg = ensureWxRechargePayConfig();
 		if (!cfg.ok) return { code: 500, message: cfg.message };
 		const rc = wxRechargeCredentials();
@@ -8924,7 +9095,7 @@ async function refundTransferSyncProcessing(data = {}) {
 		for (const row of rows) {
 			const merchant = await getMerchantByIdOrUserId(row.merchant_id);
 			if (!merchant) continue;
-			const wc = wxCredentialsByMchId(row.transfer_mch_id) || wxWithdrawCredentials();
+			const wc = wxCredentialsByMchId(row.transfer_mch_id) || wxRefundCredentials();
 			if (!wc || !wc.mchId) continue;
 			try {
 				const refundMain = safeText(row.refund_no, 64);
@@ -9355,7 +9526,8 @@ async function refundTransferRevokeApproveDev(data, event) {
  * 解析当前商户在「退款与周期」场景下的 bizKey、是否需审核、已存在的转账单等，供 H5 退款页与 h5RefundReset 共用。
  */
 async function resolveH5RefundOrderContext(merchant, event) {
-	const cfgW = ensureWxWithdrawPayConfig();
+	await getBizSettings();
+	const cfgW = ensureWxRefundPayConfig();
 	if (!cfgW.ok) return { ok: false, code: 500, message: cfgW.message };
 	const wc = cfgW.creds;
 	const openid = safeText(merchant.wx_openid, 100);
@@ -9558,7 +9730,7 @@ async function h5RefundConfirmPackage(data) {
 		if (safeText(row.state, 24) === 'REJECTED' || safeText(row.audit_status, 20) === 'rejected') {
 			return { code: 400, message: '该退款已被管理员拒绝，无法发起确认收款' };
 		}
-		const wc = wxCredentialsByMchId(row.transfer_mch_id) || wxWithdrawCredentials();
+		const wc = wxCredentialsByMchId(row.transfer_mch_id) || wxRefundCredentials();
 		if (!wc || !wc.mchId) return { code: 500, message: '未配置退款商户号支付参数' };
 		const refundNoMain = safeText(row.refund_no, 64);
 		if (row.audit_required && safeText(row.audit_status, 20) !== 'approved') {
@@ -10012,7 +10184,7 @@ async function h5TransferStatus(data, event) {
 		if (!ord) return { code: 404, message: '退款单不存在' };
 		if (ord.refund_mode === 'merchant_transfer') {
 			await getBizSettings();
-			const wc = wxCredentialsByMchId(ord.transfer_mch_id) || wxWithdrawCredentials();
+			const wc = wxCredentialsByMchId(ord.transfer_mch_id) || wxRefundCredentials();
 			let items = sortTransferItemsBySlice(
 				Array.isArray(ord.transfer_items) ? ord.transfer_items.map((x) => ({ ...x })) : []
 			);
@@ -12401,6 +12573,16 @@ async function h5ExchangeCouponRedeem(data) {
 		const memberDays = Math.max(1, Number(cp.member_days || 30));
 		const startAt = now;
 		const endAt = now + memberDays * 24 * 60 * 60 * 1000;
+		if (isNormalMemberForUpgradePointsClear(merchant)) {
+			await clearNormalMemberPointsAndFrozenOnUpgrade(merchant, {
+				now,
+				upgradeKind: 'exchange_code_silver',
+				targetMembershipName: '白银会员',
+				redeemCode: code,
+				operatorSource: 'h5',
+				operator: 'exchange_coupon'
+			});
+		}
 		await exchangeCouponCollection.doc(cp._id).update({
 			used: true,
 			used_merchant_id: merchant._id,
@@ -12816,7 +12998,25 @@ async function quotaDelete(data, event) {
 async function bizConfigGet() {
 	try {
 		const value = await getBizSettings();
-		return { code: 0, message: 'ok', data: value };
+		const wxPayMch = value.wxPayMch || sanitizeWxPayMchSelection(null, resolveDefaultWxPayMchIds());
+		const wxPayMchEffective = WX_PAY_MCH_OPTIONS.map((opt) => ({
+			mchId: opt.mchId,
+			label: opt.label,
+			recharge: wxPayMch.recharge === opt.mchId,
+			refund: wxPayMch.refund === opt.mchId,
+			withdraw: wxPayMch.withdraw === opt.mchId
+		}));
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				...value,
+				wxPayMch,
+				wxPayMchOptions: WX_PAY_MCH_OPTIONS,
+				wxPayMchDefaults: resolveDefaultWxPayMchIds(),
+				wxPayMchEffective
+			}
+		};
 	} catch (error) {
 		console.error('bizConfigGet failed:', error);
 		return { code: 500, message: '获取参数配置失败' };

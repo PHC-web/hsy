@@ -8,8 +8,18 @@
 		</view>
 		<view class="uni-container page-wrap">
 			<view class="intro">
-				汇总 H5 为商户生成的积分红包（手续费补贴等，数据表 hsy-income-packets）。金额与 H5「账号积分」同口径（元）。
-				部署后请在 uniCloud 上传云函数 <text class="mono">ops-points-admin</text>。
+				<text v-if="activeTab === 'packets'">
+					汇总 H5 为商户生成的积分红包（手续费补贴等，数据表 hsy-income-packets）。金额与 H5「账号积分」同口径（元）。
+				</text>
+				<text v-else>
+					普通会员通过兑换码升级白银、或付费升级黄金/白金/钻石时，系统清除其已领取的账号积分（待提现）与冻结金额的操作记录。
+				</text>
+				部署后请上传云函数 <text class="mono">ops-points-admin</text>、<text class="mono">merchant</text>。
+			</view>
+
+			<view class="tab-bar">
+				<text :class="['tab-item', activeTab === 'packets' ? 'tab-active' : '']" @click="switchTab('packets')">积分红包</text>
+				<text :class="['tab-item', activeTab === 'upgrade_clear' ? 'tab-active' : '']" @click="switchTab('upgrade_clear')">升级清除日志</text>
 			</view>
 
 			<view class="search-card">
@@ -22,7 +32,7 @@
 						@change="onRangeChange"
 					/>
 				</view>
-				<view class="row">
+				<view v-if="activeTab === 'packets'" class="row">
 					<text class="label">状态</text>
 					<picker mode="selector" :range="statusLabels" :value="statusIndex" @change="onStatusPick">
 						<view class="picker-val">{{ statusLabels[statusIndex] }}</view>
@@ -32,14 +42,14 @@
 					<text class="label">关键词</text>
 					<uni-easyinput
 						v-model.trim="keyword"
-						placeholder="商户 user_id / 手机号片段 / 标题 / 记录 id"
+						:placeholder="keywordPlaceholder"
 						@confirm="search"
 					/>
 					<button size="mini" type="primary" :loading="loading" @click="search">搜索</button>
 				</view>
 			</view>
 
-			<view class="table-container-wrapper admin-table-slot">
+			<view v-if="activeTab === 'packets'" class="table-container-wrapper admin-table-slot">
 				<view class="table-container table-scroll">
 					<uni-table border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
@@ -80,13 +90,42 @@
 				</view>
 			</view>
 
+			<view v-else class="table-container-wrapper admin-table-slot">
+				<view class="table-container table-scroll">
+					<uni-table border stripe :loading="loading" empty-text="暂无数据">
+						<uni-tr>
+							<uni-th width="152">操作时间</uni-th>
+							<uni-th width="120">商户</uni-th>
+							<uni-th width="104">手机</uni-th>
+							<uni-th width="108">升级方式</uni-th>
+							<uni-th width="96">目标会员</uni-th>
+							<uni-th width="88">清除积分(元)</uni-th>
+							<uni-th width="88">清除冻结(元)</uni-th>
+							<uni-th>说明</uni-th>
+						</uni-tr>
+						<uni-tr v-for="item in upgradeClearList" :key="item._id">
+							<uni-td>{{ fmtTs(item.create_time) }}</uni-td>
+							<uni-td class="cell-ellipsis" :title="item.merchant_user_id">{{
+								item.merchant_name !== '-' ? item.merchant_name : item.merchant_user_id || '-'
+							}}</uni-td>
+							<uni-td class="cell-ellipsis">{{ item.merchant_mobile }}</uni-td>
+							<uni-td class="cell-tiny">{{ item.upgrade_kind_label }}</uni-td>
+							<uni-td>{{ item.target_membership_name }}</uni-td>
+							<uni-td>{{ item.cleared_account_points_text }}</uni-td>
+							<uni-td>{{ item.cleared_frozen_amount_text }}</uni-td>
+							<uni-td class="cell-content">{{ item.content }}</uni-td>
+						</uni-tr>
+					</uni-table>
+				</view>
+			</view>
+
 			<view class="uni-pagination-box admin-page-pagination">
 				<uni-pagination
 					show-icon
 					show-page-size
-					:page-size="pageInfo.pageSize"
-					v-model="pageInfo.currentPage"
-					:total="pageInfo.total"
+					:page-size="currentPageInfo.pageSize"
+					v-model="currentPageInfo.currentPage"
+					:total="currentPageInfo.total"
 					@change="onPageChanged"
 					@pageSizeChange="onPageSizeChange"
 				/>
@@ -134,13 +173,20 @@ const STATUS_LABELS = [
 export default {
 	data() {
 		return {
+			activeTab: 'packets',
 			loading: false,
 			list: [],
+			upgradeClearList: [],
 			keyword: '',
 			range: defaultRange(),
 			statusFilter: 'all',
 			statusLabels: STATUS_LABELS,
 			pageInfo: {
+				currentPage: 1,
+				pageSize: 15,
+				total: 0
+			},
+			clearPageInfo: {
 				currentPage: 1,
 				pageSize: 15,
 				total: 0
@@ -152,6 +198,14 @@ export default {
 		statusIndex() {
 			const i = STATUS_VALUES.indexOf(this.statusFilter);
 			return i >= 0 ? i : 0;
+		},
+		currentPageInfo() {
+			return this.activeTab === 'upgrade_clear' ? this.clearPageInfo : this.pageInfo;
+		},
+		keywordPlaceholder() {
+			return this.activeTab === 'upgrade_clear'
+				? '商户 user_id / 昵称 / 手机号 / 说明'
+				: '商户 user_id / 手机号片段 / 标题 / 记录 id';
 		},
 		detailPretty() {
 			try {
@@ -165,6 +219,14 @@ export default {
 		this.search();
 	},
 	methods: {
+		switchTab(tab) {
+			if (this.activeTab === tab) return;
+			this.activeTab = tab;
+			this.keyword = '';
+			this.pageInfo.currentPage = 1;
+			this.clearPageInfo.currentPage = 1;
+			this.search();
+		},
 		statusClass(key) {
 			if (key === 'claimed') return 'st-ok';
 			if (key === 'expired') return 'st-warn';
@@ -184,6 +246,7 @@ export default {
 		},
 		onRangeChange() {
 			this.pageInfo.currentPage = 1;
+			this.clearPageInfo.currentPage = 1;
 			this.search();
 		},
 		onStatusPick(e) {
@@ -195,13 +258,26 @@ export default {
 				this.search();
 			}
 		},
-		buildPayload() {
+		buildTimeRange() {
 			const r = this.range;
 			let timeStart = '';
 			let timeEnd = '';
 			if (Array.isArray(r) && r.length >= 2 && r[0] != null && r[1] != null && r[0] !== '' && r[1] !== '') {
 				timeStart = Number(r[0]);
 				timeEnd = Number(r[1]);
+			}
+			return { timeStart, timeEnd };
+		},
+		buildPayload() {
+			const { timeStart, timeEnd } = this.buildTimeRange();
+			if (this.activeTab === 'upgrade_clear') {
+				return {
+					page: this.clearPageInfo.currentPage,
+					pageSize: this.clearPageInfo.pageSize,
+					keyword: this.keyword,
+					timeStart,
+					timeEnd
+				};
 			}
 			return {
 				page: this.pageInfo.currentPage,
@@ -214,31 +290,54 @@ export default {
 		},
 		search() {
 			this.loading = true;
-			this.$request('opsIncomePacketsList', this.buildPayload(), { functionName: 'ops-points-admin' })
+			const action =
+				this.activeTab === 'upgrade_clear' ? 'opsMemberUpgradeClearLogsList' : 'opsIncomePacketsList';
+			this.$request(action, this.buildPayload(), { functionName: 'ops-points-admin' })
 				.then((res) => {
 					this.loading = false;
 					if (res.code !== 0) {
 						uni.showToast({ title: res.message || '加载失败', icon: 'none' });
-						this.list = [];
-						this.pageInfo.total = 0;
+						if (this.activeTab === 'upgrade_clear') {
+							this.upgradeClearList = [];
+							this.clearPageInfo.total = 0;
+						} else {
+							this.list = [];
+							this.pageInfo.total = 0;
+						}
 						return;
 					}
 					const d = res.data || {};
-					this.list = d.list || [];
-					this.pageInfo.total = Number(d.total) || 0;
-					syncOpsListPageSize(this.pageInfo, d);
+					if (this.activeTab === 'upgrade_clear') {
+						this.upgradeClearList = d.list || [];
+						this.clearPageInfo.total = Number(d.total) || 0;
+						syncOpsListPageSize(this.clearPageInfo, d);
+					} else {
+						this.list = d.list || [];
+						this.pageInfo.total = Number(d.total) || 0;
+						syncOpsListPageSize(this.pageInfo, d);
+					}
 				})
 				.catch(() => {
 					this.loading = false;
-					this.list = [];
+					if (this.activeTab === 'upgrade_clear') {
+						this.upgradeClearList = [];
+					} else {
+						this.list = [];
+					}
 				});
 		},
 		onPageChanged() {
 			this.search();
 		},
 		onPageSizeChange(e) {
-			this.pageInfo.pageSize = e.pageSize || e;
-			this.pageInfo.currentPage = 1;
+			const size = e.pageSize || e;
+			if (this.activeTab === 'upgrade_clear') {
+				this.clearPageInfo.pageSize = size;
+				this.clearPageInfo.currentPage = 1;
+			} else {
+				this.pageInfo.pageSize = size;
+				this.pageInfo.currentPage = 1;
+			}
 			this.search();
 		},
 		openDetail(id) {
@@ -273,6 +372,24 @@ export default {
 .intro .mono {
 	font-family: Menlo, Monaco, Consolas, monospace;
 	color: #606266;
+}
+.tab-bar {
+	display: flex;
+	gap: 8px;
+	margin-bottom: 12px;
+}
+.tab-item {
+	padding: 6px 14px;
+	font-size: 13px;
+	color: #606266;
+	background: #f5f7fa;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.tab-active {
+	color: #fff;
+	background: #409eff;
+	font-weight: 600;
 }
 .search-card {
 	background: #fff;

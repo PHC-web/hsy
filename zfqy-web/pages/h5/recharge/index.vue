@@ -71,7 +71,7 @@
 					<!-- <view class="rule-card h5-glass-panel">
 						<text class="rule-title">规则说明</text>
 						<text class="rule-item">1）充值后 {{ refundCycleDays }} 天内无法退款。</text>
-						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统将开放 {{ refundWindowDays }} 天窗口期供您提取；若您 {{ refundWindowDays }} 天未提取，额度将自动预存并顺延，系统继续配置对应额度，以此类推。</text>
+						<text class="rule-item">2）满 {{ refundCycleDays }} 天后，系统将开放 {{ refundWindowDays }} 天窗口期供您提取；若您 {{ refundWindowDays }} 天未提取，额度将自动保留并顺延，系统继续配置对应额度，以此类推。</text>
 						<text class="rule-item">3）如您执意在 {{ refundCycleDays }} 天内退款，将扣除 50% 违约金后返还剩余款项。</text>
 					</view> -->
 				</block>
