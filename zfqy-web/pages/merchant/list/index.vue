@@ -175,8 +175,18 @@
 					<text class="img-preview-meta-line">签署 IP：{{ agreementPreviewIp || '—' }}</text>
 					<text class="img-preview-meta-line">设备标识：{{ agreementPreviewDevice || '—' }}</text>
 				</view>
-				<view class="img-preview-actions">
+				<view class="img-preview-actions" :class="{ 'img-preview-actions--agreement': isAgreementPreview }">
 					<button size="mini" @click="resetPreviewTransform">重置</button>
+					<button
+						v-if="isAgreementPreview"
+						size="mini"
+						type="primary"
+						:loading="agreementPdfExporting"
+						:disabled="agreementPdfExporting"
+						@click="exportAgreementPdf"
+					>
+						导出 PDF
+					</button>
 					<button size="mini" @click="closeImgPreview">关闭</button>
 				</view>
 			</view>
@@ -239,6 +249,8 @@
 </template>
 
 <script>
+import { exportAgreementImageToPdf, sanitizeFileName } from './agreement-pdf-export.js';
+
 export default {
 	data() {
 		return {
@@ -290,8 +302,12 @@ export default {
 				packageId: ''
 			},
 			previewImageUrl: '',
+			agreementPreviewMode: false,
+			agreementPreviewMerchant: null,
+			agreementPdfExporting: false,
 			agreementPreviewIp: '',
 			agreementPreviewDevice: '',
+			agreementPreviewSignedAt: '',
 			previewScale: 1,
 			previewOffsetX: 0,
 			previewOffsetY: 0,
@@ -318,6 +334,9 @@ export default {
 		};
 	},
 	computed: {
+		isAgreementPreview() {
+			return !!this.agreementPreviewMode;
+		},
 		previewImageStyle() {
 			return {
 				transform: `translate(${this.previewOffsetX}px, ${this.previewOffsetY}px) scale(${this.previewScale})`
@@ -491,8 +510,11 @@ export default {
 		previewImg(url, opts = {}) {
 			if (!url) return;
 			if (!opts.keepAgreementMeta) {
+				this.agreementPreviewMode = false;
+				this.agreementPreviewMerchant = null;
 				this.agreementPreviewIp = '';
 				this.agreementPreviewDevice = '';
+				this.agreementPreviewSignedAt = '';
 			}
 			this.resetPreviewTransform();
 			this.previewImageUrl = String(url);
@@ -550,8 +572,14 @@ export default {
 					uni.showToast({ title: '协议图片不存在', icon: 'none' });
 					return;
 				}
+				this.agreementPreviewMode = true;
+				this.agreementPreviewMerchant = {
+					id: item.id,
+					wxUser: item.wxUser || ''
+				};
 				this.agreementPreviewIp = String(ret.data?.agreementSignedIp || '').trim();
 				this.agreementPreviewDevice = String(ret.data?.agreementSignDevice || '').trim();
+				this.agreementPreviewSignedAt = String(ret.data?.agreementSignedAt || '').trim();
 				this.previewImg(url, { keepAgreementMeta: true });
 			} finally {
 				uni.hideLoading();
@@ -666,9 +694,84 @@ export default {
 			this.detachPreviewGestureListeners();
 			if (this.$refs.imgPreviewPopup) this.$refs.imgPreviewPopup.close();
 			this.previewImageUrl = '';
+			this.agreementPreviewMode = false;
+			this.agreementPreviewMerchant = null;
+			this.agreementPdfExporting = false;
 			this.agreementPreviewIp = '';
 			this.agreementPreviewDevice = '';
+			this.agreementPreviewSignedAt = '';
 			this.resetPreviewTransform();
+		},
+		formatAgreementExportWxNickname(data) {
+			const wx = String(data?.wxNickname || '').trim();
+			if (wx) return wx;
+			const fromList = String(this.agreementPreviewMerchant?.wxUser || '')
+				.split('\n')[0]
+				.trim();
+			return fromList || '商户';
+		},
+		formatAgreementExportUserName(data) {
+			const wx = this.formatAgreementExportWxNickname(data);
+			const mobile = String(data?.mobile || '').trim();
+			if (wx && mobile && wx !== '商户') return `${wx}_${mobile}`;
+			return wx || mobile || '商户';
+		},
+		async exportAgreementPdf() {
+			if (!this.agreementPreviewMerchant?.id) return;
+			// #ifndef H5
+			uni.showToast({ title: '请在浏览器管理端导出 PDF', icon: 'none' });
+			return;
+			// #endif
+			if (this.agreementPdfExporting) return;
+			this.agreementPdfExporting = true;
+			uni.showLoading({ title: '生成 PDF...', mask: true });
+			try {
+				const previewUrl = String(this.previewImageUrl || '').trim();
+				let dataUrl = /^data:image\//i.test(previewUrl) ? previewUrl : '';
+				let metaSource = {
+					wxNickname: '',
+					mobile: '',
+					agreementSignedAt: this.agreementPreviewSignedAt,
+					agreementSignedIp: this.agreementPreviewIp,
+					agreementSignDevice: this.agreementPreviewDevice
+				};
+				if (!dataUrl) {
+					const ret = await this.$request(
+						'merchantAgreementImage',
+						{ merchantId: this.agreementPreviewMerchant.id, forPdfExport: true },
+						{ functionName: 'merchant' }
+					);
+					if (ret.code !== 0) {
+						uni.showToast({ title: ret.message || '导出失败', icon: 'none' });
+						return;
+					}
+					dataUrl = String(ret.data?.agreementImgDataUrl || ret.data?.agreementImg || '').trim();
+					metaSource = ret.data || metaSource;
+				}
+				if (!dataUrl) {
+					uni.showToast({ title: '协议图片读取失败', icon: 'none' });
+					return;
+				}
+				const wxNickname = this.formatAgreementExportWxNickname(metaSource);
+				const wxUser = this.formatAgreementExportUserName(metaSource);
+				await exportAgreementImageToPdf({
+					imageDataUrl: dataUrl,
+					fileName: sanitizeFileName(`慧收盈协议_${wxNickname}`),
+					meta: {
+						title: '优惠活动计划书（已签署）',
+						wxUser,
+						signedAt: metaSource.agreementSignedAt || this.agreementPreviewSignedAt,
+						signedIp: metaSource.agreementSignedIp || this.agreementPreviewIp,
+						signDevice: metaSource.agreementSignDevice || this.agreementPreviewDevice
+					}
+				});
+				uni.showToast({ title: 'PDF 已下载', icon: 'success' });
+			} catch (e) {
+				uni.showToast({ title: e?.message || '导出失败', icon: 'none' });
+			} finally {
+				this.agreementPdfExporting = false;
+				uni.hideLoading();
+			}
 		},
 		parseTimestampRange(filter) {
 			if (!Array.isArray(filter) || filter.length < 2) return { start: '', end: '' };
@@ -1213,6 +1316,10 @@ export default {
 	flex-shrink: 0;
 	width: 100%;
 	box-sizing: border-box;
+}
+
+.img-preview-actions--agreement {
+	grid-template-columns: 1fr 1fr 1fr;
 }
 
 .img-preview-actions button {

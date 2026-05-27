@@ -739,6 +739,57 @@ async function listMerchants(data) {
 	}
 }
 
+async function fetchAgreementImageDataUrl(imgUrl) {
+	const url = String(imgUrl || '').trim();
+	if (!url) return { ok: false, message: '协议图片地址为空' };
+	// H5 签署结果多为 data:image/...;base64,...，不能走 httpclient（会报 Invalid URL）
+	if (/^data:image\//i.test(url)) {
+		const mime = (url.match(/^data:(image\/[^;]+)/i) || [])[1] || 'image/jpeg';
+		return { ok: true, dataUrl: url, mime };
+	}
+	let fetchUrl = url;
+	if (fetchUrl.startsWith('cloud://')) {
+		try {
+			const tempRes = await uniCloud.getTempFileURL({ fileList: [fetchUrl] });
+			const item = tempRes.fileList && tempRes.fileList[0];
+			if (!item || !item.tempFileURL) {
+				return { ok: false, message: '云存储协议图片临时链接获取失败' };
+			}
+			fetchUrl = String(item.tempFileURL || '').trim();
+		} catch (e) {
+			console.error('getTempFileURL agreement failed', e);
+			return { ok: false, message: '云存储协议图片链接解析失败' };
+		}
+	}
+	if (!/^https?:\/\//i.test(fetchUrl)) {
+		return { ok: false, message: '协议图片地址格式无效，仅支持 https 链接或签署图 data URL' };
+	}
+	try {
+		const resp = await uniCloud.httpclient.request(fetchUrl, {
+			method: 'GET',
+			dataType: 'arraybuffer',
+			timeout: 90000
+		});
+		const status = Number(resp.status || resp.statusCode || 0);
+		if (status && status !== 200) {
+			return { ok: false, message: `读取协议图片失败(${status})` };
+		}
+		const buf = resp.data;
+		if (!buf || !(buf.byteLength || buf.length)) {
+			return { ok: false, message: '协议图片内容为空' };
+		}
+		const lower = fetchUrl.toLowerCase();
+		let mime = 'image/jpeg';
+		if (lower.includes('.png')) mime = 'image/png';
+		else if (lower.includes('.webp')) mime = 'image/webp';
+		const b64 = Buffer.from(buf).toString('base64');
+		return { ok: true, dataUrl: `data:${mime};base64,${b64}`, mime };
+	} catch (e) {
+		console.error('fetchAgreementImageDataUrl failed', e);
+		return { ok: false, message: safeText(e?.message || '读取协议图片失败', 120) };
+	}
+}
+
 async function merchantAgreementImage(data = {}) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
@@ -746,16 +797,31 @@ async function merchantAgreementImage(data = {}) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const img = String(merchant.agreement_img || '').trim();
 		if (!img) return { code: 404, message: '该商户未签署协议或签署图片不存在' };
+		const base = {
+			merchantId: merchant._id,
+			wxNickname: safeText(merchant.wx_nickname || '', 60),
+			mobile: safeText(merchant.mobile || '', 20),
+			agreementImg: img,
+			agreementSignedAt: formatTime(merchant.agreement_signed_at),
+			agreementSignedIp: safeText(merchant.agreement_signed_ip, 80) || '',
+			agreementSignDevice: safeText(merchant.agreement_sign_device, 320) || ''
+		};
+		if (data?.forPdfExport === true || data?.forPdfExport === '1' || data?.forPdfExport === 1) {
+			const fetched = await fetchAgreementImageDataUrl(img);
+			if (!fetched.ok) return { code: 500, message: fetched.message || '读取协议图片失败' };
+			return {
+				code: 0,
+				message: 'ok',
+				data: {
+					...base,
+					agreementImgDataUrl: fetched.dataUrl
+				}
+			};
+		}
 		return {
 			code: 0,
 			message: 'ok',
-			data: {
-				merchantId: merchant._id,
-				agreementImg: img,
-				agreementSignedAt: formatTime(merchant.agreement_signed_at),
-				agreementSignedIp: safeText(merchant.agreement_signed_ip, 80) || '',
-				agreementSignDevice: safeText(merchant.agreement_sign_device, 320) || ''
-			}
+			data: base
 		};
 	} catch (e) {
 		console.error('merchantAgreementImage failed', e);
