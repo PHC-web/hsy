@@ -31,6 +31,7 @@
 					<uni-table :key="tableKey" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
 							<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'salesmanKeyword')">业务员</uni-th>
+							<uni-th align="center" width="120">机具号</uni-th>
 							<uni-th align="center" width="80" filter-type="select" :filter-data="firstChargeFilterData" @filter-change="headerFilterChange($event, 'firstCharge')">首充</uni-th>
 							<uni-th align="center" width="130" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">交易用户</uni-th>
 							<uni-th align="center" width="70">微信头像</uni-th>
@@ -41,9 +42,11 @@
 							<uni-th align="center" width="110">实付金额</uni-th>
 							<uni-th align="center" width="80" filter-type="select" :filter-data="refundedFilterData" @filter-change="headerFilterChange($event, 'refunded')">已退款</uni-th>
 							<uni-th align="center" width="160" filter-type="timestamp" @filter-change="headerFilterChange($event, 'payTime')">支付时间</uni-th>
+							<uni-th align="center" width="120">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.recordKey">
 							<uni-td align="center">{{ item.salesman || '-' }}</uni-td>
+							<uni-td align="center">{{ item.deviceNo || '-' }}</uni-td>
 							<uni-td align="center">
 								<text :class="item.firstCharge === '是' ? 'tag-warn' : 'tag-ok'">{{ item.firstCharge }}</text>
 							</uni-td>
@@ -60,6 +63,16 @@
 								<text :class="item.refunded === '是' ? 'tag-bad' : 'tag-ok'">{{ item.refunded }}</text>
 							</uni-td>
 							<uni-td align="center">{{ item.payTime || '-' }}</uni-td>
+							<uni-td align="center">
+								<button
+									v-if="canMarkManualRefund(item)"
+									size="mini"
+									type="warn"
+									:disabled="markingRecordKey === item.recordKey"
+									@click="confirmManualRefund(item)"
+								>已人工退款</button>
+								<text v-else class="op-muted">-</text>
+							</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
@@ -123,7 +136,8 @@ export default {
 				currentPage: 1,
 				pageSize: 10,
 				total: 0
-			}
+			},
+			markingRecordKey: ''
 		}
 	},
 	mounted() {
@@ -236,6 +250,57 @@ export default {
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
+		canMarkManualRefund(item) {
+			if (!item || item.refunded === '是') return false;
+			return item.source === 'h5_recharge' || item.source === 'h5_quota_recharge';
+		},
+		confirmManualRefund(item) {
+			if (!this.canMarkManualRefund(item)) return;
+			const wxNo = item.wxTradeNo && item.wxTradeNo !== '-' ? item.wxTradeNo : '';
+			const platformNo = item.platformNo && item.platformNo !== '-' ? item.platformNo : '';
+			const lines = [
+				'确认将该账单标记为「已退款」吗？',
+				'此操作仅更新系统账单状态，不会触发微信原路退款。',
+				platformNo ? `平台单号：${platformNo}` : '',
+				wxNo ? `微信单号：${wxNo}` : '',
+				`实付金额：${item.amountText || '-'}`
+			].filter(Boolean);
+			uni.showModal({
+				title: '已人工退款确认',
+				content: lines.join('\n'),
+				success: (res) => {
+					if (res.confirm) this.markManualRefund(item);
+				}
+			});
+		},
+		async markManualRefund(item) {
+			if (!item?.recordKey || this.markingRecordKey) return;
+			this.markingRecordKey = item.recordKey;
+			uni.showLoading({ title: '提交中...', mask: true });
+			try {
+				const res = await this.$request(
+					'tradeBillMarkManualRefund',
+					{
+						recordKey: item.recordKey,
+						wxTradeNo: item.wxTradeNo,
+						platformNo: item.platformNo,
+						reason: '线下人工退款'
+					},
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '标记失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: res.message || '已标记为已退款', icon: 'success' });
+				this.search();
+			} catch (err) {
+				uni.showToast({ title: err?.message || '标记失败', icon: 'none' });
+			} finally {
+				this.markingRecordKey = '';
+				uni.hideLoading();
+			}
+		},
 		toggleExportMenu() {
 			this.showExportMenu = !this.showExportMenu;
 		},
@@ -253,6 +318,7 @@ export default {
 			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
 			return (res.data?.list || []).map((x) => ({
 				业务员: x.salesman || '',
+				机具号: x.deviceNo || '',
 				首充: x.firstCharge || '',
 				交易用户: x.tradeUser || '',
 				平台单号: x.platformNo || '',
@@ -448,6 +514,11 @@ export default {
 
 .export-menu-item:hover {
 	background: #f5f7fa;
+}
+
+.op-muted {
+	color: #c0c4cc;
+	font-size: 12px;
 }
 
 ::v-deep .uni-table-th {

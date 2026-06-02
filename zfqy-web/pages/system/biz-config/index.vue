@@ -60,16 +60,16 @@
 				<text class="card-tip">用于“奖励提现”页单笔兑换范围控制；最低值按提现次数分段生效。</text>
 				<view class="form-grid">
 					<view class="field">
-						<text class="label">会员前3笔最小值(元)</text>
-						<uni-easyinput v-model="form.withdrawMinByCount.memberFirst3" type="number" placeholder="如 10" />
+						<text class="label">会员第1-5笔最小值(元)</text>
+						<uni-easyinput v-model="form.withdrawMinByCount.memberFirst5" type="number" placeholder="如 10" />
 					</view>
 					<view class="field">
-						<text class="label">会员第4-6笔最小值(元)</text>
-						<uni-easyinput v-model="form.withdrawMinByCount.member4To6" type="number" placeholder="如 30" />
+						<text class="label">会员第6-10笔最小值(元)</text>
+						<uni-easyinput v-model="form.withdrawMinByCount.member6To10" type="number" placeholder="如 30" />
 					</view>
 					<view class="field">
-						<text class="label">会员第7笔起最小值(元)</text>
-						<uni-easyinput v-model="form.withdrawMinByCount.member7Plus" type="number" placeholder="如 50" />
+						<text class="label">会员第11笔起最小值(元)</text>
+						<uni-easyinput v-model="form.withdrawMinByCount.member11Plus" type="number" placeholder="如 50" />
 					</view>
 					<view class="field">
 						<text class="label">非会员前3笔最小值(元)</text>
@@ -217,9 +217,9 @@ const defaultForm = () => ({
 	wxPayMch: defaultWxPayMch(),
 	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
 	withdrawMinByCount: {
-		memberFirst3: 10,
-		member4To6: 30,
-		member7Plus: 50,
+		memberFirst5: 10,
+		member6To10: 30,
+		member11Plus: 50,
 		nonMemberFirst3: 30,
 		nonMember4To6: 50,
 		nonMember7Plus: 100
@@ -288,6 +288,11 @@ export default {
 				const res = await this.$request('bizConfigGet', {}, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 				const merged = Object.assign(defaultForm(), res.data || {});
+				const wm = merged.withdrawMinByCount || {};
+				if (wm.memberFirst5 == null && wm.memberFirst3 != null) wm.memberFirst5 = wm.memberFirst3;
+				if (wm.member6To10 == null && wm.member4To6 != null) wm.member6To10 = wm.member4To6;
+				if (wm.member11Plus == null && wm.member7Plus != null) wm.member11Plus = wm.member7Plus;
+				merged.withdrawMinByCount = wm;
 				if (Array.isArray(res.data?.wxPayMchOptions) && res.data.wxPayMchOptions.length) {
 					this.wxPayMchOptions = res.data.wxPayMchOptions;
 				}

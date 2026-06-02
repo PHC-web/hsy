@@ -1520,12 +1520,61 @@ const TRADE_BILL_LOG_FIELDS = {
 	refunded: true
 };
 const TRADE_BILL_MERCHANT_FIELDS = {
+	_id: true,
 	salesman: true,
 	wx_nickname: true,
 	wx_avatar: true,
 	mobile: true,
-	user_id: true
+	user_id: true,
+	device_id: true
 };
+
+async function batchListBoundDeviceIdsByBindUserIds(bindUserIds) {
+	const uniq = [...new Set((Array.isArray(bindUserIds) ? bindUserIds : []).map((x) => String(x || '').trim()).filter(Boolean))];
+	const map = {};
+	if (!uniq.length) return map;
+	const CHUNK = 400;
+	for (let i = 0; i < uniq.length; i += CHUNK) {
+		const part = uniq.slice(i, i + CHUNK);
+		const res = await machineCollection
+			.where({
+				is_deleted: false,
+				is_bound: 1,
+				bind_user_id: db.command.in(part)
+			})
+			.field({ device_id: true, bind_user_id: true })
+			.limit(1000)
+			.get();
+		for (const row of res.data || []) {
+			const uid = String(row.bind_user_id || '').trim();
+			const did = safeText(row.device_id, 80);
+			if (!uid || !did) continue;
+			if (!map[uid]) map[uid] = [];
+			if (!map[uid].includes(did)) map[uid].push(did);
+		}
+	}
+	return map;
+}
+
+function merchantDeviceNoText(merchant, deviceIdsByBindUser) {
+	if (!merchant) return '-';
+	const ids = [];
+	const seen = new Set();
+	const addFromUid = (uid) => {
+		const arr = deviceIdsByBindUser[String(uid || '').trim()] || [];
+		for (const d of arr) {
+			if (!seen.has(d)) {
+				seen.add(d);
+				ids.push(d);
+			}
+		}
+	};
+	addFromUid(merchant.user_id);
+	addFromUid(merchant._id);
+	const primary = safeText(merchant.device_id, 80);
+	if (primary && !seen.has(primary)) ids.unshift(primary);
+	return ids.length ? ids.join('、') : '-';
+}
 
 function tradeBillCacheKey(data) {
 	const crypto = require('crypto');
@@ -1681,6 +1730,9 @@ async function buildTradeBillListData(data) {
 	rowsByUser.forEach((m) => {
 		merchantMap[String(m.user_id || '')] = m;
 	});
+	const merchantRows = [...new Map([...rowsById, ...rowsByUser].map((m) => [String(m._id), m])).values()];
+	const bindUserIds = merchantRows.flatMap((m) => [String(m.user_id || '').trim(), String(m._id || '').trim()]).filter(Boolean);
+	const deviceIdsByBindUser = await batchListBoundDeviceIdsByBindUserIds(bindUserIds);
 
 	const payList = payRows.map((row) => {
 		const merchant = merchantMap[String(row.user_id || '')] || null;
@@ -1693,6 +1745,7 @@ async function buildTradeBillListData(data) {
 			source: 'h5_recharge',
 			bizNo,
 			salesman: merchant?.salesman || '-',
+			deviceNo: merchantDeviceNoText(merchant, deviceIdsByBindUser),
 			firstCharge: '否',
 			tradeUser: merchant?.wx_nickname || row.nickname || '-',
 			avatar: merchant?.wx_avatar || '',
@@ -1719,6 +1772,7 @@ async function buildTradeBillListData(data) {
 				source: 'h5_refund_reset',
 				bizNo: refundNo,
 				salesman: merchant?.salesman || '-',
+				deviceNo: merchantDeviceNoText(merchant, deviceIdsByBindUser),
 				firstCharge: '否',
 				tradeUser: merchant?.wx_nickname || row.target_name || '-',
 				avatar: merchant?.wx_avatar || '',
@@ -1743,6 +1797,7 @@ async function buildTradeBillListData(data) {
 				source: 'h5_quota_recharge',
 				bizNo: rechargeNo,
 				salesman: merchant?.salesman || '-',
+				deviceNo: merchantDeviceNoText(merchant, deviceIdsByBindUser),
 				firstCharge: '否',
 				tradeUser: merchant?.wx_nickname || row.target_name || '-',
 				avatar: merchant?.wx_avatar || '',
@@ -1766,6 +1821,7 @@ async function buildTradeBillListData(data) {
 			source: 'offline_first_recharge',
 			bizNo: offlineOrderNo,
 			salesman: merchant?.salesman || '-',
+			deviceNo: merchantDeviceNoText(merchant, deviceIdsByBindUser),
 			firstCharge: '是',
 			tradeUser: merchant?.wx_nickname || row.target_name || '-',
 			avatar: merchant?.wx_avatar || '',
@@ -1828,7 +1884,7 @@ async function buildTradeBillListData(data) {
 
 async function tradeBillList(data) {
 	try {
-		const cacheKey = `hsy:admin:tradeBill:v3:${tradeBillCacheKey(data || {})}`;
+		const cacheKey = `hsy:admin:tradeBill:v5:${tradeBillCacheKey(data || {})}`;
 		const cached = await redisH5.h5RedisGetJson(cacheKey);
 		if (cached && cached.code === 0) return cached;
 		const result = await buildTradeBillListData(data);
@@ -1873,6 +1929,114 @@ async function tradeBillDelete(data, event) {
 	} catch (error) {
 		console.error('tradeBillDelete failed:', error);
 		return { code: 500, message: '删除失败' };
+	}
+}
+
+async function tradeBillMarkManualRefund(data, event) {
+	try {
+		const recordKey = safeText(data?.recordKey, 120);
+		if (!recordKey) return { code: 400, message: '缺少账单记录标识' };
+		if (recordKey.startsWith('offline:')) return { code: 400, message: '线下首冲账单不支持此操作' };
+		if (recordKey.startsWith('refund:')) return { code: 400, message: '该账单已是退款记录' };
+
+		const now = nowTs();
+		const operator = getOperator(event);
+		const reason = safeText(data?.reason || '线下人工退款', 200);
+		let payDoc = null;
+		let logDoc = null;
+
+		if (recordKey.startsWith('pay:')) {
+			const id = recordKey.slice(4);
+			const res = await uniPayOrderCollection.doc(id).get();
+			payDoc = (res.data && res.data[0]) || null;
+		} else if (recordKey.startsWith('recharge:')) {
+			const id = recordKey.slice(9);
+			const res = await operationLogCollection.doc(id).get();
+			logDoc = (res.data && res.data[0]) || null;
+			if (logDoc && logDoc.action !== 'h5_quota_recharge') {
+				return { code: 400, message: '该类型账单不支持人工退款标记' };
+			}
+		} else {
+			return { code: 400, message: '无效的账单记录' };
+		}
+		if (!payDoc && !logDoc) return { code: 404, message: '账单不存在' };
+
+		if (payDoc) {
+			if (payDoc.is_deleted) return { code: 400, message: '账单已删除' };
+			if (Number(payDoc.status) === 2 || Number(payDoc.status) === 3) {
+				return { code: 400, message: '该账单已标记为已退款' };
+			}
+			const totalFen = Number(payDoc.total_fee || 0);
+			await uniPayOrderCollection.doc(payDoc._id).update({
+				status: 3,
+				refund_fee: totalFen,
+				refund_date: now,
+				update_date: now
+			});
+			const bizNo = safeText(payDoc.out_trade_no || payDoc.order_no, 80);
+			if (bizNo) {
+				await operationLogCollection
+					.where({
+						action: 'h5_quota_recharge',
+						platform_no: bizNo,
+						is_deleted: db.command.neq(true)
+					})
+					.update({ refunded: true, refund_time: now });
+			}
+		}
+
+		if (logDoc) {
+			if (logDoc.is_deleted) return { code: 400, message: '账单已删除' };
+			if (logDoc.refunded) return { code: 400, message: '该账单已标记为已退款' };
+			await operationLogCollection.doc(logDoc._id).update({
+				refunded: true,
+				refund_time: now
+			});
+			const bizNo = safeText(logDoc.platform_no, 80);
+			if (bizNo && !payDoc) {
+				const payRes = await uniPayOrderCollection
+					.where(db.command.or([{ out_trade_no: bizNo }, { order_no: bizNo }]))
+					.limit(1)
+					.get();
+				payDoc = (payRes.data && payRes.data[0]) || null;
+				if (payDoc && Number(payDoc.status) !== 2 && Number(payDoc.status) !== 3) {
+					await uniPayOrderCollection.doc(payDoc._id).update({
+						status: 3,
+						refund_fee: Number(payDoc.total_fee || 0),
+						refund_date: now,
+						update_date: now
+					});
+				}
+			}
+		}
+
+		await operationLogCollection.add({
+			user_id: payDoc?.user_id || logDoc?.user_id || '',
+			user_name: operator,
+			action: 'trade_bill_manual_refund',
+			module: 'finance',
+			target_id: payDoc?._id || logDoc?._id || '',
+			target_name: safeText(payDoc?.out_trade_no || logDoc?.platform_no || recordKey, 80),
+			content: `${reason}：交易账单标记已退款（recordKey=${recordKey}）`,
+			operator_source: 'admin',
+			operator,
+			platform_no: safeText(payDoc?.transaction_id || payDoc?.out_trade_no || logDoc?.platform_no, 80),
+			ip: event?.context?.CLIENTIP || '',
+			create_time: now
+		});
+
+		return {
+			code: 0,
+			message: '已标记为已退款',
+			data: {
+				recordKey,
+				wxTradeNo: safeText(payDoc?.transaction_id, 80) || '-',
+				platformNo: safeText(payDoc?.out_trade_no || logDoc?.platform_no, 80) || '-'
+			}
+		};
+	} catch (error) {
+		console.error('tradeBillMarkManualRefund failed:', error);
+		return { code: 500, message: safeText(error?.message || '标记失败', 180) };
 	}
 }
 
@@ -6231,9 +6395,9 @@ const DEFAULT_BIZ_SETTINGS = {
 	rechargeRules: DEFAULT_RECHARGE_RULES,
 	withdrawRange: { memberMin: 10, memberMax: 200, nonMemberMin: 30, nonMemberMax: 200 },
 	withdrawMinByCount: {
-		memberFirst3: 10,
-		member4To6: 30,
-		member7Plus: 50,
+		memberFirst5: 10,
+		member6To10: 30,
+		member11Plus: 50,
 		nonMemberFirst3: 30,
 		nonMember4To6: 50,
 		nonMember7Plus: 100
@@ -6277,13 +6441,23 @@ function sanitizeBizSettings(raw = {}) {
 	if (withdrawRange.memberMin > withdrawRange.memberMax) withdrawRange.memberMax = withdrawRange.memberMin;
 	if (withdrawRange.nonMemberMin > withdrawRange.nonMemberMax) withdrawRange.nonMemberMax = withdrawRange.nonMemberMin;
 	const wm = raw.withdrawMinByCount || {};
+	const defWm = DEFAULT_BIZ_SETTINGS.withdrawMinByCount;
 	const withdrawMinByCount = {
-		memberFirst3: Math.max(1, Number(wm.memberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.memberFirst3)),
-		member4To6: Math.max(1, Number(wm.member4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member4To6)),
-		member7Plus: Math.max(1, Number(wm.member7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member7Plus)),
-		nonMemberFirst3: Math.max(1, Number(wm.nonMemberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMemberFirst3)),
-		nonMember4To6: Math.max(1, Number(wm.nonMember4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember4To6)),
-		nonMember7Plus: Math.max(1, Number(wm.nonMember7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember7Plus))
+		memberFirst5: Math.max(
+			1,
+			Number(wm.memberFirst5 != null ? wm.memberFirst5 : wm.memberFirst3 != null ? wm.memberFirst3 : defWm.memberFirst5)
+		),
+		member6To10: Math.max(
+			1,
+			Number(wm.member6To10 != null ? wm.member6To10 : wm.member4To6 != null ? wm.member4To6 : defWm.member6To10)
+		),
+		member11Plus: Math.max(
+			1,
+			Number(wm.member11Plus != null ? wm.member11Plus : wm.member7Plus != null ? wm.member7Plus : defWm.member11Plus)
+		),
+		nonMemberFirst3: Math.max(1, Number(wm.nonMemberFirst3 || defWm.nonMemberFirst3)),
+		nonMember4To6: Math.max(1, Number(wm.nonMember4To6 || defWm.nonMember4To6)),
+		nonMember7Plus: Math.max(1, Number(wm.nonMember7Plus || defWm.nonMember7Plus))
 	};
 	const wa = raw.withdrawAudit || {};
 	const withdrawAudit = {
@@ -6354,15 +6528,19 @@ function sanitizeBizSettings(raw = {}) {
 
 function resolveWithdrawMinPoints(member, biz, historyCount) {
 	const wm = biz?.withdrawMinByCount || DEFAULT_BIZ_SETTINGS.withdrawMinByCount;
+	const defWm = DEFAULT_BIZ_SETTINGS.withdrawMinByCount;
 	const nextNo = Math.max(1, Number(historyCount || 0) + 1);
 	if (member) {
-		if (nextNo <= 3) return Number(wm.memberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.memberFirst3);
-		if (nextNo <= 6) return Number(wm.member4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member4To6);
-		return Number(wm.member7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.member7Plus);
+		const memberFirst5 = Number(wm.memberFirst5 != null ? wm.memberFirst5 : wm.memberFirst3 != null ? wm.memberFirst3 : defWm.memberFirst5);
+		const member6To10 = Number(wm.member6To10 != null ? wm.member6To10 : wm.member4To6 != null ? wm.member4To6 : defWm.member6To10);
+		const member11Plus = Number(wm.member11Plus != null ? wm.member11Plus : wm.member7Plus != null ? wm.member7Plus : defWm.member11Plus);
+		if (nextNo <= 5) return memberFirst5;
+		if (nextNo <= 10) return member6To10;
+		return member11Plus;
 	}
-	if (nextNo <= 3) return Number(wm.nonMemberFirst3 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMemberFirst3);
-	if (nextNo <= 6) return Number(wm.nonMember4To6 || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember4To6);
-	return Number(wm.nonMember7Plus || DEFAULT_BIZ_SETTINGS.withdrawMinByCount.nonMember7Plus);
+	if (nextNo <= 3) return Number(wm.nonMemberFirst3 || defWm.nonMemberFirst3);
+	if (nextNo <= 6) return Number(wm.nonMember4To6 || defWm.nonMember4To6);
+	return Number(wm.nonMember7Plus || defWm.nonMember7Plus);
 }
 
 async function countMerchantWithdrawTimes(merchantUserId) {
@@ -7504,6 +7682,36 @@ const RECHARGE_GIFT_OPTIONS = [
 	{ value: 'speaker', label: '蓝牙音响' },
 	{ value: 'scan_pos', label: '扫码POS机' }
 ];
+/** 同档位充值下单冷却：1 分钟内不允许重复创建 */
+const H5_RECHARGE_SAME_TIER_COOLDOWN_MS = 60 * 1000;
+
+function isSameRechargeTierOrder(orderCustom, pkg) {
+	const custom = orderCustom || {};
+	const targetPrice = Number(custom.target_price || 0);
+	const pkgPrice = Number(pkg?.price || 0);
+	const pkgId = safeText(pkg?.id, 40);
+	const orderPkgId = safeText(custom.package_id, 40);
+	if (orderPkgId && pkgId && orderPkgId === pkgId) return true;
+	if (targetPrice > 0 && pkgPrice > 0 && targetPrice === pkgPrice) return true;
+	return false;
+}
+
+async function findRecentSameTierRechargeOrder(merchantUserId, pkg, sinceTs) {
+	const uid = safeText(merchantUserId, 120);
+	if (!uid || !pkg) return null;
+	const recentRes = await uniPayOrderCollection
+		.where({
+			user_id: uid,
+			type: 'h5_quota_recharge',
+			is_deleted: db.command.neq(true),
+			create_date: db.command.gte(Number(sinceTs || 0))
+		})
+		.field({ custom: true, out_trade_no: true, create_date: true })
+		.orderBy('create_date', 'desc')
+		.limit(20)
+		.get();
+	return (recentRes.data || []).find((row) => isSameRechargeTierOrder(row.custom, pkg)) || null;
+}
 
 const H5_RECHARGE_PACKAGES = [
 	{ id: 'pkg_600', title: '600元', price: 600, quota: 1000000, benefitTip: '600元配置100万交易量，等于补贴市场价的3800元手续费', giftChoiceRequired: false, giftOptions: [] },
@@ -8092,6 +8300,10 @@ async function h5RechargeCreate(data, event) {
 		const addQuota = Math.max(0, Number(pkg.quota || 0) - currentQuota);
 		const payFeeFen = Math.round(payAmount * 100);
 		if (payFeeFen <= 0) return { code: 400, message: '当前档位无需支付，请选择更高档位' };
+		const dupOrder = await findRecentSameTierRechargeOrder(merchant.user_id || merchant._id, pkg, now - H5_RECHARGE_SAME_TIER_COOLDOWN_MS);
+		if (dupOrder) {
+			return { code: 400, message: '1分钟内请勿重复创建同档位充值订单' };
+		}
 
 		const orderNo = `H5R${now}${randomStr(6).toUpperCase()}`.slice(0, 28);
 		const createBody = {
@@ -11650,6 +11862,170 @@ async function adminMerchantRecoverPendingBalance(data = {}) {
 	}
 }
 
+async function listMerchantQuotaRechargeLogs(merchant) {
+	const merchantUserId = String(merchant?.user_id || merchant?._id || '');
+	if (!merchantUserId) return [];
+	const logRes = await operationLogCollection
+		.where({
+			user_id: merchantUserId,
+			action: 'h5_quota_recharge',
+			is_deleted: db.command.neq(true)
+		})
+		.field({
+			platform_no: true,
+			package_price: true,
+			package_title: true,
+			refunded: true,
+			create_time: true
+		})
+		.orderBy('create_time', 'asc')
+		.limit(100)
+		.get();
+	return (logRes.data || []).map((row) => ({
+		logId: row._id,
+		platformNo: safeText(row.platform_no, 80),
+		packagePrice: Number(Number(row.package_price || 0).toFixed(2)),
+		packageTitle: safeText(row.package_title, 80),
+		refunded: !!row.refunded,
+		createTime: formatTime(row.create_time)
+	}));
+}
+
+function sumActiveQuotaRechargeLogs(logRows) {
+	const seenTradeNo = new Set();
+	let total = 0;
+	(logRows || []).forEach((row, idx) => {
+		if (row.refunded) return;
+		const tradeNo = safeText(row.platformNo || '', 80) || `idx_${idx}`;
+		if (seenTradeNo.has(tradeNo)) return;
+		seenTradeNo.add(tradeNo);
+		total += Number(row.packagePrice || 0);
+	});
+	return Number(total.toFixed(2));
+}
+
+/**
+ * 管理端手动修正商户 recharge_amount / recharge_total_yuan（uniCloud 控制台云函数调试专用）。
+ * 默认 dryRun 仅预览；传 apply:true 才真正写库。
+ * 可选 markRefundedLogIds：将指定 h5_quota_recharge 日志标记 refunded，避免 ensureMerchantRechargeAmountAccurate 按日志回写覆盖。
+ */
+async function adminSetMerchantRechargeAmount(data = {}, event = {}) {
+	try {
+		const key =
+			data?.merchantId ||
+			data?.id ||
+			data?.merchantUserId ||
+			data?.userId ||
+			data?.user_id ||
+			data?.deviceNo ||
+			data?.deviceId ||
+			data?.device_id ||
+			data?.wxOpenid ||
+			data?.wx_openid ||
+			data?.mobile;
+		if (!key) {
+			return {
+				code: 400,
+				message: '请传入 merchantId / userId / deviceNo / wxOpenid 之一（mobile 可选）'
+			};
+		}
+		const applyExplicit =
+			data?.apply === true ||
+			data?.apply === 1 ||
+			String(data?.apply || '').toLowerCase() === 'true';
+		const dryRun = !applyExplicit && data?.dryRun !== false && data?.dryRun !== 0;
+		const rawYuan = data?.rechargeYuan != null && data?.rechargeYuan !== '' ? data.rechargeYuan : data?.rechargeAmount;
+		const rechargeYuan = typeof rawYuan === 'string' ? Number(String(rawYuan).trim()) : Number(rawYuan);
+		if (!Number.isFinite(rechargeYuan) || rechargeYuan < 0) {
+			return { code: 400, message: 'rechargeYuan 须为大于等于 0 的数字' };
+		}
+		const targetYuan = Number(rechargeYuan.toFixed(2));
+		const markRefundedLogIds = [...new Set((Array.isArray(data?.markRefundedLogIds) ? data.markRefundedLogIds : []).map((x) => safeText(x, 80)).filter(Boolean))];
+		const reason = safeText(data?.reason || data?.remark || '管理员手动修正充值金额', 200);
+		let merchant = await getMerchantByIdOrUserId(key);
+		if (!merchant) {
+			const openid = safeText(data?.wxOpenid || data?.wx_openid, 120);
+			if (openid) {
+				const openRes = await merchantCollection.where({ wx_openid: openid }).limit(1).get();
+				merchant = (openRes.data || [])[0] || null;
+			}
+		}
+		if (!merchant) return { code: 404, message: '商户不存在，请核对 merchantId / userId / deviceNo / wxOpenid' };
+		const beforeAmount = Number(
+			Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2)
+		);
+		const rechargeLogs = await listMerchantQuotaRechargeLogs(merchant);
+		const trackedByLogs = sumActiveQuotaRechargeLogs(
+			rechargeLogs.map((x) => ({
+				platformNo: x.platformNo,
+				packagePrice: x.packagePrice,
+				refunded: markRefundedLogIds.includes(x.logId) ? true : x.refunded
+			}))
+		);
+		const preview = {
+			merchantId: merchant._id,
+			userId: merchant.user_id || '',
+			deviceNo: merchant.device_id || '',
+			mobile: merchant.mobile || '',
+			wxNickname: merchant.wx_nickname || '',
+			wxOpenid: merchant.wx_openid || '',
+			beforeAmount,
+			targetAmount: targetYuan,
+			trackedByLogsAfterMark: trackedByLogs,
+			willBeOverwrittenLater: Math.abs(trackedByLogs - targetYuan) >= 0.0001 && trackedByLogs > 0,
+			rechargeLogs,
+			markRefundedLogIds
+		};
+		if (dryRun) {
+			return {
+				code: 0,
+				message: 'dryRun 预览（未写库）。确认无误后传 apply:true 执行。',
+				data: preview
+			};
+		}
+		const now = nowTs();
+		if (markRefundedLogIds.length) {
+			await operationLogCollection.where({ _id: db.command.in(markRefundedLogIds) }).update({
+				refunded: true,
+				refund_time: now
+			});
+		}
+		await merchantCollection.doc(merchant._id).update({
+			recharge_amount: targetYuan,
+			recharge_total_yuan: targetYuan,
+			recharge_update_time: now,
+			update_time: now
+		});
+		await operationLogCollection.add({
+			user_id: merchant.user_id || merchant._id,
+			user_name: merchant.wx_nickname || merchant.mobile || '商户',
+			action: 'admin_set_recharge_amount',
+			module: 'merchant',
+			target_id: merchant._id,
+			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+			content: `${reason}：${beforeAmount} -> ${targetYuan}`,
+			operator_source: 'admin',
+			operator: getOperator(event),
+			before_recharge_amount: beforeAmount,
+			after_recharge_amount: targetYuan,
+			mark_refunded_log_ids: markRefundedLogIds,
+			ip: event?.context?.CLIENTIP || '',
+			create_time: now
+		});
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				...preview,
+				applied: true
+			}
+		};
+	} catch (e) {
+		console.error('adminSetMerchantRechargeAmount failed', e);
+		return { code: 500, message: safeText(e?.message || '修正充值金额失败', 180) };
+	}
+}
+
 /**
  * 按 hsy-income-packets 中「已领取」记录金额合计，将商户待提现相关字段写回（与 H5 领取成功时写库口径一致：pending_withdraw / account_points / withdraw_pending_balance）。
  * 不修改机具 frozen、商户 frozen_amount、available_reward 等其它字段。默认 dryRun 仅预览；白银会员可 requireSilver 校验。
@@ -13192,6 +13568,8 @@ exports.main = async (event, context) => {
 			return await tradeBillList(actualData);
 		case 'tradeBillDelete':
 			return await tradeBillDelete(actualData, event);
+		case 'tradeBillMarkManualRefund':
+			return await tradeBillMarkManualRefund(actualData, event);
 		case 'adminDashboardTrend30d':
 			return await adminDashboardTrend30d(actualData);
 		case 'adminHomeSummary':
@@ -13222,6 +13600,8 @@ exports.main = async (event, context) => {
 			return await adminSilverMemberGiftRevert(actualData);
 		case 'adminMerchantRecoverPendingBalance':
 			return await adminMerchantRecoverPendingBalance(actualData);
+		case 'adminSetMerchantRechargeAmount':
+			return await adminSetMerchantRechargeAmount(actualData, event);
 		case 'adminRestorePendingFromClaimedPackets':
 			return await adminRestorePendingFromClaimedPackets(actualData, event);
 		case 'adminSilverFlowMonthFirstReleaseCreditPending':
