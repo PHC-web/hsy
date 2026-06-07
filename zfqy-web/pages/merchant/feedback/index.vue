@@ -122,12 +122,47 @@
 						>
 							发送退款入口
 						</button>
+						<button
+							type="default"
+							size="mini"
+							:loading="sendingProportionalRefundEntry"
+							:disabled="!canSendRefundEntry"
+							@click="openProportionalRefundPopup"
+						>
+							按比例退款入口
+						</button>
 						<button type="primary" size="mini" :loading="replying" :disabled="sendReplyDisabled" @click="submitReply">
 							发送回复
 						</button>
 					</view>
 				</view>
 				<view v-else class="detail-closed">工单已结束，仅可查看历史消息。</view>
+			</view>
+		</uni-popup>
+		<uni-popup ref="proportionalRefundPopup" type="center">
+			<view class="pct-popup">
+				<text class="pct-title">按比例发送退款入口</text>
+				<text class="pct-sub">不受180天窗口限制；退款成功后清除会员状态；大额将自动拆多笔转账。</text>
+				<view v-if="currentMerchant" class="pct-info">
+					<text>商户：{{ currentMerchant.name || '-' }}</text>
+					<text>充值金额：{{ formatMoney(currentMerchant.rechargeAmount) }} 元</text>
+					<text v-if="proportionalPreview.refundYuan > 0">预计退款：{{ formatMoney(proportionalPreview.refundYuan) }} 元（约 {{ proportionalPreview.sliceCount }} 笔）</text>
+				</view>
+				<view class="pct-field">
+					<text class="pct-label">退款比例</text>
+					<input
+						v-model="proportionalPercentInput"
+						class="pct-input"
+						type="digit"
+						placeholder="如 100 或 60"
+						@input="updateProportionalPreview"
+					/>
+					<text class="pct-suffix">%</text>
+				</view>
+				<view class="pct-actions">
+					<button size="mini" @click="closeProportionalRefundPopup">取消</button>
+					<button type="primary" size="mini" :loading="sendingProportionalRefundEntry" @click="confirmProportionalRefundEntry">确认发送</button>
+				</view>
 			</view>
 		</uni-popup>
 	</view>
@@ -156,6 +191,9 @@ export default {
 			pendingVideoPath: '',
 			replying: false,
 			sendingRefundEntry: false,
+			sendingProportionalRefundEntry: false,
+			proportionalPercentInput: '100',
+			proportionalPreview: { refundYuan: 0, sliceCount: 0 },
 			scrollIntoView: ''
 		};
 	},
@@ -169,6 +207,11 @@ export default {
 			if (this.pendingImages.length) return false;
 			if (this.pendingVideoPath) return false;
 			return !t;
+		},
+		proportionalPercentNumber() {
+			const raw = String(this.proportionalPercentInput || '').trim().replace(/%/g, '');
+			const n = Number(raw);
+			return Number.isFinite(n) ? n : NaN;
 		}
 	},
 	onLoad() {
@@ -346,6 +389,98 @@ export default {
 				uni.showToast({ title: e?.message || '发送失败', icon: 'none' });
 			} finally {
 				this.replying = false;
+			}
+		},
+		formatMoney(v) {
+			const n = Number(v);
+			return Number.isFinite(n) ? n.toFixed(2) : '0.00';
+		},
+		parsePercentInput(raw) {
+			const s = String(raw == null ? '' : raw).trim().replace(/%/g, '');
+			const n = Number(s);
+			return Number.isFinite(n) ? n : NaN;
+		},
+		updateProportionalPreview() {
+			const pct = this.parsePercentInput(this.proportionalPercentInput);
+			const base = Number(this.currentMerchant?.rechargeAmount || 0);
+			if (!Number.isFinite(pct) || pct <= 0 || pct > 100 || !(base > 0)) {
+				this.proportionalPreview = { refundYuan: 0, sliceCount: 0 };
+				return;
+			}
+			const refundYuan = Number((base * pct / 100).toFixed(2));
+			const maxSlice = 200;
+			const sliceCount = refundYuan > 0 ? Math.max(1, Math.ceil(refundYuan / maxSlice)) : 0;
+			this.proportionalPreview = { refundYuan, sliceCount };
+		},
+		openProportionalRefundPopup() {
+			if (!this.canSendRefundEntry) {
+				uni.showToast({ title: '该商户非会员，无法发送退款入口', icon: 'none' });
+				return;
+			}
+			this.proportionalPercentInput = '100';
+			this.updateProportionalPreview();
+			this.$refs.proportionalRefundPopup.open();
+		},
+		closeProportionalRefundPopup() {
+			this.$refs.proportionalRefundPopup.close();
+		},
+		async confirmProportionalRefundEntry() {
+			if (!this.currentId) return;
+			const pct = this.parsePercentInput(this.proportionalPercentInput);
+			if (!Number.isFinite(pct) || pct <= 0 || pct > 100) {
+				uni.showToast({ title: '请输入 1-100 之间的比例', icon: 'none' });
+				return;
+			}
+			const base = Number(this.currentMerchant?.rechargeAmount || 0);
+			const refundYuan = Number((base * pct / 100).toFixed(2));
+			const previewText =
+				`确认发送 ${pct}% 按比例退款入口？\n` +
+				`充值 ${this.formatMoney(base)} 元，预计退款 ${this.formatMoney(refundYuan)} 元` +
+				(this.proportionalPreview.sliceCount > 1 ? `，约 ${this.proportionalPreview.sliceCount} 笔转账` : '') +
+				'。\n不受180天窗口限制。';
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '二次确认',
+					content: previewText,
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			this.sendingProportionalRefundEntry = true;
+			try {
+				const ret = await this.$request(
+					'feedbackAdminSendProportionalRefundEntry',
+					{
+						feedbackId: this.currentId,
+						refundPercent: pct,
+						adminDisplayName: this.currentAdminDisplayName()
+					},
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '发送失败', icon: 'none' });
+					return;
+				}
+				this.detailMessages = ret.data?.messages || [];
+				this.closeProportionalRefundPopup();
+				this.$nextTick(() => {
+					this.scrollToBottom();
+					setTimeout(() => this.scrollToBottom(), 100);
+				});
+				const link = String(ret.data?.entryUrl || '');
+				if (link) {
+					uni.setClipboardData({
+						data: link,
+						success: () => {
+							uni.showToast({ title: '已发送并复制退款入口', icon: 'success' });
+						}
+					});
+				} else {
+					uni.showToast({ title: '已发送按比例退款入口', icon: 'success' });
+				}
+				this.loadList();
+			} finally {
+				this.sendingProportionalRefundEntry = false;
 			}
 		},
 		async sendRefundEntry() {
@@ -584,6 +719,7 @@ export default {
 
 .reply-actions {
 	display: flex;
+	flex-wrap: wrap;
 	justify-content: flex-end;
 	gap: 8px;
 }
@@ -650,5 +786,74 @@ export default {
 	margin-top: 8px;
 	font-size: 12px;
 	color: #64748b;
+}
+
+.pct-popup {
+	width: min(92vw, 420px);
+	background: #fff;
+	border-radius: 10px;
+	padding: 16px;
+	box-sizing: border-box;
+}
+
+.pct-title {
+	display: block;
+	font-size: 16px;
+	font-weight: 700;
+	color: #303133;
+}
+
+.pct-sub {
+	display: block;
+	margin-top: 6px;
+	font-size: 12px;
+	color: #909399;
+	line-height: 1.5;
+}
+
+.pct-info {
+	margin-top: 10px;
+	padding: 10px;
+	background: #f5f7fa;
+	border-radius: 8px;
+	font-size: 13px;
+	color: #606266;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pct-field {
+	margin-top: 12px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.pct-label {
+	font-size: 13px;
+	color: #606266;
+	flex-shrink: 0;
+}
+
+.pct-input {
+	flex: 1;
+	height: 34px;
+	border: 1px solid #dcdfe6;
+	border-radius: 6px;
+	padding: 0 10px;
+	font-size: 14px;
+}
+
+.pct-suffix {
+	font-size: 14px;
+	color: #606266;
+}
+
+.pct-actions {
+	margin-top: 16px;
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
 }
 </style>

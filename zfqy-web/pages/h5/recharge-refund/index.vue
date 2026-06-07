@@ -98,9 +98,13 @@ function defaultRefundUi() {
 		batchState: '',
 		needRefundAudit: false,
 		refundable: true,
+		baseRechargeAmount: '0.00',
 		refundAmount: '0.00',
 		penaltyAmount: '0.00',
 		finalRefundAmount: '0.00',
+		refundEntryType: 'full',
+		refundPercent: null,
+		bypassRefundWindow: false,
 		transferSliceTotal: 0,
 		transferSliceDone: 0,
 		transferSliceIndex: 0
@@ -587,10 +591,17 @@ export default {
 			}
 		},
 		refundApply() {
-			const isWindow = this.countdown.phase === 'window';
-			const content = isWindow
-				? '退款后将不享有会员权益，确认退款？'
-				: `充值后${this.refundCycleDays}天内无法进行全额退款，现在退款需收取${this.refundPenaltyRate}%违约金，是否要进行退款？`;
+			const ui = this.refundUi || {};
+			let content = '';
+			if (ui.refundEntryType === 'proportional') {
+				const finalAmt = ui.finalRefundAmount || '0.00';
+				content = `预计退款 ${finalAmt} 元，确认退款？`;
+			} else {
+				const isWindow = this.countdown.phase === 'window';
+				content = isWindow
+					? '退款后将不享有会员权益，确认退款？'
+					: `充值后${this.refundCycleDays}天内无法进行全额退款，现在退款需收取${this.refundPenaltyRate}%违约金，是否要进行退款？`;
+			}
 			uni.showModal({
 				title: '确认退款重置',
 				content,

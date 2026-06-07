@@ -13,6 +13,9 @@
 		"expire_time": { "bsonType": "timestamp", "description": "过期时间" },
 		"last_access_time": { "bsonType": "timestamp", "description": "最近访问时间" },
 		"create_user": { "bsonType": "string", "description": "创建人" },
+		"refund_entry_type": { "bsonType": "string", "description": "full/proportional，默认 full" },
+		"refund_percent": { "bsonType": "number", "description": "按比例退款时的百分比 1-100" },
+		"bypass_refund_window": { "bsonType": "bool", "description": "是否不受180天退款窗口/违约金限制" },
 		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
 		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
 		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false }

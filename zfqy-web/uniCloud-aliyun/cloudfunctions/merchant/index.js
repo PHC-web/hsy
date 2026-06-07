@@ -504,6 +504,27 @@ function pickRefundEntryToken(data = {}) {
 	return safeText(data?.refundEntryToken || data?.refundToken || data?.rt || data?.token || '', 120);
 }
 
+function parseRefundPercentInput(raw) {
+	if (raw == null || raw === '') return NaN;
+	const s = String(raw).trim().replace(/%/g, '');
+	const n = Number(s);
+	if (!Number.isFinite(n)) return NaN;
+	return Number(n.toFixed(4));
+}
+
+function resolveRefundEntryPolicy(tokenRow) {
+	if (!tokenRow || safeText(tokenRow.refund_entry_type, 24) !== 'proportional') {
+		return { entryType: 'full', refundPercent: null, bypassRefundWindow: false };
+	}
+	const pctRaw = Number(tokenRow.refund_percent);
+	const refundPercent = Number.isFinite(pctRaw) ? Math.min(100, Math.max(1, Number(pctRaw.toFixed(4)))) : 100;
+	return {
+		entryType: 'proportional',
+		refundPercent,
+		bypassRefundWindow: tokenRow.bypass_refund_window !== false
+	};
+}
+
 function shouldBypassRefundEntryToken(data = {}) {
 	return false;
 }
@@ -985,45 +1006,60 @@ function resolveMerchantMembershipForAdmin(merchant, rechargePackages = null) {
 	const now = nowTs();
 	const silverStartAt = Number(merchant?.silver_member_start_at || 0);
 	const silverEndAt = Number(merchant?.silver_member_end_at || 0);
+	const hasRechargeMembership = merchantHasRechargeMembership(merchant);
+	if (hasRechargeMembership) {
+		const directName = String(merchant?.membership_name || '').trim();
+		if (directName) {
+			return {
+				level: directName,
+				openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0)
+			};
+		}
+		const tag = String(merchant?.member_tier || merchant?.membership_tier || merchant?.h5_member_tier || '').toLowerCase();
+		if (tag === 'diamond') {
+			return { level: '钻石会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+		}
+		if (tag === 'platinum') {
+			return { level: '铂金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+		}
+		if (tag === 'white_gold' || tag === 'gold' || tag === 'whitegold') {
+			return { level: '白金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+		}
+		const m = h5MembershipInfo(merchant, Array.isArray(rechargePackages) && rechargePackages.length ? rechargePackages : null);
+		if (m && m.tier && m.tier !== 'normal') {
+			return {
+				level: String(m.name || '会员'),
+				openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0)
+			};
+		}
+		const reward = Number(merchant?.recharge_package_reward || 0);
+		const quota = Number(merchant?.estimated_free_quota || merchant?.recharge_package_quota || 0);
+		if (reward >= 7600 || quota >= 2000000) {
+			return { level: '钻石会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+		}
+		if (reward >= 5700 || quota >= 1500000) {
+			return { level: '铂金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+		}
+		if (reward >= 3800 || quota >= 1000000) {
+			return { level: '白金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
+		}
+	}
 	if (merchant?.silver_member === true && (!silverEndAt || silverEndAt > now)) {
 		return { level: '白银会员', openedAt: silverStartAt };
 	}
 	const directName = String(merchant?.membership_name || '').trim();
-	if (directName) {
+	if (directName && directName !== '普通会员') {
 		return {
 			level: directName,
 			openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0)
 		};
 	}
-	const tag = String(merchant?.member_tier || merchant?.membership_tier || merchant?.h5_member_tier || '').toLowerCase();
-	if (tag === 'diamond') {
-		return { level: '钻石会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
-	}
-	if (tag === 'platinum') {
-		return { level: '铂金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
-	}
-	if (tag === 'white_gold' || tag === 'gold' || tag === 'whitegold') {
-		return { level: '白金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
-	}
-	// 与 H5 首页保持同源判定：优先使用动态额度包（含后台新增套餐）
 	const m = h5MembershipInfo(merchant, Array.isArray(rechargePackages) && rechargePackages.length ? rechargePackages : null);
 	if (m && m.tier && m.tier !== 'normal') {
 		return {
 			level: String(m.name || '会员'),
 			openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0)
 		};
-	}
-	// 历史数据兜底：部分老商户未记录 package_id/price，但记录了奖励额度或目标额度
-	const reward = Number(merchant?.recharge_package_reward || 0);
-	const quota = Number(merchant?.estimated_free_quota || merchant?.recharge_package_quota || 0);
-	if (reward >= 7600 || quota >= 2000000) {
-		return { level: '钻石会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
-	}
-	if (reward >= 5700 || quota >= 1500000) {
-		return { level: '铂金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
-	}
-	if (reward >= 3800 || quota >= 1000000) {
-		return { level: '白金会员', openedAt: Number(merchant?.recharge_update_time || merchant?.recharge_cycle_start || 0) };
 	}
 	return { level: '普通会员', openedAt: 0 };
 }
@@ -6272,7 +6308,7 @@ async function h5MineInfo(data) {
 		const silverEndAt = Number(merchant.silver_member_end_at || 0);
 		const silverActive = isH5SilverMemberForWithdraw(merchant) && silverEndAt > now;
 		let membership = h5MembershipInfo(merchant, rechargePackages);
-		if (membership.tier === 'normal' && Number(merchant.recharge_total_yuan || 0) > 0) {
+		if (membership.tier === 'normal' && merchantHasRechargeMembership(merchant)) {
 			const fixed = await resolveRechargeMembershipFallback(merchant, rechargePackages);
 			if (fixed && fixed.tier && fixed.tier !== 'normal') {
 				membership = fixed;
@@ -6738,6 +6774,12 @@ function h5WithdrawQuotaTotalYuan(merchant, rechargeRules = DEFAULT_RECHARGE_RUL
 }
 
 function h5MembershipInfo(merchant, packages = null) {
+	if (!merchantHasRechargeMembership(merchant)) {
+		if (hasH5SilverMemberIdentity(merchant)) {
+			return { tier: 'silver', name: '白银会员', accent: '#c0cbd9' };
+		}
+		return { tier: 'normal', name: '普通会员', accent: '#94a3b8' };
+	}
 	const persistedName = safeText(merchant?.membership_name || '', 40);
 	if (persistedName) {
 		let tier = 'normal';
@@ -6833,6 +6875,24 @@ function hasH5SilverMemberIdentity(merchant) {
 
 function isH5SilverMemberForWithdraw(merchant) {
 	return hasH5SilverMemberIdentity(merchant);
+}
+
+/** 是否曾有过 H5 额度充值（含充值后另领兑换码白银的场景） */
+function isMerchantEligibleForH5Refund(merchant) {
+	if (!merchant) return false;
+	if (isH5RechargeMemberForWithdraw(merchant)) return true;
+	const rechargeYuan = Number(
+		merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0
+	);
+	if (rechargeYuan > 0) return true;
+	if (Number(merchant.recharge_package_price || 0) > 0) return true;
+	if (Number(merchant.recharge_cycle_start || 0) > 0) return true;
+	return false;
+}
+
+/** 仅拦截「纯兑换码白银、从未充值」的退款；充值后领兑换码不受影响 */
+function shouldBlockH5RefundForSilverOnly(merchant) {
+	return isH5SilverMemberForWithdraw(merchant) && !isMerchantEligibleForH5Refund(merchant);
 }
 
 function resolveH5WithdrawRole(merchant) {
@@ -7022,7 +7082,7 @@ async function getH5CurrentMonthTradeYuanCached(merchant, now = nowTs()) {
 
 async function resolveRechargeMembershipFallback(merchant, rechargePackages = []) {
 	try {
-		if (!merchant) return null;
+		if (!merchant || !merchantHasRechargeMembership(merchant)) return null;
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		if (!merchantUserId) return null;
 		const redisKey = `hsy:h5:member:hint:${merchantUserId}`;
@@ -7544,7 +7604,7 @@ async function h5HomeDashboard(data) {
 			syncDash.countdown ||
 			computeRechargeCountdown(merchant.recharge_cycle_start, now, cycleCfg.cycleDays, cycleCfg.windowDays);
 		let membership = h5MembershipInfo(merchant, rechargePackages);
-		if (membership.tier === 'normal' && Number(merchant.recharge_total_yuan || 0) > 0) {
+		if (membership.tier === 'normal' && merchantHasRechargeMembership(merchant)) {
 			const fixed = await resolveRechargeMembershipFallback(merchant, rechargePackages);
 			if (fixed && fixed.tier && fixed.tier !== 'normal') {
 				membership = fixed;
@@ -8093,7 +8153,94 @@ function merchantHasRechargeMembership(merchant) {
 	if (Number(merchant.recharge_total_yuan || 0) > 0) return true;
 	if (Number(merchant.recharge_package_price || 0) > 0) return true;
 	if (Number(merchant.recharge_cycle_start || 0) > 0) return true;
+	if (Number(merchant.recharge_package_reward || 0) > 0) return true;
+	if (Number(merchant.recharge_package_quota || 0) > 0) return true;
+	if (Number(merchant.estimated_free_quota || 0) > 0 && Number(merchant.available_reward || merchant.withdraw_quota_balance || 0) > 0) {
+		return true;
+	}
 	return false;
+}
+
+async function invalidateH5MerchantCaches(merchant) {
+	const merchantUserId = String(merchant?.user_id || merchant?._id || '');
+	try {
+		h5HomeDashboardCache.clear();
+	} catch (e) {}
+	if (merchantUserId) {
+		await redisH5.h5RedisDel(`hsy:h5:member:hint:${merchantUserId}`);
+	}
+}
+
+async function resetMerchantAfterRechargeRefund(merchant, transferOrder, event = {}) {
+	if (!merchant || !merchant._id) return;
+	const now = nowTs();
+	const merchantUserId = String(merchant.user_id || merchant._id || '');
+	const rechargeLogIds = Array.isArray(transferOrder?.recharge_log_ids) ? transferOrder.recharge_log_ids.filter(Boolean) : [];
+	if (rechargeLogIds.length) {
+		await operationLogCollection.where({ _id: db.command.in(rechargeLogIds) }).update({ refunded: true, refund_time: now });
+	}
+	if (merchantUserId) {
+		await operationLogCollection
+			.where({
+				user_id: merchantUserId,
+				action: 'h5_quota_recharge',
+				refunded: false
+			})
+			.update({ refunded: true, refund_time: now });
+	}
+	await merchantCollection.doc(merchant._id).update({
+		remaining_quota: 0,
+		available_reward: 0,
+		withdraw_quota_balance: 0,
+		estimated_free_quota: 0,
+		membership_name: '普通会员',
+		recharge_package_id: '',
+		recharge_package_price: 0,
+		recharge_package_quota: 0,
+		recharge_package_reward: 0,
+		recharge_cycle_start: 0,
+		recharge_total_yuan: 0,
+		recharge_amount: 0,
+		recharge_update_time: 0,
+		silver_member: false,
+		...(Number(merchant.silver_member_end_at || 0) > now ? { silver_member_end_at: now } : {}),
+		update_time: now
+	});
+	if (transferOrder && transferOrder._id) {
+		const hasRefundLog = await operationLogCollection
+			.where({
+				target_id: merchant._id,
+				action: 'h5_refund_reset',
+				platform_no: transferOrder.out_bill_no || transferOrder.refund_no || ''
+			})
+			.limit(1)
+			.get();
+		if (!(hasRefundLog.data && hasRefundLog.data.length)) {
+			await operationLogCollection.add({
+				user_id: merchant.user_id || merchant._id,
+				user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
+				action: 'h5_refund_reset',
+				module: 'finance',
+				target_id: merchant._id,
+				target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+				content: 'H5退款：原路退款成功并清空充值权益额度（待提现/历史提现/奖励/积分不变）',
+				operator_source: 'admin',
+				operator: getOperator(event),
+				platform_no: transferOrder.out_bill_no || transferOrder.refund_no || '',
+				refund_amount: Number(transferOrder.refund_amount || 0),
+				refund_penalty_amount: Number(transferOrder.penalty_amount || 0),
+				refund_final_amount: Number(transferOrder.final_refund_amount || 0),
+				refund_reason: safeText(transferOrder.reason || '', 80),
+				create_time: now
+			});
+		}
+		await transferOrderCollection.doc(transferOrder._id).update({
+			applied: true,
+			applied_at: now,
+			update_time: now
+		});
+	}
+	await invalidateH5MerchantCaches(merchant);
 }
 
 function resolveRechargePackageQuotaAndReward(merchant, rechargeRules = DEFAULT_RECHARGE_RULES) {
@@ -9803,7 +9950,7 @@ async function refundTransferRevokeApproveDev(data, event) {
 /**
  * 解析当前商户在「退款与周期」场景下的 bizKey、是否需审核、已存在的转账单等，供 H5 退款页与 h5RefundReset 共用。
  */
-async function resolveH5RefundOrderContext(merchant, event) {
+async function resolveH5RefundOrderContext(merchant, event, opts = {}) {
 	await getBizSettings();
 	const cfgW = ensureWxRefundPayConfig();
 	if (!cfgW.ok) return { ok: false, code: 500, message: cfgW.message };
@@ -9812,6 +9959,7 @@ async function resolveH5RefundOrderContext(merchant, event) {
 	if (!openid) return { ok: false, code: 400, message: '当前账号缺少微信openid，请重新登录后再试' };
 	const biz = await getBizSettings();
 	const now = nowTs();
+	const refundEntryPolicy = resolveRefundEntryPolicy(opts?.tokenRow || null);
 	const syncRefund = await syncMerchantMembershipCycles(merchant, { biz, now });
 	const member = isH5RechargeMemberForWithdraw(merchant);
 	const rtc = biz.refundTransferAudit || {};
@@ -9823,13 +9971,17 @@ async function resolveH5RefundOrderContext(merchant, event) {
 	const merchantUserId = merchant.user_id || merchant._id;
 	const logs = await operationLogCollection.where({ user_id: merchantUserId, action: 'h5_quota_recharge', refunded: false }).limit(1000).get();
 	const rows = logs.data || [];
-	let refundAmount = Number(Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2));
-	if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
-		refundAmount = 0;
+	let baseRechargeAmount = Number(Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2));
+	if (!Number.isFinite(baseRechargeAmount) || baseRechargeAmount <= 0) {
+		baseRechargeAmount = 0;
 		rows.forEach((x) => {
-			refundAmount += Number(x.package_price || 0);
+			baseRechargeAmount += Number(x.package_price || 0);
 		});
-		refundAmount = Number(refundAmount.toFixed(2));
+		baseRechargeAmount = Number(baseRechargeAmount.toFixed(2));
+	}
+	let refundAmount = baseRechargeAmount;
+	if (refundEntryPolicy.entryType === 'proportional') {
+		refundAmount = Number((baseRechargeAmount * refundEntryPolicy.refundPercent / 100).toFixed(2));
 	}
 	if (refundAmount <= 0) {
 		return {
@@ -9841,18 +9993,21 @@ async function resolveH5RefundOrderContext(merchant, event) {
 			countdown,
 			merchantUserId,
 			rows,
+			baseRechargeAmount,
 			refundAmount: 0,
 			penaltyAmount: 0,
 			finalRefundAmount: 0,
 			targetRefundFen: 0,
 			bizKey: '',
 			transferOrder: null,
-			now
+			now,
+			openid,
+			refundEntryPolicy
 		};
 	}
 	const refundPenaltyRate = Math.max(0, Math.min(100, Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)));
 	let penaltyAmount = 0;
-	if (countdown.phase === 'lock') {
+	if (!refundEntryPolicy.bypassRefundWindow && countdown.phase === 'lock') {
 		penaltyAmount = Number((refundAmount * refundPenaltyRate / 100).toFixed(2));
 	}
 	const finalRefundAmount = Number((refundAmount - penaltyAmount).toFixed(2));
@@ -9867,19 +10022,23 @@ async function resolveH5RefundOrderContext(merchant, event) {
 			countdown,
 			merchantUserId,
 			rows,
+			baseRechargeAmount,
 			refundAmount,
 			penaltyAmount,
 			finalRefundAmount,
 			targetRefundFen: 0,
 			bizKey: '',
 			transferOrder: null,
-			now
+			now,
+			openid,
+			refundEntryPolicy
 		};
 	}
+	const pctTag = refundEntryPolicy.entryType === 'proportional' ? `_pct${refundEntryPolicy.refundPercent}` : '';
 	const bizKey = `${merchant._id}_${targetRefundFen}_${countdown.phase}_${Number(merchant.recharge_cycle_start || 0)}_${refundAmount.toFixed(2)}_${rows
 		.map((x) => x._id)
 		.sort()
-		.join('_')}`;
+		.join('_')}${pctTag}`;
 	const existRes = await transferOrderCollection
 		.where({
 			biz_key: bizKey,
@@ -9898,6 +10057,7 @@ async function resolveH5RefundOrderContext(merchant, event) {
 		countdown,
 		merchantUserId,
 		rows,
+		baseRechargeAmount,
 		refundAmount,
 		penaltyAmount,
 		finalRefundAmount,
@@ -9905,11 +10065,13 @@ async function resolveH5RefundOrderContext(merchant, event) {
 		bizKey,
 		transferOrder,
 		now,
-		openid
+		openid,
+		refundEntryPolicy
 	};
 }
 
 function buildH5RefundUiFromContext(ctx) {
+	const policy = ctx.refundEntryPolicy || resolveRefundEntryPolicy(null);
 	const d = {
 		phase: 'idle',
 		outBillNo: '',
@@ -9918,13 +10080,20 @@ function buildH5RefundUiFromContext(ctx) {
 		batchState: '',
 		needRefundAudit: !!ctx.needRefundAudit,
 		refundable: ctx.refundable !== false,
+		baseRechargeAmount: Number(ctx.baseRechargeAmount || ctx.refundAmount || 0).toFixed(2),
 		refundAmount: Number(ctx.refundAmount || 0).toFixed(2),
 		penaltyAmount: Number(ctx.penaltyAmount || 0).toFixed(2),
 		finalRefundAmount: Number(ctx.finalRefundAmount || 0).toFixed(2),
+		refundEntryType: policy.entryType || 'full',
+		refundPercent: policy.refundPercent != null ? Number(policy.refundPercent) : null,
+		bypassRefundWindow: !!policy.bypassRefundWindow,
 		transferSliceTotal: 0,
 		transferSliceDone: 0,
 		transferSliceIndex: 0
 	};
+	if (ctx.targetRefundFen > 0) {
+		d.transferSliceTotal = buildRefundTransferSlicesFromFen(ctx.targetRefundFen, getRefundTransferSliceMaxYuan()).length;
+	}
 	if (!ctx.ok || !ctx.refundable) return d;
 	const ord = ctx.transferOrder;
 	if (!ord) return d;
@@ -9993,17 +10162,19 @@ async function h5RefundConfirmPackage(data) {
 		const bizRefund = await getBizSettings();
 		const syncRefundPkg = await syncMerchantMembershipCycles(merchant, { biz: bizRefund, now: nowTs() });
 		merchant = syncRefundPkg.merchant;
-		if (isH5SilverMemberForWithdraw(merchant)) {
+		const refundNoIn = safeText(data?.refundNo || data?.outBillNo, 64);
+		if (!refundNoIn) return { code: 400, message: '缺少退款单号' };
+		let row = await findRefundTransferOrderForMerchant(merchant._id, refundNoIn);
+		if (!row) return { code: 404, message: '退款单不存在' };
+		const isExistingRechargeRefund =
+			safeText(row.refund_mode, 40) === 'merchant_transfer' && Number(row.final_refund_fen || 0) > 0;
+		if (!isExistingRechargeRefund && shouldBlockH5RefundForSilverOnly(merchant)) {
 			return { code: 400, message: '白银会员不可申请退款' };
 		}
 		if (!shouldBypassRefundEntryToken(data)) {
 			const tokenCheck = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
 			if (!tokenCheck.ok) return { code: tokenCheck.code || 403, message: tokenCheck.message || '退款入口无效' };
 		}
-		const refundNoIn = safeText(data?.refundNo || data?.outBillNo, 64);
-		if (!refundNoIn) return { code: 400, message: '缺少退款单号' };
-		let row = await findRefundTransferOrderForMerchant(merchant._id, refundNoIn);
-		if (!row) return { code: 404, message: '退款单不存在' };
 		await getBizSettings();
 		if (safeText(row.state, 24) === 'REJECTED' || safeText(row.audit_status, 20) === 'rejected') {
 			return { code: 400, message: '该退款已被管理员拒绝，无法发起确认收款' };
@@ -10288,11 +10459,13 @@ async function h5RefundReset(data, event) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		let tokenRow = null;
 		if (!shouldBypassRefundEntryToken(data)) {
 			const tokenCheck = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
 			if (!tokenCheck.ok) return { code: tokenCheck.code || 403, message: tokenCheck.message || '退款入口无效' };
+			tokenRow = tokenCheck.row || null;
 		}
-		const ctx = await resolveH5RefundOrderContext(merchant, event);
+		const ctx = await resolveH5RefundOrderContext(merchant, event, { tokenRow });
 		if (!ctx.ok) return { code: ctx.code, message: ctx.message };
 		if (!ctx.refundable) {
 			return { code: 400, message: '暂无可退款充值金额' };
@@ -10357,6 +10530,7 @@ async function h5RefundReset(data, event) {
 				transfer_slice_ids = transfer_items.map((x) => x.out_bill_no);
 			}
 			const firstOutBill = transfer_items[0] ? transfer_items[0].out_bill_no : refundNo;
+			const policy = ctx.refundEntryPolicy || resolveRefundEntryPolicy(null);
 			const addRes = await transferOrderCollection.add({
 				biz_key: ctx.bizKey,
 				merchant_id: merchant._id,
@@ -10372,6 +10546,10 @@ async function h5RefundReset(data, event) {
 				penalty_amount: Number(penaltyAmount || 0),
 				final_refund_amount: Number(finalRefundAmount || 0),
 				final_refund_fen: targetRefundFen,
+				base_recharge_amount: Number(ctx.baseRechargeAmount || 0),
+				refund_entry_type: policy.entryType || 'full',
+				refund_percent: policy.refundPercent != null ? Number(policy.refundPercent) : null,
+				bypass_refund_window: !!policy.bypassRefundWindow,
 				reason,
 				audit_required: !!needRefundAudit,
 				audit_status: needRefundAudit ? 'pending' : 'none',
@@ -10419,12 +10597,14 @@ async function h5RefundEntryValidate(data) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		let exp = 0;
+		let tokenRow = null;
 		if (!shouldBypassRefundEntryToken(data)) {
 			const chk = await validateRefundEntryToken(merchant._id, pickRefundEntryToken(data));
 			if (!chk.ok) return { code: chk.code || 403, message: chk.message || '退款入口无效' };
 			exp = Number(chk.row?.expire_time || 0);
+			tokenRow = chk.row || null;
 		}
-		const ctx = await resolveH5RefundOrderContext(merchant, {});
+		const ctx = await resolveH5RefundOrderContext(merchant, {}, { tokenRow });
 		if (!ctx.ok) {
 			return { code: ctx.code || 500, message: ctx.message || '校验失败' };
 		}
@@ -10609,49 +10789,45 @@ async function finalizeTransferSuccessIfNeeded(transferOrder, event) {
 	if (!merchantId) return;
 	const merchant = await getMerchantByIdOrUserId(merchantId);
 	if (!merchant) return;
-	const now = nowTs();
-	const rechargeLogIds = Array.isArray(transferOrder.recharge_log_ids) ? transferOrder.recharge_log_ids.filter(Boolean) : [];
-	if (rechargeLogIds.length) {
-		await operationLogCollection.where({ _id: db.command.in(rechargeLogIds) }).update({ refunded: true, refund_time: now });
+	await resetMerchantAfterRechargeRefund(merchant, transferOrder, event);
+}
+
+async function adminRepairMerchantRefundState(data = {}, event = {}) {
+	try {
+		const key = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
+		if (!key) return { code: 400, message: '请传入 merchantId / userId' };
+		const merchant = await getMerchantByIdOrUserId(key);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const ordRes = await transferOrderCollection
+			.where({
+				merchant_id: merchant._id,
+				is_deleted: false,
+				refund_mode: 'merchant_transfer',
+				state: 'SUCCESS'
+			})
+			.orderBy('update_time', 'desc')
+			.limit(1)
+			.get();
+		const transferOrder = (ordRes.data && ordRes.data[0]) || null;
+		if (!transferOrder) {
+			return { code: 400, message: '未找到已成功完成的充值退款单' };
+		}
+		await resetMerchantAfterRechargeRefund(merchant, transferOrder, event);
+		const fresh = await getMerchantByIdOrUserId(merchant._id);
+		return {
+			code: 0,
+			message: '已修复退款后会员状态',
+			data: {
+				merchantId: merchant._id,
+				membershipName: fresh?.membership_name || '',
+				rechargeAmount: Number(fresh?.recharge_amount != null ? fresh.recharge_amount : fresh?.recharge_total_yuan || 0),
+				transferOrderId: transferOrder._id
+			}
+		};
+	} catch (e) {
+		console.error('adminRepairMerchantRefundState failed', e);
+		return { code: 500, message: safeText(e?.message || '修复失败', 180) };
 	}
-	await merchantCollection.doc(merchant._id).update({
-		remaining_quota: 0,
-		available_reward: 0,
-		withdraw_quota_balance: 0,
-		estimated_free_quota: 0,
-		membership_name: '普通会员',
-		recharge_package_id: '',
-		recharge_package_price: 0,
-		recharge_package_quota: 0,
-		recharge_package_reward: 0,
-		recharge_cycle_start: 0,
-		recharge_total_yuan: 0,
-		recharge_amount: 0,
-		recharge_update_time: 0,
-		update_time: now
-	});
-	await operationLogCollection.add({
-		user_id: merchant.user_id || merchant._id,
-		user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
-		action: 'h5_refund_reset',
-		module: 'finance',
-		target_id: merchant._id,
-		target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-		content: 'H5退款：原路退款成功并清空充值权益额度（待提现/历史提现/奖励/积分不变）',
-		operator_source: 'h5',
-		operator: getOperator(event),
-		platform_no: transferOrder.out_bill_no || transferOrder.refund_no || '',
-		refund_amount: Number(transferOrder.refund_amount || 0),
-		refund_penalty_amount: Number(transferOrder.penalty_amount || 0),
-		refund_final_amount: Number(transferOrder.final_refund_amount || 0),
-		refund_reason: safeText(transferOrder.reason || '', 80),
-		create_time: now
-	});
-	await transferOrderCollection.doc(transferOrder._id).update({
-		applied: true,
-		applied_at: now,
-		update_time: now
-	});
 }
 
 function addCalendarMonthsYm(ym, delta) {
@@ -12766,6 +12942,9 @@ async function feedbackAdminMessages(data) {
 							membershipTier: membership.tier || 'normal',
 							membershipName: membership.name || '普通会员',
 							isMember: membership.tier !== 'normal',
+							rechargeAmount: Number(
+								Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2)
+							),
 							canSendRefundEntry: !!needRefundAudit
 					  }
 					: null,
@@ -12895,6 +13074,121 @@ async function feedbackAdminSendRefundEntry(data, event, context) {
 	} catch (e) {
 		console.error('feedbackAdminSendRefundEntry failed', e);
 		return { code: 500, message: '发送退款入口失败' };
+	}
+}
+
+async function feedbackAdminSendProportionalRefundEntry(data, event, context) {
+	try {
+		const fid = safeText(data?.feedbackId, 80);
+		if (!fid) return { code: 400, message: '缺少工单ID' };
+		const refundPercent = parseRefundPercentInput(data?.refundPercent ?? data?.percent);
+		if (!Number.isFinite(refundPercent) || refundPercent <= 0 || refundPercent > 100) {
+			return { code: 400, message: '请输入 1-100 之间的退款比例' };
+		}
+		const t = await feedbackTicketCollection.doc(fid).get();
+		const ticket = t.data && t.data[0];
+		if (!ticket || ticket.is_deleted) return { code: 404, message: '工单不存在' };
+		if (ticket.status !== 'open') return { code: 400, message: '工单已结束' };
+		const merchantId = safeText(ticket.merchant_id, 80);
+		if (!merchantId) return { code: 400, message: '工单缺少商户信息' };
+		const mRes = await merchantCollection.doc(merchantId).get();
+		const merchant = mRes.data && mRes.data[0];
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const rechargePackages = await loadRechargePackagesFromQuota();
+		const membership = h5MembershipInfo(merchant, rechargePackages);
+		const biz = await getBizSettings();
+		const rta = biz?.refundTransferAudit || {};
+		const needRefundAudit = membership.tier !== 'normal' ? !!rta.memberRequired : !!rta.nonMemberRequired;
+		if (!needRefundAudit) {
+			return { code: 400, message: '当前未开启该商户对应的退款审核，无需发送退款入口' };
+		}
+		const baseRechargeAmount = Number(
+			Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2)
+		);
+		if (!(baseRechargeAmount > 0)) {
+			return { code: 400, message: '该商户暂无可退充值金额' };
+		}
+		const refundYuan = Number((baseRechargeAmount * refundPercent / 100).toFixed(2));
+		if (refundYuan < 0.01) {
+			return { code: 400, message: '按该比例计算退款金额不足 0.01 元' };
+		}
+		const sliceCount = buildRefundTransferSlicesFromFen(Math.round(refundYuan * 100), getRefundTransferSliceMaxYuan()).length;
+		const now = nowTs();
+		const expireAt = now + 3 * 24 * 60 * 60 * 1000;
+		const operator = await getAdminDisplayName(event, context, data);
+		const token = `${randomStr(24)}${randomStr(12)}${String(now).slice(-6)}`;
+		await refundEntryTokenCollection.where({
+			feedback_id: fid,
+			merchant_id: merchantId,
+			status: 'active',
+			is_deleted: false
+		}).update({
+			status: 'expired',
+			update_time: now
+		});
+		await refundEntryTokenCollection.add({
+			token,
+			feedback_id: fid,
+			merchant_id: merchantId,
+			merchant_user_id: safeText(merchant.user_id || merchant._id, 80),
+			refund_entry_type: 'proportional',
+			refund_percent: refundPercent,
+			bypass_refund_window: true,
+			status: 'active',
+			create_time: now,
+			update_time: now,
+			expire_time: expireAt,
+			create_user: operator,
+			is_deleted: false
+		});
+		const entryPath = buildRefundEntryPath(token);
+		const entryUrl = buildRefundEntryUrl(token);
+		const pctText = Number(refundPercent) === Math.floor(refundPercent) ? String(Math.floor(refundPercent)) : String(refundPercent);
+		const text =
+			`已为您发送按比例退款入口（${pctText}%）：\n` +
+			`预计退款 ${refundYuan.toFixed(2)} 元（充值 ${baseRechargeAmount.toFixed(2)} 元），将分 ${sliceCount} 笔转账。\n` +
+			`${entryUrl}\n` +
+			`该入口不受充值周期/180天窗口限制，无违约金；有效期3天，过期后将自动失效。`;
+		await feedbackMessageCollection.add({
+			feedback_id: fid,
+			role: 'admin',
+			content: text,
+			images: [],
+			video: '',
+			admin_name: operator,
+			refund_entry_path: entryPath,
+			refund_entry_url: entryUrl,
+			refund_entry_expire_time: expireAt,
+			refund_entry_type: 'proportional',
+			refund_percent: refundPercent,
+			create_time: now,
+			is_deleted: false
+		});
+		await feedbackTicketCollection.doc(fid).update({
+			user_unread_reply: true,
+			admin_unread: false,
+			preview_text: `已发送按比例退款入口（${pctText}%）`,
+			last_message_at: now,
+			update_time: now
+		});
+		const messages = await feedbackLoadMessagesMapped(fid);
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				entryUrl,
+				entryPath,
+				expireAt,
+				refundPercent,
+				baseRechargeAmount,
+				refundYuan,
+				sliceCount,
+				messages
+			}
+		};
+	} catch (e) {
+		console.error('feedbackAdminSendProportionalRefundEntry failed', e);
+		return { code: 500, message: '发送按比例退款入口失败' };
 	}
 }
 
@@ -13600,6 +13894,8 @@ exports.main = async (event, context) => {
 			return await adminSilverMemberGiftRevert(actualData);
 		case 'adminMerchantRecoverPendingBalance':
 			return await adminMerchantRecoverPendingBalance(actualData);
+		case 'adminRepairMerchantRefundState':
+			return await adminRepairMerchantRefundState(actualData, event);
 		case 'adminSetMerchantRechargeAmount':
 			return await adminSetMerchantRechargeAmount(actualData, event);
 		case 'adminRestorePendingFromClaimedPackets':
@@ -13720,6 +14016,8 @@ exports.main = async (event, context) => {
 			return await feedbackAdminReply(actualData, event, context);
 		case 'feedbackAdminSendRefundEntry':
 			return await feedbackAdminSendRefundEntry(actualData, event, context);
+		case 'feedbackAdminSendProportionalRefundEntry':
+			return await feedbackAdminSendProportionalRefundEntry(actualData, event, context);
 		case 'bizConfigGet':
 			return await bizConfigGet();
 		case 'bizConfigSave':
