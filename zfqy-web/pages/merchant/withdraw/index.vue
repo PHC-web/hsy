@@ -87,12 +87,10 @@
 							</uni-td>
 							<uni-td align="center">{{ item.auditStatusText || '-' }}</uni-td>
 							<uni-td align="center" class="cell-fail-reason">
-								<button
-									v-if="item.transferError"
-									size="mini"
-									class="btn-reason"
-									@click="showFailReason(item)"
-								>查看</button>
+								<view v-if="item.transferError" class="fail-reason-wrap">
+									<text class="fail-reason-text">{{ item.transferError }}</text>
+									<button size="mini" class="btn-reason" @click="showFailReason(item)">详情</button>
+								</view>
 								<text v-else class="fail-empty">-</text>
 							</uni-td>
 							<uni-td align="center">
@@ -103,7 +101,7 @@
 										type="primary"
 										class="op-btn"
 										@click="approve(item, 'approve')"
-									>同意提现</button>
+									>{{ item.needReaudit ? '重新同意提现' : '同意提现' }}</button>
 									<button
 										v-if="item.auditRequired && item.auditStatus === 'pending'"
 										size="mini"
@@ -252,7 +250,10 @@ export default {
 					{ functionName: 'merchant' }
 				);
 				if (res.code === 0) {
-					const changed = Number(res?.data?.success || 0) + Number(res?.data?.failed || 0);
+					const changed =
+						Number(res?.data?.success || 0) +
+						Number(res?.data?.failed || 0) +
+						Number(res?.data?.reconciled || 0);
 					if (changed > 0) this.search();
 				}
 			} catch (e) {
@@ -353,6 +354,7 @@ export default {
 								auditRequired: !!row.auditRequired,
 								auditStatus: row.auditStatus || '',
 								auditStatusText: row.auditStatusText || '-',
+								needReaudit: !!row.needReaudit,
 								transferError: row.transferError || ''
 							})
 						);
@@ -555,7 +557,9 @@ export default {
 				reject: '不同意提现'
 			};
 			const actionPromptMap = {
-				approve: '确认同意提现吗？确认后将立即向用户发起商家打款。',
+				approve: item.needReaudit
+					? '该笔提现微信打款失败，确认重新同意并再次发起打款吗？'
+					: '确认同意提现吗？确认后将立即向用户发起商家打款。',
 				reject: '确认不同意提现吗？确认后将退回本次冻结的积分与额度。'
 			};
 			const actionText = actionTextMap[actionType] || '审批';
@@ -767,6 +771,23 @@ export default {
 
 .cell-fail-reason {
 	font-size: 12px;
+	max-width: 220px;
+}
+
+.fail-reason-wrap {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 6px;
+}
+
+.fail-reason-text {
+	display: block;
+	color: #f56c6c;
+	line-height: 1.45;
+	word-break: break-all;
+	text-align: center;
+	max-width: 210px;
 }
 
 .btn-reason {

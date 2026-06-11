@@ -6,6 +6,56 @@ const POINTS_PER_BLOCK = 38;
 const POINTS_PER_MONTH = 7.6;
 const CLAIM_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
 const MIN_PACKET_AMOUNT = 0.01;
+/** uniCloud 单次 get 上限 1000，须分页拉全量 */
+const DB_PAGE_SIZE = 1000;
+const DB_MAX_ROWS = 2000000;
+
+/**
+ * 分页遍历查询结果（规避 uniCloud limit 最大 1000 条）。
+ * @param {object} opts.field field 投影
+ * @param {{ field: string, direction?: 'asc'|'desc' }} [opts.orderBy]
+ */
+async function forEachQueryPage(db, collectionName, where, opts, onPage) {
+	const collection = db.collection(collectionName);
+	const field = opts && opts.field ? opts.field : null;
+	const orderBy = opts && opts.orderBy ? opts.orderBy : null;
+	let skip = 0;
+	let total = 0;
+	for (;;) {
+		let q = collection.where(where);
+		if (field && Object.keys(field).length) q = q.field(field);
+		if (orderBy && orderBy.field) q = q.orderBy(orderBy.field, orderBy.direction || 'asc');
+		const r = await q.skip(skip).limit(DB_PAGE_SIZE).get();
+		const rows = r.data || [];
+		if (rows.length && typeof onPage === 'function') {
+			await onPage(rows);
+		}
+		total += rows.length;
+		if (rows.length < DB_PAGE_SIZE) break;
+		skip += DB_PAGE_SIZE;
+		if (skip >= DB_MAX_ROWS) break;
+	}
+	return total;
+}
+
+async function fetchAllQueryPages(db, collectionName, where, opts) {
+	const all = [];
+	await forEachQueryPage(db, collectionName, where, opts, (rows) => {
+		all.push(...rows);
+	});
+	return all;
+}
+
+function buildEligibleSubsidyTradeWhere(db, merchantUserId) {
+	const _ = db.command;
+	return _.and([
+		{ user_id: merchantUserId },
+		{ trade_type: _.in(['real', 'virtual']) },
+		{ stats_eligible: _.neq(false) },
+		{ amount: _.gt(0) },
+		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
+	]);
+}
 
 function monthNoFromTs(ts) {
 	return shanghaiYearMonthFromTs(ts);
@@ -38,70 +88,62 @@ function addMonths(ym, delta) {
 
 async function sumEligibleRealFlowYuan(db, merchantUserId, start, end) {
 	const _ = db.command;
-	const res = await db
-		.collection('hsy-machine-trades')
-		.where(
-			_.and([
-				{ user_id: merchantUserId },
-				{ trade_type: _.in(['real', 'virtual']) },
-				{ stats_eligible: _.neq(false) },
-				{ create_time: _.gte(start).and(_.lte(end)) },
-				{ amount: _.gt(0) },
-				_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
-			])
-		)
-		.field({ amount: true })
-		.limit(20000)
-		.get();
+	const where = _.and([
+		buildEligibleSubsidyTradeWhere(db, merchantUserId),
+		{ create_time: _.gte(start).and(_.lte(end)) }
+	]);
 	let total = 0;
-	for (const row of res.data || []) {
-		total += Number(row.amount || 0);
-	}
+	await forEachQueryPage(db, 'hsy-machine-trades', where, { field: { amount: true } }, (rows) => {
+		for (const row of rows) {
+			total += Number(row.amount || 0);
+		}
+	});
 	return Number(total.toFixed(2));
 }
 
 async function sumEligibleReleasePoints(db, merchantUserId, start, end) {
 	const _ = db.command;
-	const res = await db
-		.collection('hsy-machine-trades')
-		.where(
-			_.and([
-				{ user_id: merchantUserId },
-				{ trade_type: _.in(['real', 'virtual']) },
-				{ stats_eligible: _.neq(false) },
-				{ create_time: _.gte(start).and(_.lte(end)) },
-				{ amount: _.gt(0) },
-				_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
-			])
-		)
-		.field({ amount: true, release_amount: true, release_ratio: true })
-		.limit(20000)
-		.get();
+	const where = _.and([
+		buildEligibleSubsidyTradeWhere(db, merchantUserId),
+		{ create_time: _.gte(start).and(_.lte(end)) }
+	]);
 	let total = 0;
-	for (const row of res.data || []) {
-		const amount = Number(row.amount || 0);
-		const hasRelease = row.release_amount !== undefined && row.release_amount !== null;
-		let release = hasRelease ? Number(row.release_amount || 0) : Number((amount * 0.0038 / (amount > 300 ? 5 : 1)).toFixed(4));
-		const rr = Number(row.release_ratio);
-		if (!hasRelease && Number.isFinite(rr) && rr >= 99) {
-			release = Number((amount * 0.0038).toFixed(4));
+	await forEachQueryPage(
+		db,
+		'hsy-machine-trades',
+		where,
+		{ field: { amount: true, release_amount: true, release_ratio: true } },
+		(rows) => {
+			for (const row of rows) {
+				const amount = Number(row.amount || 0);
+				const hasRelease = row.release_amount !== undefined && row.release_amount !== null;
+				let release = hasRelease
+					? Number(row.release_amount || 0)
+					: Number((amount * 0.0038 / (amount > 300 ? 5 : 1)).toFixed(4));
+				const rr = Number(row.release_ratio);
+				if (!hasRelease && Number.isFinite(rr) && rr >= 99) {
+					release = Number((amount * 0.0038).toFixed(4));
+				}
+				if (Number.isFinite(release) && release > 0) total += release;
+			}
 		}
-		if (Number.isFinite(release) && release > 0) total += release;
-	}
+	);
 	return Number(total.toFixed(4));
 }
 
 async function existingDedupKeys(db, merchantUserId) {
-	const res = await db
-		.collection('hsy-income-packets')
-		.where({ merchant_user_id: merchantUserId, is_deleted: false })
-		.field({ dedup_key: true })
-		.limit(5000)
-		.get();
 	const set = new Set();
-	for (const r of res.data || []) {
-		if (r.dedup_key) set.add(r.dedup_key);
-	}
+	await forEachQueryPage(
+		db,
+		'hsy-income-packets',
+		{ merchant_user_id: merchantUserId, is_deleted: false },
+		{ field: { dedup_key: true } },
+		(rows) => {
+			for (const r of rows) {
+				if (r.dedup_key) set.add(r.dedup_key);
+			}
+		}
+	);
 	return set;
 }
 
@@ -161,23 +203,11 @@ function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
 async function syncSubsidyPackets(db, merchant, nowTs) {
 	const merchantUserId = merchant.user_id || merchant._id;
 	const dedupSet = await existingDedupKeys(db, merchantUserId);
-	const _ = db.command;
-	const tradesRes = await db
-		.collection('hsy-machine-trades')
-		.where(
-			_.and([
-				{ user_id: merchantUserId },
-				{ trade_type: _.in(['real', 'virtual']) },
-				{ stats_eligible: _.neq(false) },
-				{ amount: _.gt(0) },
-				_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
-			])
-		)
-		.field({ _id: true, trade_no: true, amount: true, release_amount: true, release_ratio: true, create_time: true })
-		.orderBy('create_time', 'asc')
-		.limit(5000)
-		.get();
-	const trades = tradesRes.data || [];
+	const tradeWhere = buildEligibleSubsidyTradeWhere(db, merchantUserId);
+	const trades = await fetchAllQueryPages(db, 'hsy-machine-trades', tradeWhere, {
+		field: { _id: true, trade_no: true, amount: true, release_amount: true, release_ratio: true, create_time: true },
+		orderBy: { field: 'create_time', direction: 'asc' }
+	});
 	if (!trades.length) return;
 
 	const monthFlowMap = {};
@@ -277,28 +307,35 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 		}
 	}
 
-	/* 过期标记 */
-	const pend = await db
-		.collection('hsy-income-packets')
-		.where({ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false })
-		.limit(500)
-		.get();
-	for (const row of pend.data || []) {
-		if (row.expire_time && row.expire_time < nowTs) {
-			await db.collection('hsy-income-packets').doc(row._id).update({
-				status: 'expired',
-				update_time: nowTs
-			});
+	/* 过期标记（分页处理全部 pending） */
+	await forEachQueryPage(
+		db,
+		'hsy-income-packets',
+		{ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false },
+		{ field: { _id: true, expire_time: true } },
+		async (rows) => {
+			for (const row of rows) {
+				if (row.expire_time && row.expire_time < nowTs) {
+					await db.collection('hsy-income-packets').doc(row._id).update({
+						status: 'expired',
+						update_time: nowTs
+					});
+				}
+			}
 		}
-	}
+	);
 }
 
 module.exports = {
 	POINTS_PER_BLOCK,
 	POINTS_PER_MONTH,
+	DB_PAGE_SIZE,
+	DB_MAX_ROWS,
 	monthNoFromTs,
 	monthStartEndTs,
 	buildDeferredSlicesByMonth,
+	forEachQueryPage,
+	fetchAllQueryPages,
 	sumEligibleRealFlowYuan,
 	sumEligibleReleasePoints,
 	syncSubsidyPackets

@@ -3729,7 +3729,11 @@ function arrivalStatusText(s) {
 
 function mapWithdrawItem(item) {
 	const auditStatus = safeText(item.audit_status || '', 24) || (item.audit_required ? 'pending' : 'none');
+	const transferState = safeText(item.transfer_state || '', 40);
+	const needReaudit = !!item.audit_required && auditStatus === 'pending' && isWithdrawFailReauditState(transferState);
 	const auditMap = { pending: '待审核', approved: '已同意', rejected: '已拒绝', failed: '审核失败', none: '-' };
+	let auditStatusText = auditMap[auditStatus] || auditStatus || '-';
+	if (needReaudit) auditStatusText = '待重新审核';
 	return {
 		id: item._id,
 		withdrawNo: item.withdraw_no || '',
@@ -3747,11 +3751,12 @@ function mapWithdrawItem(item) {
 		isPaid: !!item.is_paid,
 		isPaidText: item.is_paid ? '已打款' : '未打款',
 		wxTradeNo: item.wx_trade_no || '',
-		transferState: safeText(item.transfer_state || '', 40),
+		transferState,
 		transferError: safeText(item.transfer_error || '', 200),
 		auditRequired: !!item.audit_required,
 		auditStatus,
-		auditStatusText: auditMap[auditStatus] || auditStatus || '-',
+		auditStatusText,
+		needReaudit,
 		payTime: formatTime(item.pay_time),
 		arrivalStatus: item.arrival_status || 'pending',
 		arrivalStatusText: arrivalStatusText(item.arrival_status),
@@ -3938,6 +3943,72 @@ async function getWithdrawList(data) {
 	}
 }
 
+function isWithdrawTerminalFailState(state) {
+	return ['FAIL', 'FAILED', 'CANCELLED'].includes(normalizeTransferState(state));
+}
+
+function isWithdrawFailReauditState(state) {
+	const s = normalizeTransferState(state || '');
+	return isWithdrawTerminalFailState(s) || s === 'RETRYABLE_FAIL';
+}
+
+async function resolveMerchantForWithdrawRow(row) {
+	const merchantUserId = safeText(row?.merchant_user_id, 80);
+	if (!merchantUserId) return null;
+	const r = await merchantCollection.where({ user_id: merchantUserId }).limit(1).get();
+	return r.data && r.data[0] ? r.data[0] : null;
+}
+
+/** 需审核提现微信打款失败：回待审核、记录原因，并通知管理员重新审核 */
+async function markWithdrawFailNeedsReaudit(row, state, reason, options = {}) {
+	if (!row || !row._id || !row.audit_required) return false;
+	if (row.is_paid || safeText(row.arrival_status, 20) === 'received') return false;
+	const st = normalizeTransferState(state || row.transfer_state || 'FAIL');
+	const transferState = isWithdrawTerminalFailState(st) ? st : 'RETRYABLE_FAIL';
+	const errText = safeText(reason || row.transfer_error || `微信提现失败：${transferState}`, 180);
+	const prevAudit = safeText(row.audit_status, 20);
+	const prevState = normalizeTransferState(row.transfer_state || '');
+	if (
+		prevAudit === 'pending' &&
+		isWithdrawFailReauditState(prevState) &&
+		safeText(row.transfer_error, 180) === errText
+	) {
+		return false;
+	}
+	const now = nowTs();
+	await withdrawCollection.doc(row._id).update({
+		audit_status: 'pending',
+		audit_time: null,
+		arrival_status: 'pending',
+		is_paid: false,
+		transfer_state: transferState,
+		transfer_error: errText,
+		update_time: now
+	});
+	await writeTransferLog({
+		scene: 'withdraw',
+		stage: 'withdraw_fail_needs_reaudit',
+		level: 'warn',
+		withdrawId: row._id,
+		withdrawNo: safeText(row.withdraw_no, 64),
+		merchantUserId: safeText(row.merchant_user_id, 80),
+		deviceId: row.device_id || '',
+		outBillNo: safeText(row.withdraw_no, 64),
+		transferState,
+		message: errText,
+		payload: { prevAudit, prevState }
+	});
+	const shouldNotify =
+		options.notifyWecom !== false &&
+		(prevAudit === 'approved' || !isWithdrawFailReauditState(prevState));
+	if (shouldNotify) {
+		const merchant = options.merchant || (await resolveMerchantForWithdrawRow(row));
+		const name = merchant ? maybeMerchantDisplayName(merchant) : safeText(row.user_nickname || row.user_mobile, 40) || '商户';
+		await sendWecomRobotText(`${name}微信提现失败，请重新到「提现列表」进行审核`);
+	}
+	return true;
+}
+
 async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState = 'SUCCESS') {
 	if (!withdrawRow) return;
 	if (withdrawRow.is_paid || safeText(withdrawRow.arrival_status, 20) === 'received') return;
@@ -3995,20 +4066,44 @@ async function withdrawSyncProcessing(data = {}) {
 	const now = nowTs();
 	try {
 		const processingStates = ['PROCESSING', 'ACCEPTED', 'WAIT_USER_CONFIRM', 'UNKNOWN'];
+		let success = 0;
+		let failed = 0;
+		let processing = 0;
+		let reconciled = 0;
+
+		// 已同意但微信终态失败：回待审核并通知
+		const stuckFailRes = await withdrawCollection
+			.where({
+				is_deleted: false,
+				audit_required: true,
+				audit_status: 'approved',
+				is_paid: false,
+				transfer_state: db.command.in(['FAIL', 'FAILED', 'CANCELLED', 'RETRYABLE_FAIL'])
+			})
+			.orderBy('update_time', 'asc')
+			.limit(limit)
+			.get();
+		for (const row of stuckFailRes.data || []) {
+			const ok = await markWithdrawFailNeedsReaudit(
+				row,
+				row.transfer_state,
+				row.transfer_error || row.transfer_state
+			);
+			if (ok) reconciled += 1;
+		}
+
 		const res = await withdrawCollection
 			.where({
 				is_deleted: false,
 				audit_required: true,
-				audit_status: 'pending',
+				audit_status: db.command.in(['pending', 'approved']),
+				is_paid: false,
 				transfer_state: db.command.in(processingStates)
 			})
 			.orderBy('update_time', 'asc')
 			.limit(limit)
 			.get();
 		const rows = res.data || [];
-		let success = 0;
-		let failed = 0;
-		let processing = 0;
 		for (const row of rows) {
 			const cfg = ensureWxWithdrawPayConfig();
 			if (!cfg.ok) throw new Error(cfg.message);
@@ -4035,15 +4130,18 @@ async function withdrawSyncProcessing(data = {}) {
 					success += 1;
 					continue;
 				}
-				if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
-					await withdrawCollection.doc(row._id).update({
-						audit_status: 'pending',
-						arrival_status: 'pending',
-						transfer_state: 'RETRYABLE_FAIL',
-						transfer_error: safeText(q?.fail_reason || q?.message || state, 180),
-						wx_trade_no: billNo,
-						update_time: nowTs()
-					});
+				if (isWithdrawTerminalFailState(state)) {
+					await markWithdrawFailNeedsReaudit(
+						row,
+						state,
+						safeText(q?.fail_reason || q?.message || state, 180)
+					);
+					if (billNo) {
+						await withdrawCollection.doc(row._id).update({
+							wx_trade_no: billNo,
+							update_time: nowTs()
+						});
+					}
 					failed += 1;
 					continue;
 				}
@@ -4068,7 +4166,7 @@ async function withdrawSyncProcessing(data = {}) {
 				});
 			}
 		}
-		return { code: 0, message: 'ok', data: { total: rows.length, success, failed, processing, at: now } };
+		return { code: 0, message: 'ok', data: { total: rows.length, success, failed, processing, reconciled, at: now } };
 	} catch (e) {
 		console.error('withdrawSyncProcessing failed:', e);
 		return { code: 500, message: safeText(e?.message || '自动轮询失败', 160) };
@@ -4314,13 +4412,7 @@ async function withdrawApprove(data) {
 				if (isWxBalanceInsufficientError(e)) {
 					await sendWecomRobotText('商户号运营账户余额不足，请及时充值。');
 				}
-				await withdrawCollection.doc(id).update({
-					audit_status: 'pending',
-					arrival_status: 'pending',
-					transfer_state: 'RETRYABLE_FAIL',
-					transfer_error: reason,
-					update_time: nowTs()
-				});
+				await markWithdrawFailNeedsReaudit(row, 'RETRYABLE_FAIL', reason, { merchant });
 				await writeTransferLog({
 					stage: 'approve_failed',
 					level: 'error',
@@ -6279,9 +6371,18 @@ async function h5WithdrawConfirmPackage(data) {
 			await settleWithdrawSuccess(row, safeText(q?.transfer_bill_no || row.wx_trade_no || '', 80), state);
 			return { code: 400, message: '该笔提现已到账，无需确认收款' };
 		}
-		if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
+		if (isWithdrawTerminalFailState(state)) {
+			if (row.audit_required) {
+				await markWithdrawFailNeedsReaudit(
+					row,
+					state,
+					safeText(q?.fail_reason || q?.message || `微信提现失败：${state}`, 180),
+					{ merchant }
+				);
+				return { code: 400, message: '该笔提现打款失败，已提交管理员重新审核' };
+			}
 			// 终态失败：自动提现单需回退已冻结积分，避免长时间占用可提现余额。
-			if (!row.audit_required && safeText(row.arrival_status, 20) !== 'returned') {
+			if (safeText(row.arrival_status, 20) !== 'returned') {
 				const settleAmt = Number(row.payable != null ? row.payable : row.amount || 0);
 				const amountPoints = Number(row.amount || 0);
 				const merchantRes = await merchantCollection.where({ _id: merchant._id }).limit(1).get();
@@ -11097,18 +11198,21 @@ async function h5PendingReturnPoints(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		const now = nowTs();
-		const tRes = await machineTradeCollection
-			.where({
+		const tradeRows = await subsidyEngine.fetchAllQueryPages(
+			db,
+			'hsy-machine-trades',
+			{
 				user_id: merchantUserId,
 				trade_type: db.command.in(['real', 'virtual']),
 				amount: db.command.gt(0)
-			})
-			.field({ amount: true, cashback: true, release_amount: true, create_time: true })
-			.orderBy('create_time', 'asc')
-			.limit(20000)
-			.get();
+			},
+			{
+				field: { amount: true, cashback: true, release_amount: true, create_time: true },
+				orderBy: { field: 'create_time', direction: 'asc' }
+			}
+		);
 		const curYm = subsidyEngine.monthNoFromTs(now);
-		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(tRes.data || [], now, 10000);
+		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(tradeRows, now, 10000);
 		const buckets = {};
 		Object.keys(sourceSlicesByYm || {}).forEach((srcYm) => {
 			const slices = Array.isArray(sourceSlicesByYm[srcYm]) ? sourceSlicesByYm[srcYm] : [];
@@ -11388,12 +11492,25 @@ async function h5IncomeList(data) {
 		} catch (e) {
 			console.error('syncCouponInstancesForMerchant', e);
 		}
-		const pendingRes = await incomePacketCollection
-			.where({ merchant_user_id: merchantUserId, is_deleted: false, status: 'pending' })
-			.orderBy('create_time', 'desc')
-			.limit(100)
-			.get();
-		const pendingRows = (pendingRes.data || []).filter((x) => {
+		const allPending = await subsidyEngine.fetchAllQueryPages(
+			db,
+			'hsy-income-packets',
+			{ merchant_user_id: merchantUserId, is_deleted: false, status: 'pending' },
+			{
+				field: {
+					_id: true,
+					title: true,
+					amount: true,
+					month_no: true,
+					status: true,
+					create_time: true,
+					expire_time: true,
+					claim_open_time: true
+				},
+				orderBy: { field: 'create_time', direction: 'desc' }
+			}
+		);
+		const pendingRows = allPending.filter((x) => {
 			if (x.expire_time && x.expire_time < now) return false;
 			if (!Number(x.claim_open_time || 0)) return false;
 			if (x.claim_open_time && x.claim_open_time > now) return false;
@@ -11494,6 +11611,7 @@ async function claimPackets(merchant, packetIds) {
 	const merchantUserId = merchant.user_id || merchant._id;
 	const res = await incomePacketCollection
 		.where({ _id: db.command.in(ids), merchant_user_id: merchantUserId, status: 'pending', is_deleted: false })
+		.limit(Math.min(ids.length, subsidyEngine.DB_PAGE_SIZE))
 		.get();
 	const rows = res.data || [];
 	const curYm = subsidyEngine.monthNoFromTs(now);
@@ -11576,16 +11694,29 @@ async function h5IncomeClaim(data) {
 async function h5IncomeClaimAll(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
-		if (!merchant) return { code: 404, message: '商户不存在' };
-		const merchantUserId = merchant.user_id || merchant._id;
-		const pending = await incomePacketCollection
-			.where({ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false })
-			.limit(100)
-			.get();
-		const ids = (pending.data || []).map((x) => x._id);
-		const result = await claimPackets(merchant, ids);
-		return { code: 0, message: '领取成功', data: result };
+		let totalClaimedCount = 0;
+		let totalClaimedAmount = 0;
+		for (;;) {
+			const merchant = await getMerchantByIdOrUserId(merchantKey);
+			if (!merchant) return { code: 404, message: '商户不存在' };
+			const merchantUserId = merchant.user_id || merchant._id;
+			const pending = await incomePacketCollection
+				.where({ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false })
+				.limit(subsidyEngine.DB_PAGE_SIZE)
+				.get();
+			const ids = (pending.data || []).map((x) => x._id);
+			if (!ids.length) break;
+			const result = await claimPackets(merchant, ids);
+			totalClaimedCount += result.claimedCount;
+			totalClaimedAmount += result.claimedAmount;
+			if (!result.claimedCount) break;
+			if ((pending.data || []).length < subsidyEngine.DB_PAGE_SIZE) break;
+		}
+		return {
+			code: 0,
+			message: '领取成功',
+			data: { claimedCount: totalClaimedCount, claimedAmount: totalClaimedAmount }
+		};
 	} catch (e) {
 		console.error('h5IncomeClaimAll failed', e);
 		return { code: 500, message: '领取失败' };
@@ -12446,30 +12577,32 @@ async function sumFirstReleasePointsForMerchantMonth(merchant, flowMonth) {
 	const rangeStart = Math.max(start, bindTs || 0);
 	if (rangeStart > end) return 0;
 	const _ = db.command;
-	const tRes = await machineTradeCollection
-		.where(
-			_.and([
-				{ user_id: uid },
-				{ trade_type: _.in(['real', 'virtual']) },
-				{ stats_eligible: _.neq(false) },
-				{ amount: _.gt(0) },
-				{ is_deleted: _.neq(true) },
-				_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
-				{ create_time: _.gte(rangeStart).and(_.lte(end)) }
-			])
-		)
-		.field({ amount: true, release_amount: true })
-		.limit(20000)
-		.get();
+	const where = _.and([
+		{ user_id: uid },
+		{ trade_type: _.in(['real', 'virtual']) },
+		{ stats_eligible: _.neq(false) },
+		{ amount: _.gt(0) },
+		{ is_deleted: _.neq(true) },
+		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+		{ create_time: _.gte(rangeStart).and(_.lte(end)) }
+	]);
 	let sum = 0;
-	for (const t of tRes.data || []) {
-		const amount = Number(t.amount || 0);
-		if (!(amount > 0)) continue;
-		const total = Number((amount * 0.0038).toFixed(4));
-		const firstRelease = Number(t.release_amount != null ? t.release_amount : total);
-		if (!(firstRelease > 0)) continue;
-		sum += Number(Number(firstRelease).toFixed(4));
-	}
+	await subsidyEngine.forEachQueryPage(
+		db,
+		'hsy-machine-trades',
+		where,
+		{ field: { amount: true, release_amount: true } },
+		(rows) => {
+			for (const t of rows) {
+				const amount = Number(t.amount || 0);
+				if (!(amount > 0)) continue;
+				const total = Number((amount * 0.0038).toFixed(4));
+				const firstRelease = Number(t.release_amount != null ? t.release_amount : total);
+				if (!(firstRelease > 0)) continue;
+				sum += Number(Number(firstRelease).toFixed(4));
+			}
+		}
+	);
 	return Number(sum.toFixed(4));
 }
 

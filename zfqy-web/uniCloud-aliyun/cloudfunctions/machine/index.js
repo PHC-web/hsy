@@ -723,6 +723,7 @@ async function getCardRecordList(data) {
 			tradeNo = '',
 			merchantUserId = '',
 			merchantUserIds,
+			merchantUserKeyword = '',
 			isActivated = '',
 			isActivatedList,
 			isCashback = '',
@@ -762,10 +763,18 @@ async function getCardRecordList(data) {
 		if (tradeNo) {
 			pushWhere({ trade_no: new RegExp(String(tradeNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
 		}
-		const muidArr = Array.isArray(merchantUserIds) && merchantUserIds.length
-			? [...new Set(merchantUserIds.map((id) => String(id).trim()).filter(Boolean))]
-			: (String(merchantUserId || '').trim() ? [String(merchantUserId).trim()] : []);
-		if (muidArr.length === 1) {
+		const merchantKw = String(merchantUserKeyword || '').trim();
+		const muidArr = merchantKw
+			? []
+			: Array.isArray(merchantUserIds) && merchantUserIds.length
+				? [...new Set(merchantUserIds.map((id) => String(id).trim()).filter(Boolean))]
+				: String(merchantUserId || '').trim()
+					? [String(merchantUserId).trim()]
+					: [];
+		if (merchantKw) {
+			const r = new RegExp(String(merchantKw).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+			pushWhere(_.or([{ user_name: r }, { user_mobile: r }, { user_id: r }]));
+		} else if (muidArr.length === 1) {
 			pushWhere({ user_id: muidArr[0] });
 		} else if (muidArr.length > 1) {
 			pushWhere({ user_id: _.in(muidArr) });

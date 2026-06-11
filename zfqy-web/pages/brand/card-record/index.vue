@@ -45,7 +45,7 @@
 							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具编号</uni-th>
 							<uni-th align="center" width="90" filter-type="select" :filter-data="brandFilterData" @filter-change="headerFilterChange($event, 'brandId')">品牌</uni-th>
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'tradeNo')">交易单号</uni-th>
-							<uni-th align="center" width="140" filter-type="select" :filter-data="merchantFilterData" @filter-change="headerFilterChange($event, 'merchantUserId')">交易用户</uni-th>
+							<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'merchantUserId')">交易用户</uni-th>
 							<uni-th align="center" width="110" filter-type="select" :filter-data="tradeTypeFilterData" @filter-change="headerFilterChange($event, 'tradeType')">交易类型</uni-th>
 							<uni-th align="center" width="100">支付渠道</uni-th>
 							<uni-th align="center" width="100" filter-type="select" :filter-data="isActivatedFilterData" @filter-change="headerFilterChange($event, 'isActivated')">是否激活</uni-th>
@@ -115,6 +115,7 @@ export default {
 				brandId: '',
 				brandIds: [],
 				tradeNo: '',
+				merchantUserKeyword: '',
 				merchantUserId: '',
 				merchantUserIds: [],
 				isActivated: '',
@@ -150,7 +151,6 @@ export default {
 			loading: false,
 			totalAmount: 0,
 			brandList: [],
-			merchantList: [],
 			pageInfo: {
 				currentPage: 1,
 				pageSize: 10,
@@ -179,18 +179,10 @@ export default {
 				value: String(b.value),
 				checked: false
 			}));
-		},
-		merchantFilterData() {
-			return (this.merchantList || []).map((m) => ({
-				text: m.wxUser || m.userId || '-',
-				value: String(m.userId),
-				checked: false
-			}));
 		}
 	},
 	mounted() {
 		this.getBrandList();
-		this.getMerchantList();
 		this.search();
 	},
 	methods: {
@@ -201,16 +193,6 @@ export default {
 				}
 			});
 		},
-		getMerchantList() {
-			this.$request('list', { page: 1, pageSize: 1000 }, { functionName: 'merchant' }).then((res) => {
-				if (res.code === 0 && res.data && res.data.list) {
-					this.merchantList = res.data.list.map((m) => ({
-						...m,
-						userId: String(m.userId)
-					}));
-				}
-			});
-		},
 		buildListPayload() {
 			const sf = this.searchForm;
 			return {
@@ -218,6 +200,7 @@ export default {
 				brandId: sf.brandIds.length ? '' : sf.brandId,
 				brandIds: sf.brandIds,
 				tradeNo: sf.tradeNo,
+				merchantUserKeyword: sf.merchantUserKeyword,
 				merchantUserId: sf.merchantUserIds.length ? '' : sf.merchantUserId,
 				merchantUserIds: sf.merchantUserIds,
 				isActivated: sf.isActivatedList.length ? '' : sf.isActivated,
@@ -269,6 +252,7 @@ export default {
 				brandId: '',
 				brandIds: [],
 				tradeNo: '',
+				merchantUserKeyword: '',
 				merchantUserId: '',
 				merchantUserIds: [],
 				isActivated: '',
@@ -326,12 +310,13 @@ export default {
 				const raw = String(filter == null ? '' : filter).replace(/[^\d.]/g, '');
 				const num = parseFloat(raw);
 				sf.releaseAmount = raw !== '' && Number.isFinite(num) && num > 0 ? raw : '';
+			} else if (field === 'merchantUserId' && filterType === 'search') {
+				sf.merchantUserKeyword = String(filter == null ? '' : filter).slice(0, 50);
+				sf.merchantUserId = '';
+				sf.merchantUserIds = [];
 			} else if (field === 'brandId' && filterType === 'select') {
 				sf.brandIds = Array.isArray(filter) ? filter.map(String) : [];
 				sf.brandId = '';
-			} else if (field === 'merchantUserId' && filterType === 'select') {
-				sf.merchantUserIds = Array.isArray(filter) ? filter.map(String) : [];
-				sf.merchantUserId = '';
 			} else if (field === 'isActivated' && filterType === 'select') {
 				sf.isActivatedList = Array.isArray(filter) ? filter.map(String) : [];
 				sf.isActivated = '';
