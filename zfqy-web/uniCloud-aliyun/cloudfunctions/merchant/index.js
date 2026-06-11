@@ -1443,79 +1443,161 @@ async function simulateRegister(data) {
 	}
 }
 
+async function resolveMerchantByBoundDeviceId(deviceId) {
+	const id = safeText(deviceId, 80);
+	if (!id) return { code: 400, message: '请输入机具编号' };
+	const machineRes = await machineCollection.where({ device_id: id, is_deleted: false }).limit(1).get();
+	if (!machineRes.data || !machineRes.data.length) {
+		return { code: 404, message: '机具不存在' };
+	}
+	const machine = machineRes.data[0];
+	if (machine.is_bound !== 1 || !machine.bind_user_id) {
+		return { code: 400, message: '该机具未绑定商户' };
+	}
+	const merchant = await getMerchantByIdOrUserId(machine.bind_user_id);
+	if (!merchant) {
+		return { code: 404, message: '未找到机具绑定的商户' };
+	}
+	return { code: 0, machine, merchant };
+}
+
+async function offlineFirstRechargeLookup(data) {
+	try {
+		const resolved = await resolveMerchantByBoundDeviceId(data?.deviceId || data?.device_id);
+		if (resolved.code !== 0) return resolved;
+		const { machine, merchant } = resolved;
+		const hasRecharge = merchantHasRechargeMembership(merchant);
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				deviceId: machine.device_id,
+				brandName: machine.brand_name || '',
+				bindUserName: machine.bind_user_name || merchant.wx_nickname || '',
+				merchantId: merchant._id,
+				merchantUserId: merchant.user_id || merchant._id,
+				wxNickname: merchant.wx_nickname || '',
+				mobile: merchant.mobile || '',
+				membershipName: merchant.membership_name || '普通会员',
+				hasRechargeMembership: hasRecharge,
+				canOfflineFirstRecharge: !hasRecharge
+			}
+		};
+	} catch (error) {
+		console.error('offlineFirstRechargeLookup failed:', error);
+		return { code: 500, message: '查询失败' };
+	}
+}
+
 async function offlineFirstRecharge(data, event) {
 	try {
-		const mobile = safeText(data?.mobile, 20);
+		const deviceId = safeText(data?.deviceId || data?.device_id, 80);
 		const packageId = safeText(data?.packageId, 80);
-		if (!mobile) return { code: 400, message: '请输入手机号' };
+		const rechargeGiftType = safeText(data?.rechargeGiftType || data?.giftType, 20);
+		if (!deviceId) return { code: 400, message: '请输入机具编号' };
 		if (!packageId) return { code: 400, message: '请选择套餐' };
 
-		const merchantRes = await merchantCollection.where({ mobile }).limit(1).get();
-		if (!merchantRes.data || !merchantRes.data.length) {
-			return { code: 404, message: '未找到该手机号对应的商户' };
-		}
-		const merchant = merchantRes.data[0];
+		const resolved = await resolveMerchantByBoundDeviceId(deviceId);
+		if (resolved.code !== 0) return resolved;
+		const { machine, merchant } = resolved;
 
-		let pkgRes = await quotaCollection.where({ package_id: packageId, is_deleted: false }).limit(1).get();
-		if (!pkgRes.data || !pkgRes.data.length) {
-			pkgRes = await quotaCollection.where({ _id: packageId, is_deleted: false }).limit(1).get();
+		const rechargePackages = await loadRechargePackagesFromQuota();
+		const pkg = pickRechargePackage(packageId, rechargePackages);
+		if (!pkg) return { code: 404, message: '套餐不存在或已下架' };
+
+		const giftRequired = Boolean(pkg.giftChoiceRequired) || Number(pkg.price) === RECHARGE_GIFT_PRICE;
+		let rechargeGiftLabel = '';
+		if (giftRequired) {
+			if (rechargeGiftType !== 'speaker' && rechargeGiftType !== 'scan_pos') {
+				return { code: 400, message: '该套餐需选择赠品：蓝牙音响或扫码POS机' };
+			}
+			rechargeGiftLabel = (RECHARGE_GIFT_OPTIONS.find((x) => x.value === rechargeGiftType) || {}).label || '';
 		}
-		if (!pkgRes.data || !pkgRes.data.length) {
-			return { code: 404, message: '套餐不存在或已删除' };
+
+		if (merchantHasRechargeMembership(merchant)) {
+			return { code: 400, message: '该商户已有充值会员档位，请通过 H5 补差价升级' };
 		}
-		const pkg = pkgRes.data[0];
-		const quota = Number(pkg.real_quota || 0);
-		if (!Number.isFinite(quota) || quota <= 0) {
-			return { code: 400, message: '套餐额度无效' };
-		}
+
+		const payAmount = Number(pkg.price || 0);
+		const addQuota = Number(pkg.quota || 0);
+		if (!(payAmount > 0)) return { code: 400, message: '套餐价格无效' };
 
 		const now = nowTs();
-		const offlineOrderNo = `XX${now}${Math.random().toString().slice(2, 10)}`;
-		const beforeQuota = Number(merchant.remaining_quota || 0);
-		const afterQuota = beforeQuota + quota;
-		await merchantCollection.doc(merchant._id).update({
-			remaining_quota: afterQuota,
-			update_time: now
-		});
-
-		await operationLogCollection.add({
-			user_id: merchant.user_id || merchant._id,
-			user_name: merchant.wx_nickname || merchant.mobile || '商户',
-			action: 'offline_first_recharge',
-			module: 'merchant',
-			target_id: merchant._id,
-			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-			content: `线下首冲额度: 手机号 ${mobile}，套餐 ${pkg.title || pkg.package_id || pkg._id}，额度 +${quota}`,
+		const orderNo = `OFF${now}${randomStr(6).toUpperCase()}`.slice(0, 28);
+		const payFeeFen = Math.round(payAmount * 100);
+		const orderCustom = {
+			merchant_id: merchant._id,
+			package_id: pkg.id,
+			package_title: pkg.title,
+			target_membership_name: safeText(pkg.membershipName || '', 40),
+			target_price: Number(pkg.price || 0),
+			before_price: 0,
+			target_quota: Number(pkg.quota || 0),
+			target_reward: Number(pkg.rewardYuan || 0),
+			add_quota: addQuota,
+			before_reward: 0,
+			paid_amount: payAmount,
+			offline_recharge: true,
+			offline_device_id: deviceId,
 			operator_source: 'admin',
 			operator: getOperator(event),
-			offline_order_no: offlineOrderNo,
-			mobile,
-			package_id: pkg.package_id || pkg._id,
-			package_title: pkg.title || '',
-			package_price: Number(pkg.price || 0),
-			package_quota: quota,
-			before_remaining_quota: beforeQuota,
-			after_remaining_quota: afterQuota,
-			ip: event?.context?.CLIENTIP || '',
-			create_time: now
+			log_content: `线下首充额度: 机具 ${deviceId}（${machine.brand_name || ''}），套餐 ${pkg.title || ''}，权益与 H5 微信充值一致`,
+			...(giftRequired ? { recharge_gift_type: rechargeGiftType, recharge_gift_label: rechargeGiftLabel } : {})
+		};
+
+		const addPayRes = await uniPayOrderCollection.add({
+			provider: 'offline',
+			provider_pay_type: 'admin',
+			uni_platform: 'web',
+			status: 1,
+			type: 'h5_quota_recharge',
+			order_no: orderNo,
+			out_trade_no: orderNo,
+			user_id: merchant.user_id || merchant._id,
+			nickname: merchant.wx_nickname || '商户',
+			client_ip: event?.context?.CLIENTIP || '',
+			description: `线下首充额度-${pkg.title}`,
+			total_fee: payFeeFen,
+			user_order_success: true,
+			pay_date: now,
+			create_date: now,
+			custom: orderCustom,
+			is_deleted: false
 		});
+
+		const orderDoc = {
+			_id: addPayRes.id,
+			out_trade_no: orderNo,
+			order_no: orderNo,
+			user_id: merchant.user_id || merchant._id,
+			custom: orderCustom
+		};
+		await applyRechargeByOrder(orderDoc);
+		const fresh = await getMerchantByIdOrUserId(merchant._id);
 
 		return {
 			code: 0,
 			message: '充值成功',
 			data: {
 				merchantId: merchant._id,
-				mobile,
-				packageId: pkg.package_id || pkg._id,
-				offlineOrderNo,
+				deviceId,
+				brandName: machine.brand_name || '',
+				merchantName: merchant.wx_nickname || '',
+				mobile: merchant.mobile || '',
+				packageId: pkg.id,
+				orderNo,
 				packageTitle: pkg.title || '',
-				addedQuota: quota,
-				remainingQuota: afterQuota
+				membershipName: fresh?.membership_name || pkg.membershipName || '',
+				paidAmount: payAmount,
+				addQuota,
+				availableReward: Number(fresh?.available_reward || 0),
+				estimatedFreeQuota: Number(fresh?.estimated_free_quota || 0),
+				remainingQuota: Number(fresh?.remaining_quota || 0)
 			}
 		};
 	} catch (error) {
 		console.error('offlineFirstRecharge failed:', error);
-		return { code: 500, message: '充值失败' };
+		return { code: 500, message: safeText(error?.message || '充值失败', 180) };
 	}
 }
 
@@ -5211,6 +5293,11 @@ async function applyRechargeByOrder(orderDoc) {
 		recharge_update_time: now,
 		update_time: now
 	});
+	const logOperatorSource = safeText(custom.operator_source, 20) || 'h5';
+	const logOperator = safeText(custom.operator, 80) || 'wxpay_notify';
+	const logContent =
+		safeText(custom.log_content, 300) ||
+		`H5额度充值: ${custom.package_title || ''}, 免门槛权益额度+${grantDelta}元(交易量配置+${volAdd})`;
 	await operationLogCollection.add({
 		user_id: merchant.user_id || merchant._id,
 		user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
@@ -5218,9 +5305,9 @@ async function applyRechargeByOrder(orderDoc) {
 		module: 'finance',
 		target_id: merchant._id,
 		target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-		content: `H5额度充值: ${custom.package_title || ''}, 免门槛权益额度+${grantDelta}元(交易量配置+${volAdd})`,
-		operator_source: 'h5',
-		operator: 'wxpay_notify',
+		content: logContent,
+		operator_source: logOperatorSource,
+		operator: logOperator,
 		platform_no: sourceOrder.out_trade_no || sourceOrder.order_no || '',
 		package_id: custom.package_id || '',
 		package_title: custom.package_title || '',
@@ -5248,6 +5335,7 @@ async function applyRechargeByOrder(orderDoc) {
 			update_date: now
 		});
 	}
+	await invalidateH5MerchantCaches(merchant);
 }
 
 /**
@@ -13840,6 +13928,8 @@ exports.main = async (event, context) => {
 			return await merchantAgreementClear(actualData, event);
 		case 'simulateRegister':
 			return await simulateRegister(actualData);
+		case 'offlineFirstRechargeLookup':
+			return await offlineFirstRechargeLookup(actualData);
 		case 'offlineFirstRecharge':
 			return await offlineFirstRecharge(actualData, event);
 		case 'withdrawList':

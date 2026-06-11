@@ -128,20 +128,44 @@
 		<uni-popup ref="offlineRechargePopup" type="dialog">
 			<view class="offline-popup">
 				<view class="offline-title">线下首充额度</view>
-				<view class="offline-label required">手机号码</view>
-				<input v-model="offlineForm.mobile" class="offline-input" type="number" maxlength="11" placeholder="手机号" />
+				<view class="offline-label required">机具编号</view>
+				<view class="offline-device-row">
+					<input v-model="offlineForm.deviceId" class="offline-input offline-input-flex" placeholder="请输入机具编号" />
+					<button size="mini" type="primary" :loading="offlineLookupLoading" @click="lookupOfflineMerchant">查询</button>
+				</view>
+				<view v-if="offlineMerchantPreview.wxNickname" class="offline-merchant-preview">
+					<text>商户：{{ offlineMerchantPreview.wxNickname }}</text>
+					<text v-if="offlineMerchantPreview.mobile"> / {{ offlineMerchantPreview.mobile }}</text>
+					<text v-if="offlineMerchantPreview.brandName"> · {{ offlineMerchantPreview.brandName }}</text>
+					<text class="offline-merchant-status" :class="{ warn: !offlineMerchantPreview.canOfflineFirstRecharge }">
+						{{ offlineMerchantPreview.canOfflineFirstRecharge ? '可办理线下首充' : '已有充值会员，不可重复首充' }}
+					</text>
+				</view>
 				<view class="offline-label required">选择套餐</view>
 				<scroll-view class="offline-packages" scroll-y>
 					<radio-group>
-						<label v-for="item in offlinePackages" :key="item.value" class="offline-package-item" @click="offlineForm.packageId = item.value">
+						<label v-for="item in offlinePackages" :key="item.value" class="offline-package-item" @click="onOfflinePackagePick(item)">
 							<radio :value="item.value" :checked="offlineForm.packageId === item.value" />
 							<view class="offline-package-content">
-								<view class="offline-package-main">额度：{{ item.quotaText }}；价格：{{ item.priceText }}元</view>
+								<view class="offline-package-main">
+									{{ item.title || '套餐' }}
+									<text v-if="item.membershipName"> · {{ item.membershipName }}</text>
+									· 权益 {{ item.rewardText }}元 · 价格 {{ item.priceText }}元
+								</view>
 								<view v-if="item.desc" class="offline-package-desc">{{ item.desc }}</view>
 							</view>
 						</label>
 					</radio-group>
 				</scroll-view>
+				<view v-if="offlineGiftRequired" class="offline-label required">选择赠品</view>
+				<radio-group v-if="offlineGiftRequired" class="offline-gift-group">
+					<label class="offline-gift-item" @click="offlineForm.rechargeGiftType = 'speaker'">
+						<radio value="speaker" :checked="offlineForm.rechargeGiftType === 'speaker'" />蓝牙音响
+					</label>
+					<label class="offline-gift-item" @click="offlineForm.rechargeGiftType = 'scan_pos'">
+						<radio value="scan_pos" :checked="offlineForm.rechargeGiftType === 'scan_pos'" />扫码POS机
+					</label>
+				</radio-group>
 				<view class="offline-actions">
 					<button size="mini" @click="closeOfflineRecharge">取消</button>
 					<button size="mini" type="primary" :loading="offlineSubmitting" @click="submitOfflineRecharge">提交</button>
@@ -297,10 +321,13 @@ export default {
 				{ text: 'MS-Excel', value: 'excel' }
 			],
 			offlineSubmitting: false,
+			offlineLookupLoading: false,
 			offlineForm: {
-				mobile: '',
-				packageId: ''
+				deviceId: '',
+				packageId: '',
+				rechargeGiftType: ''
 			},
+			offlineMerchantPreview: {},
 			previewImageUrl: '',
 			agreementPreviewMode: false,
 			agreementPreviewMerchant: null,
@@ -341,6 +368,10 @@ export default {
 			return {
 				transform: `translate(${this.previewOffsetX}px, ${this.previewOffsetY}px) scale(${this.previewScale})`
 			};
+		},
+		offlineGiftRequired() {
+			const pkg = (this.offlinePackages || []).find((x) => x.value === this.offlineForm.packageId);
+			return !!(pkg && pkg.giftChoiceRequired);
 		}
 	},
 	mounted() {
@@ -962,12 +993,40 @@ export default {
 			}
 		},
 		async openOfflineRecharge() {
-			this.offlineForm = { mobile: '', packageId: '' };
+			this.offlineForm = { deviceId: '', packageId: '', rechargeGiftType: '' };
+			this.offlineMerchantPreview = {};
 			await this.loadOfflinePackages();
 			this.$refs.offlineRechargePopup.open();
 		},
 		closeOfflineRecharge() {
 			this.$refs.offlineRechargePopup.close();
+		},
+		onOfflinePackagePick(item) {
+			if (!item) return;
+			this.offlineForm.packageId = item.value;
+			if (!item.giftChoiceRequired) this.offlineForm.rechargeGiftType = '';
+		},
+		async lookupOfflineMerchant() {
+			const deviceId = String(this.offlineForm.deviceId || '').trim();
+			if (!deviceId) {
+				uni.showToast({ title: '请输入机具编号', icon: 'none' });
+				return;
+			}
+			this.offlineLookupLoading = true;
+			try {
+				const ret = await this.$request('offlineFirstRechargeLookup', { deviceId }, { functionName: 'merchant' });
+				if (ret.code !== 0) {
+					this.offlineMerchantPreview = {};
+					uni.showToast({ title: ret.message || '查询失败', icon: 'none' });
+					return;
+				}
+				this.offlineMerchantPreview = ret.data || {};
+			} catch (e) {
+				this.offlineMerchantPreview = {};
+				uni.showToast({ title: '查询失败', icon: 'none' });
+			} finally {
+				this.offlineLookupLoading = false;
+			}
 		},
 		async loadOfflinePackages() {
 			try {
@@ -977,39 +1036,67 @@ export default {
 					this.offlinePackages = [];
 					return;
 				}
-				const rows = ret.data?.list || [];
+				const rows = (ret.data?.list || []).filter((x) => Number(x.price || 0) > 0);
 				this.offlinePackages = rows.map((x) => ({
 					value: x.packageId || x.id,
-					quotaText: Number(x.realQuota || 0).toFixed(0),
+					title: x.title || '',
+					membershipName: x.membershipName || '',
+					rewardText: Number(x.realQuota || 0).toFixed(0),
 					priceText: Number(x.price || 0).toFixed(2),
-					desc: x.description || '',
-					title: x.title || ''
+					desc: x.description || x.briefIntro || '',
+					giftChoiceRequired: Number(x.price || 0) === 1000
 				}));
-				if (this.offlinePackages.length) this.offlineForm.packageId = this.offlinePackages[0].value;
+				if (this.offlinePackages.length) {
+					this.onOfflinePackagePick(this.offlinePackages[0]);
+				}
 			} catch (e) {
 				this.offlinePackages = [];
 				uni.showToast({ title: '套餐加载失败', icon: 'none' });
 			}
 		},
 		async submitOfflineRecharge() {
-			const mobile = String(this.offlineForm.mobile || '').trim();
+			const deviceId = String(this.offlineForm.deviceId || '').trim();
 			const packageId = String(this.offlineForm.packageId || '').trim();
-			if (!/^1\d{10}$/.test(mobile)) {
-				uni.showToast({ title: '请输入正确的11位手机号', icon: 'none' });
+			const rechargeGiftType = String(this.offlineForm.rechargeGiftType || '').trim();
+			if (!deviceId) {
+				uni.showToast({ title: '请输入机具编号', icon: 'none' });
 				return;
 			}
 			if (!packageId) {
 				uni.showToast({ title: '请选择套餐', icon: 'none' });
 				return;
 			}
+			if (this.offlineGiftRequired && !rechargeGiftType) {
+				uni.showToast({ title: '请选择赠品', icon: 'none' });
+				return;
+			}
+			if (this.offlineMerchantPreview.deviceId && this.offlineMerchantPreview.deviceId !== deviceId) {
+				await this.lookupOfflineMerchant();
+			}
+			if (this.offlineMerchantPreview.canOfflineFirstRecharge === false) {
+				uni.showToast({ title: '该商户已有充值会员，不可重复首充', icon: 'none' });
+				return;
+			}
+			if (!this.offlineMerchantPreview.wxNickname) {
+				await this.lookupOfflineMerchant();
+				if (!this.offlineMerchantPreview.wxNickname) return;
+				if (this.offlineMerchantPreview.canOfflineFirstRecharge === false) {
+					uni.showToast({ title: '该商户已有充值会员，不可重复首充', icon: 'none' });
+					return;
+				}
+			}
 			this.offlineSubmitting = true;
 			try {
-				const ret = await this.$request('offlineFirstRecharge', { mobile, packageId }, { functionName: 'merchant' });
+				const payload = { deviceId, packageId };
+				if (rechargeGiftType) payload.rechargeGiftType = rechargeGiftType;
+				const ret = await this.$request('offlineFirstRecharge', payload, { functionName: 'merchant' });
 				if (ret.code !== 0) {
 					uni.showToast({ title: ret.message || '提交失败', icon: 'none' });
 					return;
 				}
-				uni.showToast({ title: '充值成功', icon: 'success' });
+				const d = ret.data || {};
+				const tip = d.membershipName ? `已开通${d.membershipName}` : '充值成功';
+				uni.showToast({ title: tip, icon: 'success' });
 				this.closeOfflineRecharge();
 				this.search();
 			} catch (e) {
@@ -1225,6 +1312,51 @@ export default {
 	border: 1px solid #dcdfe6;
 	border-radius: 4px;
 	padding: 0 10px;
+	font-size: 13px;
+}
+
+.offline-device-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+
+.offline-input-flex {
+	flex: 1;
+}
+
+.offline-merchant-preview {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+	margin-bottom: 10px;
+	padding: 8px 10px;
+	background: #f5f7fa;
+	border-radius: 4px;
+	font-size: 12px;
+	color: #606266;
+}
+
+.offline-merchant-status {
+	color: #67c23a;
+}
+
+.offline-merchant-status.warn {
+	color: #e6a23c;
+}
+
+.offline-gift-group {
+	display: flex;
+	gap: 16px;
+	margin-bottom: 10px;
+}
+
+.offline-gift-item {
+	display: flex;
+	align-items: center;
+	gap: 4px;
 	font-size: 13px;
 }
 
