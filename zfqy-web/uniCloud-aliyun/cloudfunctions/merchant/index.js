@@ -13743,6 +13743,92 @@ async function couponList(data) {
 	}
 }
 
+async function couponRedemptionList(data) {
+	try {
+		const couponId = safeText(data?.couponId || data?.id || data?.templateId, 80);
+		if (!couponId) return { code: 400, message: '缺少优惠券模板ID' };
+		const page = Math.max(1, Number(data?.page) || 1);
+		const pageSize = Math.min(100, Math.max(1, Number(data?.pageSize) || 20));
+
+		const tplRes = await couponCollection.doc(couponId).get();
+		const tplRow = tplRes.data && tplRes.data[0];
+		if (!tplRow || tplRow.is_deleted) return { code: 404, message: '优惠券模板不存在' };
+
+		const where = { coupon_template_id: couponId, status: 'claimed' };
+		const totalRes = await couponInstanceCollection.where(where).count();
+		const total = Number(totalRes.total || 0);
+		const instRes = await couponInstanceCollection
+			.where(where)
+			.orderBy('claimed_at', 'desc')
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.get();
+		const rows = instRes.data || [];
+		const userIds = [...new Set(rows.map((r) => String(r.merchant_user_id || '').trim()).filter(Boolean))];
+		const merchantMap = new Map();
+		if (userIds.length) {
+			const mRes = await merchantCollection
+				.where({ user_id: db.command.in(userIds) })
+				.field({ user_id: true, wx_nickname: true, mobile: true, device_id: true })
+				.limit(Math.min(userIds.length, 100))
+				.get();
+			(mRes.data || []).forEach((m) => {
+				merchantMap.set(String(m.user_id || ''), m);
+			});
+			const missing = userIds.filter((uid) => !merchantMap.has(uid));
+			if (missing.length) {
+				const m2 = await merchantCollection
+					.where({ _id: db.command.in(missing.slice(0, 100)) })
+					.field({ _id: true, user_id: true, wx_nickname: true, mobile: true, device_id: true })
+					.get();
+				(m2.data || []).forEach((m) => {
+					const key = String(m.user_id || m._id || '');
+					if (key) merchantMap.set(key, m);
+				});
+			}
+		}
+
+		const list = rows.map((row) => {
+			const uid = String(row.merchant_user_id || '');
+			const m = merchantMap.get(uid) || {};
+			const nickname = safeText(m.wx_nickname || '', 80);
+			const mobile = safeText(m.mobile || '', 30);
+			return {
+				instanceId: row._id,
+				merchantUserId: uid,
+				userDisplay: [nickname || '-', mobile || '-'].filter((x) => x && x !== '-').join('\n') || uid || '-',
+				deviceId: safeText(m.device_id || '', 80) || '-',
+				monthlyThresholdYuan: Number(row.monthly_threshold_yuan || tplRow.monthly_threshold || 0),
+				rewardYuan: Number(row.reward_yuan || tplRow.amount || 0),
+				qualifiedFlowYuan: Number(row.qualified_flow_yuan || 0),
+				qualifiedAt: row.qualified_at ? formatTime(row.qualified_at) : '-',
+				claimedAt: row.claimed_at ? formatTime(row.claimed_at) : '-',
+				issuedAt: row.issued_at ? formatTime(row.issued_at) : '-'
+			};
+		});
+
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				coupon: {
+					id: couponId,
+					name: tplRow.name || '',
+					monthlyThreshold: Number(tplRow.monthly_threshold || 0),
+					rewardYuan: Number(tplRow.amount || 0)
+				},
+				list,
+				total,
+				page,
+				pageSize
+			}
+		};
+	} catch (error) {
+		console.error('couponRedemptionList failed:', error);
+		return { code: 500, message: '获取兑现情况失败' };
+	}
+}
+
 async function couponSave(data) {
 	try {
 		const now = nowTs();
@@ -14205,6 +14291,8 @@ exports.main = async (event, context) => {
 			return await couponDelete(actualData, event);
 		case 'couponIssue':
 			return await couponIssue(actualData, event);
+		case 'couponRedemptionList':
+			return await couponRedemptionList(actualData);
 		case 'productList':
 			return await productList(actualData);
 		case 'productSave':

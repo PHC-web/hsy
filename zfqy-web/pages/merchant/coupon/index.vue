@@ -50,7 +50,7 @@
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'updateTime')">更新时间</uni-th>
 						<uni-th align="center" width="170" filter-type="timestamp" @filter-change="headerFilterChange($event, 'createTime')">创建时间</uni-th>
 						<uni-th align="center" width="90">发放</uni-th>
-						<uni-th align="center" width="150">操作</uni-th>
+						<uni-th align="center" width="240">操作</uni-th>
 					</uni-tr>
 					<uni-tr v-for="item in list" :key="item.id">
 						<uni-td align="center">
@@ -69,6 +69,7 @@
 						</uni-td>
 						<uni-td align="center">
 							<view class="row-ops">
+								<button size="mini" type="default" @click="openRedemption(item)">兑现情况</button>
 								<button size="mini" type="primary" @click="openEdit(item)">编辑</button>
 								<button size="mini" type="warn" @click="removeOne(item)">删除</button>
 							</view>
@@ -152,6 +153,50 @@
 					</view>
 				</view>
 			</uni-popup>
+
+			<uni-popup ref="redemptionPopup" type="center">
+				<view class="redemption-panel">
+					<view class="dialog-title">优惠券兑现情况</view>
+					<text class="redemption-tip">
+						模板：{{ redemptionMeta.couponName || '-' }} · 月流水门槛 {{ redemptionMeta.monthlyThreshold }} 元 · 奖励 {{ redemptionMeta.rewardYuan }} 元
+					</text>
+					<text class="redemption-sub">以下为已达标并在「收益」页领取积分的商户（共 {{ redemptionPage.total }} 人）</text>
+					<view class="redemption-table-wrap">
+						<uni-table border stripe :loading="redemptionLoading" empty-text="暂无已领取记录">
+							<uni-tr>
+								<uni-th align="center" width="120">商户</uni-th>
+								<uni-th align="center" width="110">机具号</uni-th>
+								<uni-th align="center" width="100">达标流水(元)</uni-th>
+								<uni-th align="center" width="90">奖励(元)</uni-th>
+								<uni-th align="center" width="140">达标时间</uni-th>
+								<uni-th align="center" width="140">领取时间</uni-th>
+								<uni-th align="center" width="140">发放时间</uni-th>
+							</uni-tr>
+							<uni-tr v-for="row in redemptionList" :key="row.instanceId">
+								<uni-td align="center" class="cell-user">{{ row.userDisplay }}</uni-td>
+								<uni-td align="center">{{ row.deviceId }}</uni-td>
+								<uni-td align="center">{{ row.qualifiedFlowYuan }}</uni-td>
+								<uni-td align="center">{{ row.rewardYuan }}</uni-td>
+								<uni-td align="center" class="cell-time">{{ row.qualifiedAt }}</uni-td>
+								<uni-td align="center" class="cell-time">{{ row.claimedAt }}</uni-td>
+								<uni-td align="center" class="cell-time">{{ row.issuedAt }}</uni-td>
+							</uni-tr>
+						</uni-table>
+					</view>
+					<view class="redemption-pagination">
+						<uni-pagination
+							show-icon
+							:page-size="redemptionPage.pageSize"
+							v-model="redemptionPage.currentPage"
+							:total="redemptionPage.total"
+							@change="onRedemptionPageChanged"
+						/>
+					</view>
+					<view class="dialog-actions">
+						<button size="mini" @click="closeRedemption">关闭</button>
+					</view>
+				</view>
+			</uni-popup>
 		</view>
 		<!-- #ifndef H5 -->
 		<fix-window />
@@ -219,6 +264,19 @@ export default {
 				couponName: '',
 				scope: 'selected',
 				keysText: ''
+			},
+			redemptionLoading: false,
+			redemptionList: [],
+			redemptionMeta: {
+				couponId: '',
+				couponName: '',
+				monthlyThreshold: 0,
+				rewardYuan: 0
+			},
+			redemptionPage: {
+				currentPage: 1,
+				pageSize: 10,
+				total: 0
 			}
 		};
 	},
@@ -483,6 +541,58 @@ export default {
 		closeIssue() {
 			this.$refs.issuePopup.close();
 		},
+		openRedemption(row) {
+			if (!row || !row.id) return;
+			this.redemptionMeta = {
+				couponId: row.id,
+				couponName: row.name || '',
+				monthlyThreshold: Number(row.monthlyThreshold || 0),
+				rewardYuan: Number(row.amount || 0)
+			};
+			this.redemptionPage.currentPage = 1;
+			this.$refs.redemptionPopup.open();
+			this.loadRedemptionList();
+		},
+		closeRedemption() {
+			this.$refs.redemptionPopup.close();
+		},
+		onRedemptionPageChanged(page) {
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.redemptionPage.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
+			this.loadRedemptionList();
+		},
+		loadRedemptionList() {
+			if (!this.redemptionMeta.couponId) return;
+			this.redemptionLoading = true;
+			this.$request(
+				'couponRedemptionList',
+				{
+					couponId: this.redemptionMeta.couponId,
+					page: this.redemptionPage.currentPage,
+					pageSize: this.redemptionPage.pageSize
+				},
+				{ functionName: 'merchant' }
+			)
+				.then((res) => {
+					if (res.code !== 0) {
+						uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+						return;
+					}
+					const d = res.data || {};
+					const coupon = d.coupon || {};
+					this.redemptionMeta.couponName = coupon.name || this.redemptionMeta.couponName;
+					this.redemptionMeta.monthlyThreshold = Number(coupon.monthlyThreshold ?? this.redemptionMeta.monthlyThreshold);
+					this.redemptionMeta.rewardYuan = Number(coupon.rewardYuan ?? this.redemptionMeta.rewardYuan);
+					this.redemptionList = d.list || [];
+					this.redemptionPage.total = Number(d.total || 0);
+				})
+				.catch(() => {
+					uni.showToast({ title: '加载失败', icon: 'none' });
+				})
+				.finally(() => {
+					this.redemptionLoading = false;
+				});
+		},
 		onIssueScopeChange(e) {
 			const v = e.detail && e.detail.value;
 			if (v === 'all' || v === 'selected') this.issueForm.scope = v;
@@ -598,6 +708,58 @@ export default {
 	line-height: 1.5;
 }
 
+.redemption-panel {
+	width: 920px;
+	max-width: 96vw;
+	max-height: 88vh;
+	background: #fff;
+	border-radius: 8px;
+	padding: 18px 20px 20px;
+	display: flex;
+	flex-direction: column;
+	box-sizing: border-box;
+}
+
+.redemption-tip {
+	display: block;
+	font-size: 13px;
+	color: #303133;
+	margin-bottom: 6px;
+}
+
+.redemption-sub {
+	display: block;
+	font-size: 12px;
+	color: #909399;
+	margin-bottom: 12px;
+	line-height: 1.5;
+}
+
+.redemption-table-wrap {
+	flex: 1;
+	min-height: 200px;
+	max-height: 52vh;
+	overflow: auto;
+	margin-bottom: 12px;
+}
+
+.redemption-pagination {
+	display: flex;
+	justify-content: flex-end;
+	margin-bottom: 8px;
+}
+
+.cell-user {
+	white-space: pre-line;
+	line-height: 1.45;
+	font-size: 12px;
+}
+
+.cell-time {
+	font-size: 12px;
+	white-space: nowrap;
+}
+
 .header-actions {
 	display: flex;
 	align-items: center;
@@ -661,7 +823,7 @@ export default {
 	gap: 6px;
 	justify-content: center;
 	align-items: center;
-	flex-wrap: nowrap;
+	flex-wrap: wrap;
 }
 
 .row-ops button {
