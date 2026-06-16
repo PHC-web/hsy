@@ -901,9 +901,8 @@ export default {
 		},
 		async fetchExportRows() {
 			const sf = this.searchForm;
-			const ret = await this.$request('list', {
-				page: 1,
-				pageSize: 10000,
+			const basePayload = {
+				forExport: true,
 				mobile: sf.mobile,
 				deviceId: sf.deviceId,
 				wxNickname: sf.wxNickname,
@@ -914,9 +913,26 @@ export default {
 				membershipLevel: sf.membershipLevel,
 				loginTimeStart: sf.loginTimeStart,
 				loginTimeEnd: sf.loginTimeEnd
-			}, { functionName: 'merchant' });
-			if (ret.code !== 0) throw new Error(ret.message || '导出数据获取失败');
-			return (ret.data?.list || []).map((x) => ({
+			};
+			const exportPageSize = 1000;
+			const all = [];
+			let page = 1;
+			let total = Infinity;
+			while (all.length < total) {
+				const ret = await this.$request(
+					'list',
+					{ page, pageSize: exportPageSize, ...basePayload },
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) throw new Error(ret.message || '导出数据获取失败');
+				total = Number(ret.data?.total ?? 0);
+				const batch = ret.data?.list || [];
+				all.push(...batch);
+				if (!batch.length || batch.length < exportPageSize) break;
+				page += 1;
+				if (page > 500) break;
+			}
+			return all.map((x) => ({
 				机具号码: x.deviceNo || '',
 				微信用户: x.wxUser || '',
 				会员级别: x.membershipLevel || '普通会员',

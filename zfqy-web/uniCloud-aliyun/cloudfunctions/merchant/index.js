@@ -599,7 +599,9 @@ async function listMerchants(data) {
 		} = data || {};
 
 		const pageNum = Math.max(1, parseInt(String(page), 10) || 1);
-		const pageSizeNum = Math.min(100, Math.max(1, parseInt(String(pageSize), 10) || 10));
+		const forExport = !!(data && (data.forExport === true || data.forExport === '1' || data.forExport === 1));
+		const maxPageSize = forExport ? 1000 : 500;
+		const pageSizeNum = Math.min(maxPageSize, Math.max(1, parseInt(String(pageSize), 10) || 10));
 		const skip = (pageNum - 1) * pageSizeNum;
 		if (!Number.isFinite(skip) || skip < 0) {
 			return { code: 400, message: '分页参数无效' };
