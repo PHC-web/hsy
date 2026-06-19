@@ -252,7 +252,33 @@
 						<view v-else class="points-empty">暂无片级明细</view>
 					</view>
 					<view class="points-section">
-						<view class="points-section-hd">C. 交易抽样（最近200笔）</view>
+						<view class="points-section-hd">D. 每月领取汇总</view>
+						<view class="points-rule-tip points-rule-tip--compact">
+							<text>说明：「首期领取」为流水当场/当月首期补贴；「分期待返领取」与 B 片级明细同口径（按目标月+来源月），二者相加为当月领取合计。此前按来源月合并会把首期与分期混在一起，导致与 B 节 16.7078 等数值不一致。</text>
+						</view>
+						<view v-if="pointsInsight.monthlyClaimedSummary.length" class="points-claimed-list">
+							<view v-for="row in pointsInsight.monthlyClaimedSummary" :key="`cl_${row.ym}`" class="points-claimed-block">
+								<view class="points-claimed-row">
+									<text class="points-claimed-main">{{ row.ym }}：合计 {{ formatInsightPoints(row.totalPoints) }} 分</text>
+								</view>
+								<view v-if="row.firstRelease && row.firstRelease.totalPoints > 0" class="points-claimed-sub">
+									<text class="points-claimed-label">首期领取 {{ formatInsightPoints(row.firstRelease.totalPoints) }} 分</text>
+									<text v-if="row.firstRelease.sourceBreakdown && row.firstRelease.sourceBreakdown.length" class="points-claimed-detail">
+										（{{ formatClaimedSourceBreakdown(row.firstRelease.sourceBreakdown) }}）
+									</text>
+								</view>
+								<view v-if="row.deferredRelease && row.deferredRelease.totalPoints > 0" class="points-claimed-sub">
+									<text class="points-claimed-label">分期待返领取 {{ formatInsightPoints(row.deferredRelease.totalPoints) }} 分</text>
+									<text v-if="row.deferredRelease.items && row.deferredRelease.items.length" class="points-claimed-detail">
+										（{{ formatDeferredClaimedBreakdown(row.deferredRelease.items) }}）
+									</text>
+								</view>
+							</view>
+						</view>
+						<view v-else class="points-empty">暂无领取记录</view>
+					</view>
+					<view class="points-section">
+						<view class="points-section-hd">E. 交易抽样（最近200笔）</view>
 						<view v-if="pointsInsight.tradeSamples.length" class="points-table">
 							<view class="points-row points-row-hd points-row--trade">
 								<text>时间</text><text>来源月</text><text>金额</text><text>总积分</text><text>首期积分</text><text>单月分期待返</text>
@@ -355,6 +381,7 @@ export default {
 			pointsInsight: {
 				title: '',
 				monthlyOverview: [],
+				monthlyClaimedSummary: [],
 				sliceDetails: [],
 				tradeSamples: []
 			}
@@ -495,9 +522,15 @@ export default {
 		formatDeviceDisplay(raw) {
 			const text = String(raw || '').trim();
 			if (!text) return '-';
-			const parts = text.split('/');
-			if (parts.length < 2) return text;
-			return `${parts[0]}\n${parts.slice(1).join('/')}`;
+			return text
+				.split('\n')
+				.map((line) => {
+					const parts = String(line || '').trim().split('/');
+					if (parts.length < 2) return parts[0] || '-';
+					return `${parts[0]}\n${parts.slice(1).join('/')}`;
+				})
+				.filter(Boolean)
+				.join('\n');
 		},
 		formatWxUserDisplay(raw) {
 			const text = String(raw || '').trim();
@@ -1135,7 +1168,7 @@ export default {
 		async openPointsInsight(item) {
 			if (!item || !item.userId) return;
 			this.pointsInsightLoading = true;
-			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, monthlyOverview: [], sliceDetails: [], tradeSamples: [] };
+			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, monthlyOverview: [], monthlyClaimedSummary: [], sliceDetails: [], tradeSamples: [] };
 			this.$refs.pointsInsightPopup.open();
 			try {
 				const res = await this.$request(
@@ -1151,6 +1184,7 @@ export default {
 				this.pointsInsight = {
 					title: `${(d.merchant && d.merchant.name) || item.wxUser || item.userId} 积分明细`,
 					monthlyOverview: d.monthlyOverview || [],
+					monthlyClaimedSummary: d.monthlyClaimedSummary || [],
 					sliceDetails: d.sliceDetails || [],
 					tradeSamples: d.tradeSamples || []
 				};
@@ -1160,6 +1194,35 @@ export default {
 		},
 		closePointsInsight() {
 			if (this.$refs.pointsInsightPopup) this.$refs.pointsInsightPopup.close();
+		},
+		formatInsightPoints(raw) {
+			const v = Number(raw || 0);
+			if (!(v > 0)) return '0';
+			const rounded = Math.round(v * 100) / 100;
+			if (Math.abs(rounded - Math.round(rounded)) < 1e-6) return String(Math.round(rounded));
+			return String(rounded.toFixed(2)).replace(/0+$/, '').replace(/\.$/, '');
+		},
+		formatInsightSourceMonth(ym) {
+			const m = String(ym || '').trim().match(/^(\d{4})-(\d{1,2})$/);
+			if (!m) return ym || '-';
+			return `${Number(m[2])} 月`;
+		},
+		formatClaimedSourceBreakdown(list) {
+			const rows = Array.isArray(list) ? list : [];
+			if (!rows.length) return '';
+			return rows
+				.map((x) => `${this.formatInsightPoints(x.points)} 分来自 ${this.formatInsightSourceMonth(x.sourceYm)}`)
+				.join('，');
+		},
+		formatDeferredClaimedBreakdown(items) {
+			const rows = Array.isArray(items) ? items : [];
+			if (!rows.length) return '';
+			return rows
+				.map(
+					(x) =>
+						`目标月 ${x.targetYm}：${this.formatInsightPoints(x.points)} 分来自 ${this.formatInsightSourceMonth(x.sourceYm)}`
+				)
+				.join('；');
 		},
 		async openRefundWindow(item) {
 			if (!item || !item.id) return;
@@ -1587,6 +1650,45 @@ export default {
 .points-empty {
 	font-size: 12px;
 	color: #9ca3af;
+}
+.points-claimed-list {
+	border: 1px solid #ebeef5;
+	border-radius: 8px;
+	overflow: hidden;
+}
+.points-claimed-block {
+	padding: 10px 12px;
+	border-top: 1px solid #f3f4f6;
+}
+.points-claimed-block:first-child {
+	border-top: none;
+}
+.points-claimed-row {
+	font-size: 13px;
+	line-height: 1.65;
+	color: #111827;
+}
+.points-claimed-sub {
+	margin-top: 6px;
+	padding-left: 10px;
+	font-size: 12px;
+	line-height: 1.65;
+	color: #374151;
+}
+.points-claimed-main {
+	font-weight: 600;
+}
+.points-claimed-label {
+	font-weight: 500;
+	color: #1f2937;
+}
+.points-claimed-detail {
+	color: #6b7280;
+}
+.points-rule-tip--compact {
+	margin-bottom: 8px;
+	padding: 6px 10px;
+	font-size: 11px;
 }
 .points-insight-actions {
 	margin-top: 8px;

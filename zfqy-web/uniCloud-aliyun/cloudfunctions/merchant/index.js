@@ -580,6 +580,55 @@ async function validateRefundEntryToken(merchantId, token) {
 	return { ok: true, row };
 }
 
+/** 按机具号关键词查 hsy-machine，返回对应 bind_user_id（含非主快照机具） */
+async function listBindUserIdsByBoundDeviceKeyword(deviceKeyword) {
+	const kw = safeText(deviceKeyword, 50);
+	if (!kw) return [];
+	const re = new RegExp(escapeReg(kw), 'i');
+	const userSet = new Set();
+	let skip = 0;
+	const PAGE = 1000;
+	for (;;) {
+		const res = await machineCollection
+			.where({
+				is_deleted: false,
+				is_bound: 1,
+				bind_user_id: db.command.neq(''),
+				device_id: re
+			})
+			.field({ bind_user_id: true })
+			.skip(skip)
+			.limit(PAGE)
+			.get();
+		const rows = res.data || [];
+		for (const row of rows) {
+			const uid = String(row.bind_user_id || '').trim();
+			if (uid) userSet.add(uid);
+		}
+		if (rows.length < PAGE) break;
+		skip += PAGE;
+		if (skip > 20000) break;
+	}
+	return [...userSet];
+}
+
+function buildMerchantListDeviceIdWhere(deviceKeyword, bindUserIds) {
+	const kw = safeText(deviceKeyword, 50);
+	if (!kw) return null;
+	const re = new RegExp(escapeReg(kw), 'i');
+	const orParts = [{ device_id: re }];
+	const ids = [...new Set((Array.isArray(bindUserIds) ? bindUserIds : []).map((x) => String(x || '').trim()).filter(Boolean))];
+	if (ids.length) {
+		const CHUNK = 450;
+		for (let i = 0; i < ids.length; i += CHUNK) {
+			const part = ids.slice(i, i + CHUNK);
+			orParts.push({ user_id: db.command.in(part) });
+			orParts.push({ _id: db.command.in(part) });
+		}
+	}
+	return orParts.length === 1 ? orParts[0] : db.command.or(orParts);
+}
+
 async function listMerchants(data) {
 	try {
 		const {
@@ -621,7 +670,6 @@ async function listMerchants(data) {
 		const where = {};
 		const whereParts = [];
 		if (mobile) where.mobile = new RegExp(String(mobile));
-		if (deviceId) where.device_id = new RegExp(String(deviceId));
 		if (wxNickname) where.wx_nickname = new RegExp(String(wxNickname));
 		if (useStatus !== '' && useStatus !== undefined) where.use_status = Number(useStatus);
 
@@ -653,6 +701,12 @@ async function listMerchants(data) {
 			where.login_time = where.login_time
 				? db.command.and([where.login_time, db.command.lte(Number(loginTimeEnd))])
 				: db.command.lte(Number(loginTimeEnd));
+		}
+
+		if (deviceId) {
+			const bindUserIds = await listBindUserIdsByBoundDeviceKeyword(deviceId);
+			const deviceWhere = buildMerchantListDeviceIdWhere(deviceId, bindUserIds);
+			if (deviceWhere) whereParts.push(deviceWhere);
 		}
 
 		whereParts.unshift(where);
@@ -712,10 +766,19 @@ async function listMerchants(data) {
 		const rows = res.data || [];
 		// 已提现口径：提现记录里“已到账(arrival_status=received)”的历史累计（与 H5 已到账统计同源）
 		const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(rows);
+		const bindUserIds = rows
+			.flatMap((item) => [String(item.user_id || '').trim(), String(item._id || '').trim()])
+			.filter(Boolean);
+		const machinesByBindUser = await batchListBoundMachinesByBindUserIds(bindUserIds);
 
 		// pendingWithdraw：与 H5 待提现金额/账号积分一致 = account_points（已领取未发起提现扣减的积分，1:1 元）
 		const list = rows.map((item) => {
 			const uid = String(item.user_id || item._id || '');
+			const boundMachines = collectBoundMachinesForMerchant(item, machinesByBindUser);
+			const deviceDisplay = merchantDeviceDisplayText(item, machinesByBindUser);
+			const deviceNo = boundMachines.length
+				? boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean).join('、')
+				: safeText(item.device_id, 80) || '-';
 			const frozenYuan = Number(item.frozen_amount || 0) || 0;
 			const withdrawnYuan = Number(
 				(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(item.withdrawn || 0)) || 0
@@ -728,8 +791,9 @@ async function listMerchants(data) {
 			userId: item.user_id || item._id,
 			avatar: item.wx_avatar || '',
 			agreementSigned: !!(item.agreement_signed_at || item.agreement_version),
-			deviceNo: item.device_id,
-			deviceDisplay: `${item.device_id || '-'}\n${item.brand_name || '-'}`,
+			deviceNo,
+			boundDeviceCount: boundMachines.length,
+			deviceDisplay,
 			wxUser: `${item.wx_nickname || '-'}\n${item.mobile || '-'}`,
 			remainingQuota: toMoney(remainingQuotaYuan),
 			rechargeAmount: toMoney(Number(item.recharge_amount || item.recharge_total_yuan || 0)),
@@ -1082,6 +1146,69 @@ async function updateSwitch(data) {
 	}
 }
 
+/** 按领取自然月汇总已领积分：首期与分期待返分开，分期待返与 B 片级明细同口径（目标月+来源月） */
+function buildMonthlyClaimedSummaryFromPackets(packets) {
+	const byClaimYm = {};
+	for (const p of packets || []) {
+		if (String(p.status || '') !== 'claimed') continue;
+		const amt = Number(p.amount || 0);
+		if (!(amt > 0)) continue;
+		const claimTs = Number(p.claimed_time || p.update_time || 0);
+		if (!claimTs) continue;
+		const claimYm = subsidyEngine.monthNoFromTs(claimTs);
+		const sourceYm = String(p.subsidy_flow_month || p.month_no || claimYm).trim();
+		const targetYm = String(p.month_no || sourceYm).trim();
+		const kind = String(p.subsidy_kind || '').trim();
+		if (!claimYm || !sourceYm) continue;
+		if (!byClaimYm[claimYm]) {
+			byClaimYm[claimYm] = { firstBySource: {}, deferredByTargetSource: {} };
+		}
+		const row = byClaimYm[claimYm];
+		if (kind === 'release_pool_history') {
+			const key = `${targetYm}|${sourceYm}`;
+			row.deferredByTargetSource[key] = Number(((row.deferredByTargetSource[key] || 0) + amt).toFixed(4));
+		} else {
+			row.firstBySource[sourceYm] = Number(((row.firstBySource[sourceYm] || 0) + amt).toFixed(4));
+		}
+	}
+	return Object.keys(byClaimYm)
+		.sort((a, b) => String(a).localeCompare(String(b)))
+		.map((ym) => {
+			const row = byClaimYm[ym] || {};
+			const firstSourceBreakdown = Object.keys(row.firstBySource || {})
+				.sort((a, b) => String(a).localeCompare(String(b)))
+				.map((sourceYm) => ({
+					sourceYm,
+					points: Number(Number(row.firstBySource[sourceYm] || 0).toFixed(4))
+				}));
+			const deferredItems = Object.keys(row.deferredByTargetSource || {})
+				.sort((a, b) => String(a).localeCompare(String(b)))
+				.map((key) => {
+					const [targetYm, sourceYm] = String(key).split('|');
+					return {
+						targetYm,
+						sourceYm,
+						points: Number(Number(row.deferredByTargetSource[key] || 0).toFixed(4))
+					};
+				});
+			const firstTotal = Number(firstSourceBreakdown.reduce((s, x) => s + Number(x.points || 0), 0).toFixed(4));
+			const deferredTotal = Number(deferredItems.reduce((s, x) => s + Number(x.points || 0), 0).toFixed(4));
+			const totalPoints = Number((firstTotal + deferredTotal).toFixed(4));
+			return {
+				ym,
+				totalPoints,
+				firstRelease: {
+					totalPoints: firstTotal,
+					sourceBreakdown: firstSourceBreakdown
+				},
+				deferredRelease: {
+					totalPoints: deferredTotal,
+					items: deferredItems
+				}
+			};
+		});
+}
+
 async function merchantPointsMonthlyInsight(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
@@ -1148,10 +1275,20 @@ async function merchantPointsMonthlyInsight(data) {
 			});
 		const packetRes = await incomePacketCollection
 			.where({ merchant_user_id: uid, is_deleted: false })
-			.field({ month_no: true, subsidy_flow_month: true, subsidy_kind: true, amount: true, status: true, expire_time: true })
+			.field({
+				month_no: true,
+				subsidy_flow_month: true,
+				subsidy_kind: true,
+				amount: true,
+				status: true,
+				expire_time: true,
+				claimed_time: true,
+				update_time: true
+			})
 			.limit(20000)
 			.get();
 		const packets = packetRes.data || [];
+		const monthlyClaimedSummary = buildMonthlyClaimedSummaryFromPackets(packets);
 		const pendingByTargetSource = {};
 		for (const p of packets) {
 			const targetYm = String(p.month_no || '');
@@ -1342,6 +1479,7 @@ async function merchantPointsMonthlyInsight(data) {
 				},
 				currentYm: curYm,
 				monthlyOverview,
+				monthlyClaimedSummary,
 				sliceDetails,
 				tradeSamples,
 				history,
@@ -1650,6 +1788,16 @@ const TRADE_BILL_MERCHANT_FIELDS = {
 };
 
 async function batchListBoundDeviceIdsByBindUserIds(bindUserIds) {
+	const machinesByBindUser = await batchListBoundMachinesByBindUserIds(bindUserIds);
+	const map = {};
+	Object.keys(machinesByBindUser).forEach((uid) => {
+		map[uid] = (machinesByBindUser[uid] || []).map((m) => safeText(m.device_id, 80)).filter(Boolean);
+	});
+	return map;
+}
+
+/** bind_user_id => [{ device_id, brand_name }] */
+async function batchListBoundMachinesByBindUserIds(bindUserIds) {
 	const uniq = [...new Set((Array.isArray(bindUserIds) ? bindUserIds : []).map((x) => String(x || '').trim()).filter(Boolean))];
 	const map = {};
 	if (!uniq.length) return map;
@@ -1662,7 +1810,7 @@ async function batchListBoundDeviceIdsByBindUserIds(bindUserIds) {
 				is_bound: 1,
 				bind_user_id: db.command.in(part)
 			})
-			.field({ device_id: true, bind_user_id: true })
+			.field({ device_id: true, brand_name: true, bind_user_id: true, bind_time: true })
 			.limit(1000)
 			.get();
 		for (const row of res.data || []) {
@@ -1670,10 +1818,44 @@ async function batchListBoundDeviceIdsByBindUserIds(bindUserIds) {
 			const did = safeText(row.device_id, 80);
 			if (!uid || !did) continue;
 			if (!map[uid]) map[uid] = [];
-			if (!map[uid].includes(did)) map[uid].push(did);
+			if (map[uid].some((x) => x.device_id === did)) continue;
+			map[uid].push({
+				device_id: did,
+				brand_name: safeText(row.brand_name, 80),
+				bind_time: Number(row.bind_time || 0)
+			});
 		}
 	}
+	Object.keys(map).forEach((uid) => {
+		map[uid].sort((a, b) => Number(b.bind_time || 0) - Number(a.bind_time || 0));
+	});
 	return map;
+}
+
+function collectBoundMachinesForMerchant(merchant, machinesByBindUser) {
+	if (!merchant) return [];
+	const out = [];
+	const seen = new Set();
+	const addFromUid = (uid) => {
+		const arr = machinesByBindUser[String(uid || '').trim()] || [];
+		for (const m of arr) {
+			const did = safeText(m.device_id, 80);
+			if (!did || seen.has(did)) continue;
+			seen.add(did);
+			out.push(m);
+		}
+	};
+	addFromUid(merchant.user_id);
+	addFromUid(merchant._id);
+	const primary = safeText(merchant.device_id, 80);
+	if (primary && !seen.has(primary)) {
+		out.unshift({
+			device_id: primary,
+			brand_name: safeText(merchant.brand_name, 80),
+			bind_time: Number(merchant.bind_time || 0)
+		});
+	}
+	return out;
 }
 
 function merchantDeviceNoText(merchant, deviceIdsByBindUser) {
@@ -1694,6 +1876,18 @@ function merchantDeviceNoText(merchant, deviceIdsByBindUser) {
 	const primary = safeText(merchant.device_id, 80);
 	if (primary && !seen.has(primary)) ids.unshift(primary);
 	return ids.length ? ids.join('、') : '-';
+}
+
+function merchantDeviceDisplayText(merchant, machinesByBindUser) {
+	const machines = collectBoundMachinesForMerchant(merchant, machinesByBindUser);
+	if (!machines.length) return '-';
+	return machines
+		.map((m) => {
+			const did = safeText(m.device_id, 80) || '-';
+			const brand = safeText(m.brand_name, 80) || '-';
+			return `${did}/${brand}`;
+		})
+		.join('\n');
 }
 
 function tradeBillCacheKey(data) {
@@ -11083,6 +11277,52 @@ function computePendingReturnBucketsForTrades(tradeRows, nowTs) {
 }
 
 /**
+ * 与「积分明细」同口径：按来源月分片计算应返，再扣除已领取的分期补贴金额，
+ * 剩余即为待返；随领取逐步减少，全部领完则该月条目消失。
+ */
+function computeDeferredPendingReturnBuckets(trades, packets, nowTs) {
+	const curYm = subsidyEngine.monthNoFromTs(nowTs);
+	const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, nowTs, 10000);
+	const dueSlicesByTargetSource = {};
+	Object.keys(sourceSlicesByYm || {}).forEach((srcYm) => {
+		const slices = sourceSlicesByYm[srcYm] || [];
+		for (let k = 1; k <= 4; k += 1) {
+			const targetYm = addCalendarMonthsYm(srcYm, k);
+			if (!dueSlicesByTargetSource[targetYm]) dueSlicesByTargetSource[targetYm] = {};
+			dueSlicesByTargetSource[targetYm][srcYm] = slices.slice();
+		}
+	});
+	const claimedByTargetSource = {};
+	for (const p of packets || []) {
+		if (String(p.subsidy_kind || '') !== 'release_pool_history') continue;
+		if (String(p.status || '') !== 'claimed') continue;
+		const targetYm = String(p.month_no || '').trim();
+		const sourceYm = String(p.subsidy_flow_month || '').trim();
+		if (!targetYm || !sourceYm) continue;
+		if (!claimedByTargetSource[targetYm]) claimedByTargetSource[targetYm] = {};
+		claimedByTargetSource[targetYm][sourceYm] = Number(
+			((claimedByTargetSource[targetYm][sourceYm] || 0) + Number(p.amount || 0)).toFixed(4)
+		);
+	}
+	const buckets = {};
+	Object.keys(dueSlicesByTargetSource).forEach((targetYm) => {
+		if (String(targetYm).localeCompare(String(curYm)) < 0) return;
+		const dueSrc = dueSlicesByTargetSource[targetYm] || {};
+		const claimedSrc = claimedByTargetSource[targetYm] || {};
+		let remain = 0;
+		Object.keys(dueSrc).forEach((sourceYm) => {
+			const slices = Array.isArray(dueSrc[sourceYm]) ? dueSrc[sourceYm] : [];
+			const duePoints = slices.reduce((s, x) => s + Number(x || 0), 0);
+			const claimedPoints = Number(claimedSrc[sourceYm] || 0);
+			remain += Math.max(0, duePoints - claimedPoints);
+		});
+		const pts = Number(remain.toFixed(4));
+		if (pts > 0.0001) buckets[targetYm] = pts;
+	});
+	return { buckets, curYm };
+}
+
+/**
  * 后台「冻结金额」：待返积分里分期落在「当前自然月之后」的金额合计（不含本月及已过期月份）。
  */
 function sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm) {
@@ -11213,19 +11453,26 @@ async function h5PendingReturnPoints(data) {
 				orderBy: { field: 'create_time', direction: 'asc' }
 			}
 		);
-		const curYm = subsidyEngine.monthNoFromTs(now);
-		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(tradeRows, now, 10000);
-		const buckets = {};
-		Object.keys(sourceSlicesByYm || {}).forEach((srcYm) => {
-			const slices = Array.isArray(sourceSlicesByYm[srcYm]) ? sourceSlicesByYm[srcYm] : [];
-			const monthPoints = Number(slices.reduce((s, x) => s + Number(x || 0), 0).toFixed(4));
-			if (!(monthPoints > 0)) return;
-			for (let k = 1; k <= 4; k += 1) {
-				const targetYm = addCalendarMonthsYm(srcYm, k);
-				if (String(targetYm).localeCompare(String(curYm)) < 0) continue;
-				buckets[targetYm] = Number(((buckets[targetYm] || 0) + monthPoints).toFixed(4));
+		const deferredPackets = await subsidyEngine.fetchAllQueryPages(
+			db,
+			'hsy-income-packets',
+			{
+				merchant_user_id: merchantUserId,
+				is_deleted: false,
+				subsidy_kind: 'release_pool_history'
+			},
+			{
+				field: {
+					month_no: true,
+					subsidy_flow_month: true,
+					subsidy_block_index: true,
+					subsidy_kind: true,
+					status: true,
+					amount: true
+				}
 			}
-		});
+		);
+		const { buckets, curYm } = computeDeferredPendingReturnBuckets(tradeRows, deferredPackets, now);
 		const months = Object.keys(buckets).sort();
 		const list = months.map((ym) => {
 			const pts = buckets[ym];
@@ -11247,7 +11494,7 @@ async function h5PendingReturnPoints(data) {
 				totalUpcoming: Number(totalUpcoming.toFixed(4)),
 				futureDeferredFrozenYuan,
 				ruleNote:
-					'统计说明：待返积分按「积分明细」同口径计算，展示来源月分片在当前月及未来月份的应返积分；已过去月份不计入。实际可领额度以「收益」页待领取记录为准。'
+					'统计说明：待返积分按「积分明细」同口径计算，展示各月应返积分扣除已在「收益」页领取的部分；每领取一部分相应减少，全部领完则不再显示该月。待领取但未领取的额度请在「收益」页查看。'
 			}
 		};
 	} catch (e) {
