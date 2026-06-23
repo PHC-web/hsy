@@ -31,7 +31,7 @@
 					<uni-table :key="tableKey" border stripe :loading="loading" empty-text="没有找到匹配的记录">
 						<uni-tr>
 							<uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'salesmanKeyword')">业务员</uni-th>
-							<uni-th align="center" width="120">机具号</uni-th>
+							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceNo')">机具号</uni-th>
 							<uni-th align="center" width="80" filter-type="select" :filter-data="firstChargeFilterData" @filter-change="headerFilterChange($event, 'firstCharge')">首充</uni-th>
 							<uni-th align="center" width="130" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">交易用户</uni-th>
 							<uni-th align="center" width="70">微信头像</uni-th>
@@ -104,6 +104,7 @@ export default {
 			showExportMenu: false,
 			searchForm: {
 				salesmanKeyword: '',
+				deviceNo: '',
 				firstCharge: '',
 				firstChargeList: [],
 				userKeyword: '',
@@ -155,7 +156,7 @@ export default {
 		headerFilterChange(e, field) {
 			const { filterType, filter } = e || {};
 			const sf = this.searchForm;
-			if (filterType === 'search' && ['salesmanKeyword', 'userKeyword', 'platformNo', 'wxTradeNo'].includes(field)) {
+			if (filterType === 'search' && ['salesmanKeyword', 'deviceNo', 'userKeyword', 'platformNo', 'wxTradeNo'].includes(field)) {
 				sf[field] = String(filter == null ? '' : filter).trim();
 			} else if (field === 'firstCharge' && filterType === 'select') {
 				sf.firstChargeList = Array.isArray(filter) ? filter.map(String) : [];
@@ -175,6 +176,7 @@ export default {
 			const sf = this.searchForm;
 			return {
 				salesmanKeyword: sf.salesmanKeyword,
+				deviceNo: sf.deviceNo,
 				firstCharge: sf.firstCharge,
 				userKeyword: sf.userKeyword,
 				platformNo: sf.platformNo,
@@ -214,6 +216,7 @@ export default {
 			const start = end - 30 * 86400000;
 			this.searchForm = {
 				salesmanKeyword: '',
+				deviceNo: '',
 				firstCharge: '',
 				firstChargeList: [],
 				userKeyword: '',

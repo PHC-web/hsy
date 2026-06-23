@@ -1897,6 +1897,7 @@ function tradeBillCacheKey(data) {
 		pageSize: data?.pageSize,
 		perSourceLimit: data?.perSourceLimit,
 		salesmanKeyword: data?.salesmanKeyword,
+		deviceNo: data?.deviceNo,
 		firstCharge: data?.firstCharge,
 		userKeyword: data?.userKeyword,
 		platformNo: data?.platformNo,
@@ -1941,6 +1942,7 @@ async function buildTradeBillListData(data) {
 		page = 1,
 		pageSize = 10,
 		salesmanKeyword = '',
+		deviceNo = '',
 		firstCharge = '',
 		userKeyword = '',
 		platformNo = '',
@@ -2172,6 +2174,7 @@ async function buildTradeBillListData(data) {
 	}
 	merged = Array.from(dedupeMap.values());
 	if (salesmanKeyword) merged = merged.filter((x) => String(x.salesman || '').toLowerCase().includes(String(salesmanKeyword).toLowerCase()));
+	if (deviceNo) merged = merged.filter((x) => String(x.deviceNo || '').toLowerCase().includes(String(deviceNo).toLowerCase()));
 	if (firstCharge !== '') merged = merged.filter((x) => x.firstCharge === (String(firstCharge) === '1' ? '是' : '否'));
 	if (userKeyword) merged = merged.filter((x) => String(x.tradeUser || '').toLowerCase().includes(String(userKeyword).toLowerCase()));
 	if (platformNo) merged = merged.filter((x) => String(x.platformNo || '').toLowerCase().includes(String(platformNo).toLowerCase()));
@@ -2198,7 +2201,7 @@ async function buildTradeBillListData(data) {
 
 async function tradeBillList(data) {
 	try {
-		const cacheKey = `hsy:admin:tradeBill:v5:${tradeBillCacheKey(data || {})}`;
+		const cacheKey = `hsy:admin:tradeBill:v6:${tradeBillCacheKey(data || {})}`;
 		const cached = await redisH5.h5RedisGetJson(cacheKey);
 		if (cached && cached.code === 0) return cached;
 		const result = await buildTradeBillListData(data);
@@ -6287,12 +6290,12 @@ async function h5BindMachine(data, event) {
 		await operationLogCollection.add({
 			user_id: merchant.user_id || merchant._id,
 			user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
-			action: 'h5_bind_machine',
+			action: safeText(data?.operatorSource, 20) === 'admin' ? 'admin_bind_machine' : 'h5_bind_machine',
 			module: 'merchant',
 			target_id: merchant._id,
 			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
-			content: oldDeviceId ? `新增绑定码牌：${deviceId}（主码牌：${oldDeviceId}）` : `绑定码牌：${deviceId}`,
-			operator_source: 'h5',
+			content: oldDeviceId ? `新增绑定码牌：${deviceId}` : `绑定码牌：${deviceId}`,
+			operator_source: safeText(data?.operatorSource, 20) || 'h5',
 			operator: getOperator(event),
 			ip: event?.context?.CLIENTIP || '',
 			create_time: now
@@ -6381,12 +6384,12 @@ async function h5UnbindMachine(data, event) {
 		await operationLogCollection.add({
 			user_id: merchantUserId,
 			user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
-			action: 'h5_unbind_machine',
+			action: safeText(data?.operatorSource, 20) === 'admin' ? 'admin_unbind_machine' : 'h5_unbind_machine',
 			module: 'merchant',
 			target_id: merchant._id,
 			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
 			content: `解绑码牌：${deviceId}`,
-			operator_source: 'h5',
+			operator_source: safeText(data?.operatorSource, 20) || 'h5',
 			operator: getOperator(event),
 			ip: event?.context?.CLIENTIP || '',
 			create_time: now
@@ -6395,6 +6398,105 @@ async function h5UnbindMachine(data, event) {
 	} catch (e) {
 		console.error('h5UnbindMachine failed', e);
 		return { code: 500, message: '解绑失败' };
+	}
+}
+
+async function adminMerchantMachineSetPrimary(data, event) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const deviceId = safeText(data?.deviceId, 80);
+		if (!merchantKey) return { code: 400, message: '缺少商户标识' };
+		if (!deviceId) return { code: 400, message: '缺少机具号' };
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const rows = await listBoundMachinesByMerchant(merchant);
+		const hit = rows.find((m) => safeText(m.device_id, 80) === deviceId);
+		if (!hit) return { code: 400, message: '该机具未绑定到该商户' };
+		const now = nowTs();
+		await merchantCollection.doc(merchant._id).update({
+			device_id: deviceId,
+			brand_name: safeText(hit.brand_name || '', 80),
+			bind_time: Number(hit.bind_time || now),
+			update_time: now
+		});
+		await operationLogCollection.add({
+			user_id: merchant.user_id || merchant._id,
+			user_name: merchant.wx_nickname || merchant.mobile || '商户',
+			action: 'admin_set_primary_machine',
+			module: 'merchant',
+			target_id: merchant._id,
+			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+			content: `设为主码牌：${deviceId}`,
+			operator_source: 'admin',
+			operator: getOperator(event),
+			ip: event?.context?.CLIENTIP || '',
+			create_time: now
+		});
+		return { code: 0, message: '已设为主码牌' };
+	} catch (e) {
+		console.error('adminMerchantMachineSetPrimary failed', e);
+		return { code: 500, message: '设置失败' };
+	}
+}
+
+async function adminMerchantMachineReplace(data, event) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const oldDeviceId = safeText(data?.oldDeviceId, 80);
+		const newDeviceId = safeText(data?.newDeviceId || data?.deviceId, 80);
+		if (!merchantKey) return { code: 400, message: '缺少商户标识' };
+		if (!oldDeviceId) return { code: 400, message: '缺少原机具号' };
+		if (!newDeviceId) return { code: 400, message: '请输入新机具号' };
+		if (oldDeviceId === newDeviceId) return { code: 400, message: '新机具号不能与原机具号相同' };
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserIds = [String(merchant.user_id || '').trim(), String(merchant._id || '').trim()].filter(Boolean);
+		const oldRes = await machineCollection
+			.where({
+				device_id: oldDeviceId,
+				is_deleted: false,
+				is_bound: 1,
+				bind_user_id: merchantUserIds.length === 1 ? merchantUserIds[0] : db.command.in(merchantUserIds)
+			})
+			.limit(1)
+			.get();
+		if (!oldRes.data || !oldRes.data.length) return { code: 400, message: '原机具未绑定到该商户' };
+
+		const bindRes = await h5BindMachine(
+			{ merchantUserId: merchantKey, deviceId: newDeviceId, operatorSource: 'admin' },
+			event
+		);
+		if (bindRes.code !== 0) return bindRes;
+
+		const unbindRes = await h5UnbindMachine(
+			{ merchantUserId: merchantKey, deviceId: oldDeviceId, operatorSource: 'admin' },
+			event
+		);
+		if (unbindRes.code !== 0) {
+			return {
+				code: 500,
+				message: `新码牌已绑定，但原码牌解绑失败：${unbindRes.message || '请手动处理'}`
+			};
+		}
+
+		const now = nowTs();
+		await operationLogCollection.add({
+			user_id: merchant.user_id || merchant._id,
+			user_name: merchant.wx_nickname || merchant.mobile || '商户',
+			action: 'admin_replace_machine',
+			module: 'merchant',
+			target_id: merchant._id,
+			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+			content: `换绑码牌：${oldDeviceId} → ${newDeviceId}`,
+			operator_source: 'admin',
+			operator: getOperator(event),
+			ip: event?.context?.CLIENTIP || '',
+			create_time: now
+		});
+		return { code: 0, message: '换绑成功' };
+	} catch (e) {
+		console.error('adminMerchantMachineReplace failed', e);
+		return { code: 500, message: '换绑失败' };
 	}
 }
 
@@ -6412,7 +6514,15 @@ async function h5MachineBindLogList(data) {
 		const res = await operationLogCollection
 			.where({
 				user_id: merchantUserId,
-				action: db.command.in(['h5_bind_machine', 'h5_unbind_machine', 'unbind'])
+				action: db.command.in([
+					'h5_bind_machine',
+					'h5_unbind_machine',
+					'unbind',
+					'admin_bind_machine',
+					'admin_unbind_machine',
+					'admin_replace_machine',
+					'admin_set_primary_machine'
+				])
 			})
 			.orderBy('create_time', 'desc')
 			.limit(500)
@@ -6423,12 +6533,23 @@ async function h5MachineBindLogList(data) {
 		const slice = all.slice(skip, skip + pageSize);
 		const list = slice.map((row) => ({
 			id: String(row._id),
-			action: row.action === 'unbind' || row.action === 'h5_unbind_machine' ? 'unbind' : 'bind',
-			actionText: row.action === 'unbind' || row.action === 'h5_unbind_machine' ? '解除绑定' : '绑定',
+			action:
+				row.action === 'unbind' || row.action === 'h5_unbind_machine' || row.action === 'admin_unbind_machine'
+					? 'unbind'
+					: 'bind',
+			actionText:
+				row.action === 'unbind' || row.action === 'h5_unbind_machine' || row.action === 'admin_unbind_machine'
+					? '解除绑定'
+					: row.action === 'admin_replace_machine'
+						? '换绑'
+						: row.action === 'admin_set_primary_machine'
+							? '设为主码牌'
+							: '绑定',
 			content: safeText(row.content || '', 500),
 			time: row.create_time,
 			timeText: formatTime(row.create_time),
-			reason: safeText(row.reason || '', 200)
+			reason: safeText(row.reason || '', 200),
+			operatorSource: safeText(row.operator_source || '', 20)
 		}));
 
 		return {
@@ -14483,6 +14604,18 @@ exports.main = async (event, context) => {
 		case 'h5UnbindMachine':
 			return await h5UnbindMachine(actualData, event);
 		case 'h5MachineBindLogList':
+			return await h5MachineBindLogList(actualData);
+		case 'adminMerchantMachineList':
+			return await h5MachineBindingList(actualData);
+		case 'adminMerchantMachineBind':
+			return await h5BindMachine({ ...actualData, operatorSource: 'admin' }, event);
+		case 'adminMerchantMachineUnbind':
+			return await h5UnbindMachine({ ...actualData, operatorSource: 'admin' }, event);
+		case 'adminMerchantMachineSetPrimary':
+			return await adminMerchantMachineSetPrimary(actualData, event);
+		case 'adminMerchantMachineReplace':
+			return await adminMerchantMachineReplace(actualData, event);
+		case 'adminMerchantMachineBindLogList':
 			return await h5MachineBindLogList(actualData);
 		case 'h5FinanceRecords':
 			return await h5FinanceRecords(actualData);

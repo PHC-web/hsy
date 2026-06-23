@@ -93,6 +93,7 @@
 							<uni-td align="center">
 								<view class="cell-actions">
 									<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
+									<button size="mini" type="default" @click="openDeviceManage(item)">机具维护</button>
 									<button size="mini" plain @click="openRefundWindow(item)">退款窗口</button>
 									<button
 										v-if="item.agreementSigned"
@@ -295,6 +296,61 @@
 				</view>
 			</view>
 		</uni-popup>
+		<uni-popup ref="deviceManagePopup" type="center">
+			<view class="device-manage-modal">
+				<view class="device-manage-title">{{ deviceManage.title || '机具号维护' }}</view>
+				<view class="device-manage-sub">{{ deviceManage.subtitle }}</view>
+				<scroll-view class="device-manage-scroll" scroll-y>
+					<view class="device-manage-add">
+						<input
+							v-model="deviceManage.newDeviceId"
+							class="device-manage-input"
+							maxlength="80"
+							placeholder="输入新机具号，Enter 快速绑定"
+							confirm-type="done"
+							@confirm="bindNewDevice"
+						/>
+						<button size="mini" type="primary" :loading="deviceManage.submitting" :disabled="!String(deviceManage.newDeviceId || '').trim()" @click="bindNewDevice">
+							绑定
+						</button>
+					</view>
+					<view class="device-manage-tip">与 H5 码牌绑定一致：可绑定多个机具，各码牌地位相同；需更换码牌时先解绑，再在上方绑定新机具号即可。</view>
+
+					<view v-if="deviceManage.loading" class="device-manage-empty">加载中…</view>
+					<view v-else-if="!deviceManage.list.length" class="device-manage-empty">暂无绑定机具，请在上方输入机具号绑定</view>
+					<view v-else class="device-manage-list">
+						<view
+							v-for="b in deviceManage.list"
+							:key="b.deviceId"
+							class="device-manage-card"
+						>
+							<view class="device-manage-card-hd">
+								<text class="device-manage-id">{{ b.deviceId }}</text>
+							</view>
+							<text class="device-manage-meta">{{ b.brandName || '-' }} · 绑定于 {{ b.bindTimeText || '-' }}</text>
+							<view class="device-manage-actions">
+								<button size="mini" type="warn" plain @click="unbindDevice(b)">解绑</button>
+							</view>
+						</view>
+					</view>
+
+					<view class="device-log-section">
+						<view class="device-log-title">最近操作记录</view>
+						<view v-if="!deviceManage.logs.length" class="device-manage-empty device-manage-empty--small">暂无记录</view>
+						<view v-for="log in deviceManage.logs" :key="log.id" class="device-log-row">
+							<view class="device-log-top">
+								<text class="device-log-tag" :class="log.action === 'unbind' ? 'device-log-tag--unbind' : 'device-log-tag--bind'">{{ log.actionText }}</text>
+								<text class="device-log-time">{{ log.timeText }}</text>
+							</view>
+							<text class="device-log-content">{{ log.content }}</text>
+						</view>
+					</view>
+				</scroll-view>
+				<view class="device-manage-actions-bar">
+					<button size="mini" @click="closeDeviceManage">关闭</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -384,6 +440,17 @@ export default {
 				monthlyClaimedSummary: [],
 				sliceDetails: [],
 				tradeSamples: []
+			},
+			deviceManage: {
+				title: '',
+				subtitle: '',
+				merchantId: '',
+				merchantUserId: '',
+				list: [],
+				logs: [],
+				newDeviceId: '',
+				loading: false,
+				submitting: false
 			}
 		};
 	},
@@ -1195,6 +1262,110 @@ export default {
 		closePointsInsight() {
 			if (this.$refs.pointsInsightPopup) this.$refs.pointsInsightPopup.close();
 		},
+		deviceManagePayload(extra = {}) {
+			return {
+				merchantUserId: this.deviceManage.merchantUserId,
+				merchantId: this.deviceManage.merchantId,
+				...extra
+			};
+		},
+		formatWxUserLine(item) {
+			const text = String(item?.wxUser || '').trim();
+			if (!text) return item?.userId || '-';
+			const parts = text.split('/');
+			return parts[0] || text;
+		},
+		async openDeviceManage(item) {
+			if (!item || !item.userId) return;
+			this.deviceManage = {
+				title: `${this.formatWxUserLine(item)} · 机具维护`,
+				subtitle: `商户 ID：${item.userId}`,
+				merchantId: item.id || '',
+				merchantUserId: item.userId,
+				list: [],
+				logs: [],
+				newDeviceId: '',
+				loading: true,
+				submitting: false
+			};
+			this.$refs.deviceManagePopup.open();
+			await this.reloadDeviceManage(false);
+		},
+		closeDeviceManage() {
+			if (this.$refs.deviceManagePopup) this.$refs.deviceManagePopup.close();
+		},
+		async reloadDeviceManage(refreshListRow = true) {
+			if (!this.deviceManage.merchantUserId) return;
+			this.deviceManage.loading = true;
+			try {
+				const [listRes, logRes] = await Promise.all([
+					this.$request('adminMerchantMachineList', this.deviceManagePayload(), { functionName: 'merchant' }),
+					this.$request('adminMerchantMachineBindLogList', this.deviceManagePayload({ page: 1, pageSize: 8 }), {
+						functionName: 'merchant'
+					})
+				]);
+				if (listRes.code === 0) {
+					this.deviceManage.list = listRes.data?.list || [];
+				} else {
+					uni.showToast({ title: listRes.message || '加载机具失败', icon: 'none' });
+				}
+				if (logRes.code === 0) {
+					this.deviceManage.logs = logRes.data?.list || [];
+				}
+				if (refreshListRow) this.search();
+			} finally {
+				this.deviceManage.loading = false;
+			}
+		},
+		async bindNewDevice() {
+			const deviceId = String(this.deviceManage.newDeviceId || '').trim();
+			if (!deviceId || this.deviceManage.submitting) return;
+			if (this.deviceManage.list.some((x) => String(x.deviceId || '').trim() === deviceId)) {
+				uni.showToast({ title: '该机具已绑定', icon: 'none' });
+				return;
+			}
+			this.deviceManage.submitting = true;
+			try {
+				const res = await this.$request('adminMerchantMachineBind', this.deviceManagePayload({ deviceId }), {
+					functionName: 'merchant'
+				});
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '绑定失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: res.message || '绑定成功', icon: 'success' });
+				this.deviceManage.newDeviceId = '';
+				await this.reloadDeviceManage(true);
+			} finally {
+				this.deviceManage.submitting = false;
+			}
+		},
+		async unbindDevice(item) {
+			const deviceId = String(item?.deviceId || '').trim();
+			if (!deviceId || this.deviceManage.submitting) return;
+			const ok = await new Promise((resolve) =>
+				uni.showModal({
+					title: '确认解绑',
+					content: `解绑码牌 ${deviceId}？解绑后该机具流水不再计入本商户（与 H5 解绑一致）。`,
+					success: (r) => resolve(!!r.confirm)
+				})
+			);
+			if (!ok) return;
+			this.deviceManage.submitting = true;
+			try {
+				const res = await this.$request('adminMerchantMachineUnbind', this.deviceManagePayload({ deviceId }), {
+					functionName: 'merchant'
+				});
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '解绑失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '解绑成功', icon: 'success' });
+				await this.reloadDeviceManage(true);
+			} finally {
+				this.deviceManage.submitting = false;
+			}
+		},
 		formatInsightPoints(raw) {
 			const v = Number(raw || 0);
 			if (!(v > 0)) return '0';
@@ -1701,6 +1872,148 @@ export default {
 	flex-direction: column;
 	align-items: stretch;
 	gap: 8px;
+}
+
+.device-manage-modal {
+	width: 640px;
+	max-width: 94vw;
+	max-height: 88vh;
+	background: #fff;
+	border-radius: 10px;
+	padding: 14px 16px 12px;
+	box-sizing: border-box;
+}
+.device-manage-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #111827;
+}
+.device-manage-sub {
+	margin-top: 4px;
+	margin-bottom: 10px;
+	font-size: 12px;
+	color: #6b7280;
+}
+.device-manage-scroll {
+	height: 62vh;
+}
+.device-manage-add {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+.device-manage-input {
+	flex: 1;
+	min-width: 0;
+	height: 34px;
+	padding: 0 10px;
+	border: 1px solid #d1d5db;
+	border-radius: 8px;
+	font-size: 13px;
+	box-sizing: border-box;
+}
+.device-manage-tip {
+	margin-bottom: 12px;
+	font-size: 11px;
+	color: #6b7280;
+	line-height: 1.55;
+}
+.device-manage-empty {
+	padding: 18px 12px;
+	text-align: center;
+	font-size: 13px;
+	color: #9ca3af;
+}
+.device-manage-empty--small {
+	padding: 10px 0;
+}
+.device-manage-list {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.device-manage-card {
+	border: 1px solid #e5e7eb;
+	border-radius: 10px;
+	padding: 12px;
+	background: #fafafa;
+}
+.device-manage-card-hd {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 4px;
+}
+.device-manage-id {
+	font-size: 14px;
+	font-weight: 700;
+	color: #111827;
+	word-break: break-all;
+}
+.device-manage-meta {
+	display: block;
+	margin-bottom: 10px;
+	font-size: 12px;
+	color: #6b7280;
+}
+.device-manage-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+.device-log-section {
+	margin-top: 16px;
+	padding-top: 12px;
+	border-top: 1px solid #e5e7eb;
+}
+.device-log-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: #374151;
+	margin-bottom: 8px;
+}
+.device-log-row {
+	padding: 8px 0;
+	border-bottom: 1px dashed #f3f4f6;
+}
+.device-log-top {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 4px;
+	gap: 8px;
+}
+.device-log-tag {
+	font-size: 11px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-weight: 600;
+}
+.device-log-tag--bind {
+	background: #dcfce7;
+	color: #166534;
+}
+.device-log-tag--unbind {
+	background: #fee2e2;
+	color: #991b1b;
+}
+.device-log-time {
+	font-size: 11px;
+	color: #9ca3af;
+	flex-shrink: 0;
+}
+.device-log-content {
+	font-size: 12px;
+	color: #4b5563;
+	line-height: 1.5;
+	word-break: break-all;
+}
+.device-manage-actions-bar {
+	margin-top: 10px;
+	display: flex;
+	justify-content: flex-end;
 }
 </style>
 
