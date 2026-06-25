@@ -350,14 +350,12 @@ export default {
 				transformOrigin: '0 0'
 			};
 		},
-		/** 仅普通会员、未充值用户展示兑换码入口；白银会员及已充值会员隐藏 */
+		/** 普通会员、白银会员（非充值档）展示兑换码；充值会员隐藏 */
 		showExchangeCodeMenu() {
 			const tier = String(this.mine.membershipTier || '').toLowerCase();
-			if (tier === 'silver' || tier === 'white_gold' || tier === 'platinum' || tier === 'diamond') {
+			if (tier === 'white_gold' || tier === 'platinum' || tier === 'diamond') {
 				return false;
 			}
-			const name = String(this.mine.membershipName || '').trim();
-			if (name.includes('白银')) return false;
 			const ra = Number(this.mine.rechargeAmount || 0);
 			if (Number.isFinite(ra) && ra > 0) return false;
 			return true;

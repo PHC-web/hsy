@@ -783,7 +783,7 @@ async function listMerchants(data) {
 			const withdrawnYuan = Number(
 				(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(item.withdrawn || 0)) || 0
 			);
-			// 后台商户列表“剩余额度”优先展示会员配置额度（recharge_package_reward），无配置时回退可用奖励余额。
+			// 后台商户列表「剩余额度」：DB 真实剩余（随提现扣减），与 H5 充值会员展示口径一致。
 			const remainingQuotaYuan = normalizeAdminRemainingQuota(item);
 			const membership = resolveMerchantMembershipForAdmin(item, rechargePackages);
 			return {
@@ -5834,11 +5834,7 @@ function normalizeWithdrawQuotaBalance(row) {
 }
 
 function normalizeAdminRemainingQuota(row) {
-	// 管理后台“剩余额度”优先按会员档位总额度展示（奖励额度字段缺失时，按quota档位兜底到3800/5700/7600）。
-	const totalQuota = Number(h5WithdrawQuotaTotalYuan(row) || 0);
-	if (Number.isFinite(totalQuota) && totalQuota > 0) {
-		return Math.max(0, Number(totalQuota.toFixed(2)));
-	}
+	// 后台「剩余额度」统一读 withdraw_quota_balance / available_reward，随提现扣减；兑换码白银 H5 仍对外隐藏。
 	return normalizeWithdrawQuotaBalance(row);
 }
 
@@ -7510,25 +7506,71 @@ function hasSilverExchangeCouponClaim(merchant) {
 	return merchant.exchange_code_claimed === true || merchant.redeem_code_claimed === true;
 }
 
+function isSilverExchangeQuotaMerchant(merchant) {
+	if (!merchant || isH5RechargeMemberForWithdraw(merchant)) return false;
+	if (!hasH5SilverMemberIdentity(merchant)) return false;
+	return hasSilverExchangeCouponClaim(merchant);
+}
+
+/** 兑换码授予/重置的白银隐藏提现额度（固定值，不累加） */
+function silverExchangeQuotaGrantYuan() {
+	return H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN;
+}
+
+/** 白银会员续兑：将 DB 剩余额度重置为 grantYuan（非叠加），上限即 grantYuan */
+function resolveSilverExchangeQuotaOnRedeem(_merchant) {
+	return silverExchangeQuotaGrantYuan();
+}
+
+/** 是否允许使用兑换码（普通会员首开白银、白银会员续兑重置额度；充值会员不可用） */
+function canMerchantUseH5ExchangeCoupon(merchant) {
+	if (!merchant) return false;
+	if (isH5RechargeMemberForWithdraw(merchant)) return false;
+	if (isNormalMemberForUpgradePointsClear(merchant)) return true;
+	if (hasH5SilverMemberIdentity(merchant)) return true;
+	if (merchant.silver_member === true || merchant.exchange_code_claimed || merchant.redeem_code_claimed) {
+		return true;
+	}
+	const name = String(merchant.membership_name || '').trim();
+	return name.includes('白银');
+}
+
 /**
  * H5 积分兑换提现：可用奖励额度口径。
- * 兑换券类白银会员 DB 可能未写入额度，此处不低于隐藏下限；充值会员/普通会员仅用 normalizeWithdrawQuotaBalance。
+ * 兑换码白银以 DB 剩余额度为准；仅历史未写入额度时兜底不低于 1000。
  */
 function effectiveH5WithdrawQuotaBalanceForRedeem(merchant) {
 	const base = normalizeWithdrawQuotaBalance(merchant);
-	if (resolveH5WithdrawRole(merchant) !== 'silver_member') return base;
-	if (!hasSilverExchangeCouponClaim(merchant)) return base;
-	return Math.max(base, H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN);
+	if (!isSilverExchangeQuotaMerchant(merchant)) return base;
+	if (base > 0) return base;
+	return H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN;
 }
 
 /**
  * H5 对外展示「剩余提现额度」：白银会员统一显示 0；后台 listMerchants 等仍用真实 normalizeAdminRemainingQuota / 原始字段。
- * 兑换券白银的实际可兑换额度见 effectiveH5WithdrawQuotaBalanceForRedeem（仅提现接口），本函数始终不向商户展示剩余额度。
  */
 function h5DisplayWithdrawQuotaRemainingYuan(merchant) {
 	if (!merchant) return 0;
 	if (resolveH5WithdrawRole(merchant) === 'silver_member') return 0;
 	return normalizeWithdrawQuotaBalance(merchant);
+}
+
+/** 校验提现积分是否不超过额度与待提现；返回 arBase 供扣减使用 */
+function validateH5WithdrawPointsAffordable(merchant, points) {
+	const arStored = normalizeWithdrawQuotaBalance(merchant);
+	const arForCheck = effectiveH5WithdrawQuotaBalanceForRedeem(merchant);
+	const ap = normalizePendingBalance(merchant);
+	const pts = Number(points || 0);
+	if (!(pts > 0)) return { ok: false, code: 400, message: '兑换积分须为大于 0 的整数' };
+	if (pts > arForCheck + 1e-6) {
+		return { ok: false, code: 400, message: '提现额度不足' };
+	}
+	if (pts > ap + 1e-6) {
+		return { ok: false, code: 400, message: '可兑换积分不足' };
+	}
+	// 历史未写入额度的兑换码白银：按兜底额度扣减并回写 DB
+	const arBase = isSilverExchangeQuotaMerchant(merchant) && arStored <= 0 ? arForCheck : arStored;
+	return { ok: true, arBase, ap, arForCheck };
 }
 
 async function getH5CurrentMonthTradeYuan(merchant, now = nowTs()) {
@@ -7690,7 +7732,7 @@ async function h5WithdrawInfo(data) {
 		const needAudit = isRechargeMember ? !!auditCfg.memberRequired : !!auditCfg.nonMemberRequired;
 		const ar = effectiveH5WithdrawQuotaBalanceForRedeem(merchant);
 		const ap = normalizePendingBalance(merchant);
-		const redeemable = Math.floor(Math.min(ar, ap));
+		const redeemable = Math.max(0, Math.floor(Math.min(ar, ap)));
 		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
 		const minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(isRechargeMember, biz, withdrawTimes);
 		const maxPoints = isRechargeMember ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
@@ -7774,12 +7816,10 @@ async function h5WithdrawApply(data) {
 		if (points > maxP) {
 			return { code: 400, message: `单次兑换最高为 ${maxP} 积分` };
 		}
-		const arBase = normalizeWithdrawQuotaBalance(merchant);
-		const ar = effectiveH5WithdrawQuotaBalanceForRedeem(merchant);
-		const ap = normalizePendingBalance(merchant);
-		if (points > ar + 1e-6 || points > ap + 1e-6) {
-			return { code: 400, message: '可兑换积分不足' };
-		}
+		const afford = validateH5WithdrawPointsAffordable(merchant, points);
+		if (!afford.ok) return { code: afford.code, message: afford.message };
+		const arBase = afford.arBase;
+		const ap = afford.ap;
 		const fee = H5_WITHDRAW_FEE_YUAN;
 		const tax = Number((points * H5_WITHDRAW_TAX_RATE).toFixed(2));
 		const payable = Number((points - tax - fee).toFixed(2));
@@ -7853,13 +7893,15 @@ async function h5WithdrawApply(data) {
 				});
 			}
 		};
+		const quotaAfterDeduct = Number((arBase - points).toFixed(4));
+		const pointsAfterDeduct = Number((ap - points).toFixed(4));
 		try {
-			// 点击“积分兑换提现”即先冻结并扣除积分，防止回执未更新期间重复发起退款/提现。
+			// 点击“积分兑换提现”即先冻结并扣除积分与提现额度，防止回执未更新期间重复发起。
 			await merchantCollection.doc(merchant._id).update({
-				available_reward: Number((ar - points).toFixed(4)),
-				withdraw_quota_balance: Number((ar - points).toFixed(4)),
-				account_points: Number((ap - points).toFixed(4)),
-				withdraw_pending_balance: Number((ap - points).toFixed(4)),
+				available_reward: quotaAfterDeduct,
+				withdraw_quota_balance: quotaAfterDeduct,
+				account_points: pointsAfterDeduct,
+				withdraw_pending_balance: pointsAfterDeduct,
 				pending_withdraw: Number((pendingWithdrawBefore + payable).toFixed(4)),
 				update_time: now
 			});
@@ -13114,6 +13156,444 @@ async function adminSilverFlowMonthFirstReleaseCreditPending(data = {}, event = 
 	}
 }
 
+/** 历史白银会员（含已过期）：非充值档，用于额度补写筛选 */
+function isHistoricalSilverMemberRowForQuotaBackfill(row) {
+	if (!row || isH5RechargeMemberForWithdraw(row)) return false;
+	if (row.exchange_code_claimed === true || row.redeem_code_claimed === true) return true;
+	if (row.silver_member === true) return true;
+	const tag = String(row.member_tier || row.membership_tier || row.h5_member_tier || '').toLowerCase();
+	if (tag === 'silver' || tag === 'white_silver' || tag === 'silver_member') return true;
+	const name = String(row.membership_name || '').trim();
+	if (
+		name.includes('白银') &&
+		Number(row.recharge_total_yuan || 0) <= 0 &&
+		Number(row.recharge_cycle_start || 0) <= 0
+	) {
+		return true;
+	}
+	return false;
+}
+
+/** 白银额度核算：仍占用额度的提现单（未退回、未拒绝）按状态分档 */
+function classifySilverWithdrawAmountBucket(row) {
+	const audit = safeText(row?.audit_status, 24);
+	const arrival = safeText(row?.arrival_status, 24);
+	const isPaid = !!row?.is_paid;
+	if (audit === 'pending') return 'auditing';
+	if (arrival === 'received' || isPaid) return 'paid';
+	return 'unpaid';
+}
+
+function emptySilverWithdrawQuotaBreakdown() {
+	return { total: 0, paid: 0, unpaid: 0, auditing: 0 };
+}
+
+function normalizeSilverWithdrawQuotaBreakdown(raw) {
+	const paid = Math.max(0, Number(raw?.paid || 0));
+	const unpaid = Math.max(0, Number(raw?.unpaid || 0));
+	const auditing = Math.max(0, Number(raw?.auditing || 0));
+	const total = Math.max(0, Number((paid + unpaid + auditing).toFixed(2)));
+	return { total, paid, unpaid, auditing };
+}
+
+/**
+ * 批量统计白银商户仍占用的提现积分：已打款 + 未打款 + 审核中（互斥分档，合计为 total）。
+ * 排除 arrival_status=returned、audit_status=rejected（已退回额度）。
+ */
+async function batchSumSilverWithdrawQuotaBreakdown(merchantUserIds) {
+	const map = new Map();
+	const ids = [...new Set((merchantUserIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+	if (!ids.length) return map;
+	const _ = db.command;
+	try {
+		const res = await withdrawCollection
+			.where({
+				merchant_user_id: _.in(ids),
+				is_deleted: _.neq(true),
+				arrival_status: _.neq('returned'),
+				audit_status: _.neq('rejected')
+			})
+			.field({
+				merchant_user_id: true,
+				amount: true,
+				audit_status: true,
+				arrival_status: true,
+				is_paid: true
+			})
+			.limit(10000)
+			.get();
+		for (const row of res.data || []) {
+			const uid = String(row.merchant_user_id || '');
+			const amt = Number(row.amount || 0);
+			if (!uid || !(amt > 0)) continue;
+			const bucket = classifySilverWithdrawAmountBucket(row);
+			if (!map.has(uid)) map.set(uid, emptySilverWithdrawQuotaBreakdown());
+			const o = map.get(uid);
+			o[bucket] = Number((o[bucket] + amt).toFixed(2));
+			o.total = Number((o.total + amt).toFixed(2));
+		}
+	} catch (e) {
+		console.error('batchSumSilverWithdrawQuotaBreakdown failed', e);
+	}
+	return map;
+}
+
+/** @deprecated 使用 batchSumSilverWithdrawQuotaBreakdown；仅返回 total */
+async function batchSumWithdrawPointsConsumed(merchantUserIds) {
+	const breakdownMap = await batchSumSilverWithdrawQuotaBreakdown(merchantUserIds);
+	const map = new Map();
+	for (const [uid, br] of breakdownMap.entries()) {
+		map.set(uid, Number(br.total || 0));
+	}
+	return map;
+}
+
+function formatSilverQuotaRecalcFormula(grantYuan, breakdown) {
+	const br = normalizeSilverWithdrawQuotaBreakdown(breakdown);
+	const next = calcSilverQuotaRemainByWithdrawn(grantYuan, br.total);
+	return `${grantYuan} - ${br.paid}(已打款) - ${br.unpaid}(未打款) - ${br.auditing}(审核中) = ${next}`;
+}
+
+/**
+ * 历史白银会员「剩余额度」为 0 的补写：仅写入 grantYuan（默认 1000），不动已有非 0 额度（含手动修正、部分剩余）。
+ * 已提现累计达到 grantYuan 的视为额度用尽，默认跳过。
+ * @param {boolean} data.dryRun true 时只预览不写库（建议先跑）
+ * @param {string} data.cursorId 上一批 nextCursor，首次留空
+ * @param {number} data.chunkSize 每批 20–500，默认 200
+ * @param {number} data.grantYuan 补写额度，默认 1000
+ * @param {boolean} data.skipExhaustedCheck 为 true 时不校验提现累计是否已用尽
+ */
+async function adminSilverMembersQuotaZeroBackfill(data = {}, event = {}) {
+	try {
+		const dryRun = data?.dryRun !== false && data?.dryRun !== 0 && data?.apply !== true;
+		const grantYuan = Number(
+			data?.grantYuan != null && data?.grantYuan !== '' ? data.grantYuan : H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN
+		);
+		if (!Number.isFinite(grantYuan) || grantYuan <= 0) {
+			return { code: 400, message: 'grantYuan 须为正数' };
+		}
+		const skipExhaustedCheck = !!data?.skipExhaustedCheck;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 200), 20), 500);
+		const cursorId = safeText(data?.cursorId, 80);
+		const now = nowTs();
+		const _ = db.command;
+		const where = cursorId ? { _id: _.gt(cursorId) } : { _id: _.neq('') };
+		const res = await merchantCollection
+			.where(where)
+			.field({
+				_id: true,
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				available_reward: true,
+				withdraw_quota_balance: true,
+				recharge_total_yuan: true,
+				recharge_package_id: true,
+				recharge_package_price: true,
+				recharge_package_reward: true,
+				recharge_cycle_start: true,
+				silver_member: true,
+				silver_member_end_at: true,
+				membership_name: true,
+				member_tier: true,
+				membership_tier: true,
+				h5_member_tier: true,
+				redeem_code_claimed: true,
+				exchange_code_claimed: true,
+				estimated_free_quota: true,
+				recharge_package_quota: true
+			})
+			.orderBy('_id', 'asc')
+			.limit(chunkSize)
+			.get();
+		const rows = res.data || [];
+		const silverRows = [];
+		for (const row of rows) {
+			if (!isHistoricalSilverMemberRowForQuotaBackfill(row)) continue;
+			const prevQuota = Math.max(0, Number(rawWithdrawQuotaBalance(row) || 0));
+			if (prevQuota > 1e-6) continue;
+			silverRows.push(row);
+		}
+		const withdrawConsumedMap = await batchSumSilverWithdrawQuotaBreakdown(
+			silverRows.map((row) => String(row.user_id || row._id || ''))
+		);
+		let scanned = rows.length;
+		let eligible = 0;
+		let patched = 0;
+		let skippedHasQuota = 0;
+		let skippedNotSilver = 0;
+		let skippedRecharge = 0;
+		let skippedExhausted = 0;
+		const samples = [];
+		const skippedSamples = [];
+		for (const row of rows) {
+			if (isH5RechargeMemberForWithdraw(row)) {
+				skippedRecharge += 1;
+				continue;
+			}
+			if (!isHistoricalSilverMemberRowForQuotaBackfill(row)) {
+				skippedNotSilver += 1;
+				continue;
+			}
+			eligible += 1;
+			const prevQuota = Math.max(0, Number(rawWithdrawQuotaBalance(row) || 0));
+			if (prevQuota > 1e-6) {
+				skippedHasQuota += 1;
+				if (skippedSamples.length < 8) {
+					skippedSamples.push({
+						_id: row._id,
+						user_id: row.user_id || '',
+						reason: 'already_has_quota',
+						prevQuota
+					});
+				}
+				continue;
+			}
+			const merchantUserId = String(row.user_id || row._id || '');
+			const br = normalizeSilverWithdrawQuotaBreakdown(withdrawConsumedMap.get(merchantUserId));
+			const consumed = br.total;
+			if (!skipExhaustedCheck && consumed >= grantYuan - 1e-6) {
+				skippedExhausted += 1;
+				if (skippedSamples.length < 8) {
+					skippedSamples.push({
+						_id: row._id,
+						user_id: merchantUserId,
+						reason: 'quota_exhausted_by_withdraw',
+						consumedPoints: consumed,
+						withdrawBreakdown: br
+					});
+				}
+				continue;
+			}
+			if (!dryRun) {
+				await merchantCollection.doc(row._id).update({
+					available_reward: Number(grantYuan.toFixed(4)),
+					withdraw_quota_balance: Number(grantYuan.toFixed(4)),
+					update_time: now
+				});
+				await operationLogCollection.add({
+					user_id: row.user_id || row._id,
+					user_name: row.wx_nickname || row.mobile || '商户',
+					action: 'silver_quota_zero_backfill',
+					module: 'merchant',
+					target_id: row._id,
+					target_name: row.wx_nickname || row.mobile || row._id,
+					content: `历史白银会员剩余额度补写 ${prevQuota}→${grantYuan}（占用合计${consumed}=已打款${br.paid}+未打款${br.unpaid}+审核中${br.auditing}）`,
+					operator_source: 'admin',
+					operator: getOperator(event),
+					ip: event?.context?.CLIENTIP || '',
+					create_time: now
+				});
+			}
+			patched += 1;
+			if (samples.length < 12) {
+				samples.push({
+					_id: row._id,
+					user_id: merchantUserId,
+					prevQuota,
+					nextQuota: grantYuan,
+					consumedPoints: consumed,
+					withdrawBreakdown: br,
+					formula: formatSilverQuotaRecalcFormula(grantYuan, br)
+				});
+			}
+		}
+		const nextCursor = rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = rows.length < chunkSize;
+		return {
+			code: 0,
+			message: dryRun ? 'dry-run 完成（未写库）。确认后传 apply:true 执行写库。' : 'ok',
+			data: {
+				dryRun,
+				grantYuan,
+				chunkSize,
+				scanned,
+				eligible,
+				patched,
+				skippedHasQuota,
+				skippedExhausted,
+				skippedRecharge,
+				skippedNotSilver,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				skippedSamples
+			}
+		};
+	} catch (e) {
+		console.error('adminSilverMembersQuotaZeroBackfill failed', e);
+		return { code: 500, message: safeText(e?.message || '白银剩余额度补写失败', 180) };
+	}
+}
+
+/** 白银可提现剩余 = max(0, grantYuan - 已提现积分累计) */
+function calcSilverQuotaRemainByWithdrawn(grantYuan, consumedPoints) {
+	const grant = Math.max(0, Number(grantYuan || 0));
+	const consumed = Math.max(0, Number(consumedPoints || 0));
+	return Math.max(0, Number((grant - consumed).toFixed(2)));
+}
+
+/**
+ * 历史白银会员按「1000 - 已打款 - 未打款 - 审核中」重算剩余额度（默认仅处理当前剩余额度 > 0）。
+ * nextQuota = max(0, grantYuan - 占用合计)；占用含已到账、未打款处理中、待审核单（未退回）。
+ * @param {boolean} data.dryRun 默认 true 预览；传 apply:true 写库
+ * @param {boolean} data.onlyNonZero 默认 true，仅处理剩余额度 > 0（与 zeroBackfill 互补）
+ * @param {number} data.grantYuan 授予总额，默认 1000
+ */
+async function adminSilverMembersQuotaRecalcByWithdrawn(data = {}, event = {}) {
+	try {
+		const dryRun = data?.dryRun !== false && data?.dryRun !== 0 && data?.apply !== true;
+		const grantYuan = Number(
+			data?.grantYuan != null && data?.grantYuan !== '' ? data.grantYuan : H5_SILVER_EXCHANGE_HIDDEN_QUOTA_YUAN
+		);
+		if (!Number.isFinite(grantYuan) || grantYuan <= 0) {
+			return { code: 400, message: 'grantYuan 须为正数' };
+		}
+		const onlyNonZero = data?.onlyNonZero !== false && data?.onlyNonZero !== 0;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 200), 20), 500);
+		const cursorId = safeText(data?.cursorId, 80);
+		const now = nowTs();
+		const _ = db.command;
+		const where = cursorId ? { _id: _.gt(cursorId) } : { _id: _.neq('') };
+		const res = await merchantCollection
+			.where(where)
+			.field({
+				_id: true,
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				available_reward: true,
+				withdraw_quota_balance: true,
+				recharge_total_yuan: true,
+				recharge_package_id: true,
+				recharge_package_price: true,
+				recharge_package_reward: true,
+				recharge_cycle_start: true,
+				silver_member: true,
+				silver_member_end_at: true,
+				membership_name: true,
+				member_tier: true,
+				membership_tier: true,
+				h5_member_tier: true,
+				redeem_code_claimed: true,
+				exchange_code_claimed: true,
+				estimated_free_quota: true,
+				recharge_package_quota: true
+			})
+			.orderBy('_id', 'asc')
+			.limit(chunkSize)
+			.get();
+		const rows = res.data || [];
+		const silverRows = rows.filter((row) => isHistoricalSilverMemberRowForQuotaBackfill(row));
+		const withdrawConsumedMap = await batchSumSilverWithdrawQuotaBreakdown(
+			silverRows.map((row) => String(row.user_id || row._id || ''))
+		);
+		let scanned = rows.length;
+		let eligible = 0;
+		let patched = 0;
+		let skippedUnchanged = 0;
+		let skippedZeroQuota = 0;
+		let skippedNotSilver = 0;
+		let skippedRecharge = 0;
+		const samples = [];
+		const skippedSamples = [];
+		for (const row of rows) {
+			if (isH5RechargeMemberForWithdraw(row)) {
+				skippedRecharge += 1;
+				continue;
+			}
+			if (!isHistoricalSilverMemberRowForQuotaBackfill(row)) {
+				skippedNotSilver += 1;
+				continue;
+			}
+			eligible += 1;
+			const prevQuota = Math.max(0, Number(rawWithdrawQuotaBalance(row) || 0));
+			if (onlyNonZero && prevQuota <= 1e-6) {
+				skippedZeroQuota += 1;
+				continue;
+			}
+			const merchantUserId = String(row.user_id || row._id || '');
+			const br = normalizeSilverWithdrawQuotaBreakdown(withdrawConsumedMap.get(merchantUserId));
+			const consumed = br.total;
+			const nextQuota = calcSilverQuotaRemainByWithdrawn(grantYuan, consumed);
+			if (Math.abs(prevQuota - nextQuota) <= 1e-6) {
+				skippedUnchanged += 1;
+				if (skippedSamples.length < 8) {
+					skippedSamples.push({
+						_id: row._id,
+						user_id: merchantUserId,
+						reason: 'unchanged',
+						prevQuota,
+						nextQuota,
+						consumedPoints: consumed,
+						withdrawBreakdown: br
+					});
+				}
+				continue;
+			}
+			if (!dryRun) {
+				await merchantCollection.doc(row._id).update({
+					available_reward: Number(nextQuota.toFixed(4)),
+					withdraw_quota_balance: Number(nextQuota.toFixed(4)),
+					update_time: now
+				});
+				await operationLogCollection.add({
+					user_id: row.user_id || row._id,
+					user_name: row.wx_nickname || row.mobile || '商户',
+					action: 'silver_quota_recalc_by_withdrawn',
+					module: 'merchant',
+					target_id: row._id,
+					target_name: row.wx_nickname || row.mobile || row._id,
+					content: `白银剩余额度重算 ${prevQuota}→${nextQuota}（${grantYuan}-已打款${br.paid}-未打款${br.unpaid}-审核中${br.auditing}）`,
+					operator_source: 'admin',
+					operator: getOperator(event),
+					ip: event?.context?.CLIENTIP || '',
+					create_time: now
+				});
+			}
+			patched += 1;
+			if (samples.length < 12) {
+				samples.push({
+					_id: row._id,
+					user_id: merchantUserId,
+					prevQuota,
+					nextQuota,
+					consumedPoints: consumed,
+					withdrawBreakdown: br,
+					formula: formatSilverQuotaRecalcFormula(grantYuan, br)
+				});
+			}
+		}
+		const nextCursor = rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = rows.length < chunkSize;
+		return {
+			code: 0,
+			message: dryRun ? 'dry-run 完成（未写库）。确认后传 apply:true 执行写库。' : 'ok',
+			data: {
+				dryRun,
+				grantYuan,
+				onlyNonZero,
+				formula: 'max(0, grantYuan - paid - unpaid - auditing)',
+				chunkSize,
+				scanned,
+				eligible,
+				patched,
+				skippedUnchanged,
+				skippedZeroQuota,
+				skippedRecharge,
+				skippedNotSilver,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				skippedSamples
+			}
+		};
+	} catch (e) {
+		console.error('adminSilverMembersQuotaRecalcByWithdrawn failed', e);
+		return { code: 500, message: safeText(e?.message || '白银剩余额度重算失败', 180) };
+	}
+}
+
 /**
  * 已兑换白银会员（exchange_code_claimed 或 redeem_code_claimed）且为白银身份、非充值档：
  * 将剩余额度 available_reward / withdraw_quota_balance 提升至至少 floorYuan（默认 1000），只升不降。
@@ -13886,6 +14366,9 @@ async function h5ExchangeCouponRedeem(data) {
 		merchant.__curAgreement = await getCurrentAgreement();
 		const redeemNeedSign = requireH5AgreementSigned(merchant);
 		if (redeemNeedSign) return redeemNeedSign;
+		if (!canMerchantUseH5ExchangeCoupon(merchant)) {
+			return { code: 400, message: '当前会员类型暂不支持兑换码' };
+		}
 		const code = safeText(String(data?.code || '').trim().toUpperCase(), 30);
 		if (!code) return { code: 400, message: '请输入兑换码' };
 		const now = nowTs();
@@ -13898,9 +14381,13 @@ async function h5ExchangeCouponRedeem(data) {
 		if (validFrom && now < validFrom) return { code: 400, message: '兑换码尚未生效' };
 		if (validTo && now > validTo) return { code: 400, message: '兑换码已过期' };
 		const memberDays = Math.max(1, Number(cp.member_days || 30));
+		const isFirstSilverFromNormal = isNormalMemberForUpgradePointsClear(merchant);
+		const isSilverQuotaReset = !isFirstSilverFromNormal;
+		const prevQuota = normalizeWithdrawQuotaBalance(merchant);
+		const nextQuota = resolveSilverExchangeQuotaOnRedeem(merchant);
 		const startAt = now;
 		const endAt = now + memberDays * 24 * 60 * 60 * 1000;
-		if (isNormalMemberForUpgradePointsClear(merchant)) {
+		if (isFirstSilverFromNormal) {
 			await clearNormalMemberPointsAndFrozenOnUpgrade(merchant, {
 				now,
 				upgradeKind: 'exchange_code_silver',
@@ -13922,9 +14409,38 @@ async function h5ExchangeCouponRedeem(data) {
 			silver_member_start_at: startAt,
 			silver_member_end_at: endAt,
 			exchange_code_claimed: true,
+			membership_name: '白银会员',
+			available_reward: Number(nextQuota.toFixed(4)),
+			withdraw_quota_balance: Number(nextQuota.toFixed(4)),
 			update_time: now
 		});
-		return { code: 0, message: '兑换成功', data: { memberDays, startAt, endAt } };
+		const logContent = isSilverQuotaReset
+			? `兑换码续兑白银会员，剩余提现额度重置为 ${nextQuota} 元（原 ${prevQuota}，非累加）`
+			: `兑换码开通白银会员，授予提现额度 ${nextQuota} 元`;
+		await operationLogCollection.add({
+			user_id: merchant.user_id || merchant._id,
+			user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
+			action: isSilverQuotaReset ? 'exchange_code_silver_quota_reset' : 'exchange_code_silver_quota',
+			module: 'merchant',
+			target_id: merchant._id,
+			target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+			content: logContent,
+			operator_source: 'h5',
+			operator: 'exchange_coupon',
+			create_time: now
+		});
+		return {
+			code: 0,
+			message: isSilverQuotaReset ? '兑换成功，提现额度已重置为 1000 元' : '兑换成功',
+			data: {
+				memberDays,
+				startAt,
+				endAt,
+				quotaReset: isSilverQuotaReset,
+				prevQuota,
+				nextQuota
+			}
+		};
 	} catch (e) {
 		console.error('h5ExchangeCouponRedeem failed', e);
 		return { code: 500, message: '兑换失败' };
@@ -14583,6 +15099,10 @@ exports.main = async (event, context) => {
 			return await adminSilverFlowMonthFirstReleaseCreditPending(actualData, event);
 		case 'adminSilverExchangeMerchantsQuotaFloor':
 			return await adminSilverExchangeMerchantsQuotaFloor(actualData, event);
+		case 'adminSilverMembersQuotaZeroBackfill':
+			return await adminSilverMembersQuotaZeroBackfill(actualData, event);
+		case 'adminSilverMembersQuotaRecalcByWithdrawn':
+			return await adminSilverMembersQuotaRecalcByWithdrawn(actualData, event);
 		case 'rechargeGiftShipmentList':
 			return await rechargeGiftShipmentList(actualData);
 		case 'rechargeGiftShipmentUpdate':
