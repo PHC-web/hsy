@@ -114,6 +114,18 @@
 			</view>
 
 			<view class="card">
+				<view class="card-title">2.1）H5 待领取奖励有效期</view>
+				<text class="card-tip">流水或分期待返生成权益气泡后，自该笔流水/生成时刻起算有效天数；到期后 H5 权益页不再展示，且不可领取。例：7 天表示 7 月 1 日 23:00 的流水，7 月 8 日 23:00 过期。</text>
+				<view class="form-grid">
+					<view class="field">
+						<text class="label">有效天数</text>
+						<uni-easyinput v-model="form.incomePacketClaimValidDays" type="number" placeholder="默认 7" />
+						<text class="field-hint">保存后写入业务参数并刷新 Redis，云函数生成待领取奖励时读取。</text>
+					</view>
+				</view>
+			</view>
+
+			<view class="card">
 				<view class="card-title">3）充值退款周期（仅新充值用户）</view>
 				<text class="card-tip">例：锁定 180 天，到期后开放 3 天窗口。</text>
 				<view class="form-grid">
@@ -225,6 +237,7 @@ const defaultForm = () => ({
 		nonMember7Plus: 100
 	},
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
 	refundTransferSliceMaxYuan: 200,

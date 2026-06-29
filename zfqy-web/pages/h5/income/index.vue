@@ -178,6 +178,11 @@ export default {
 		this.loadData();
 	},
 	methods: {
+		/** 待领取总额 = 各气泡展示金额之和（避免单笔 toFixed 与合计不一致） */
+		syncPendingTotalFromPackets() {
+			const sum = (this.packets || []).reduce((s, p) => s + Number(p.amount || 0), 0);
+			this.pendingTotal = (Math.round(sum * 100) / 100).toFixed(2);
+		},
 		bubbleStyle(idx) {
 			const leftSlots = [
 				{ top: 12, left: 2 },
@@ -232,7 +237,7 @@ export default {
 				const d = res.data || {};
 				this.packets = d.packets || [];
 				this.detailList = d.detailList || [];
-				this.pendingTotal = d.pendingTotal != null ? String(d.pendingTotal) : '0.00';
+				this.syncPendingTotalFromPackets();
 				this.pendingCount = Number(d.pendingCount || 0);
 				const realTicker = (d.subsidyTicker || []).map((x, idx) => ({
 					id: x.id || `ticker_${idx}`,

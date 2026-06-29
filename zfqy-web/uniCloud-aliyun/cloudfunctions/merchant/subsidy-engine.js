@@ -4,8 +4,15 @@ const { shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 
 const POINTS_PER_BLOCK = 38;
 const POINTS_PER_MONTH = 7.6;
-const CLAIM_WINDOW_MS = 15 * 24 * 60 * 60 * 1000;
+/** 待领取奖励默认有效期（天），可被业务参数 incomePacketClaimValidDays 覆盖 */
+const DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS = 7;
 const MIN_PACKET_AMOUNT = 0.01;
+/** 权益气泡金额：统一四舍五入到 2 位小数，展示与合计口径一致 */
+function roundPacketAmountYuan(raw) {
+	const n = Number(raw || 0);
+	if (!Number.isFinite(n)) return 0;
+	return Math.max(0, Math.round(n * 100) / 100);
+}
 /** uniCloud 单次 get 上限 1000，须分页拉全量 */
 const DB_PAGE_SIZE = 1000;
 const DB_MAX_ROWS = 2000000;
@@ -150,9 +157,9 @@ async function existingDedupKeys(db, merchantUserId) {
 async function upsertPacket(db, doc, dedupSet) {
 	const dk = doc.dedup_key;
 	if (!dk || dedupSet.has(dk)) return;
-	const amt = Number(doc.amount || 0);
+	const amt = roundPacketAmountYuan(doc.amount);
 	if (!(amt >= MIN_PACKET_AMOUNT)) return;
-	await db.collection('hsy-income-packets').add(doc);
+	await db.collection('hsy-income-packets').add(Object.assign({}, doc, { amount: amt }));
 	dedupSet.add(dk);
 }
 
@@ -200,7 +207,26 @@ function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
 	return out;
 }
 
-async function syncSubsidyPackets(db, merchant, nowTs) {
+function resolveIncomePacketClaimValidMs(options = {}) {
+	const days = Math.max(
+		1,
+		Math.min(365, Number(options.claimValidDays != null ? options.claimValidDays : DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS))
+	);
+	return days * 24 * 60 * 60 * 1000;
+}
+
+/** 待领取窗口：自 anchorTs 起 claimValidMs 内可领，到期后权益页不可见 */
+function buildIncomePacketClaimWindow(anchorTs, claimValidMs) {
+	const anchor = Number(anchorTs || 0);
+	const ms = Math.max(1, Number(claimValidMs || 0));
+	return {
+		claim_open_time: anchor,
+		expire_time: anchor + ms
+	};
+}
+
+async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
+	const claimValidMs = resolveIncomePacketClaimValidMs(options);
 	const merchantUserId = merchant.user_id || merchant._id;
 	const dedupSet = await existingDedupKeys(db, merchantUserId);
 	const tradeWhere = buildEligibleSubsidyTradeWhere(db, merchantUserId);
@@ -234,6 +260,8 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 		if (!(firstRelease > 0)) continue;
 		const ym = monthNoFromTs(t.create_time || nowTs);
 		const tradeNo = String(t.trade_no || t._id || '');
+		const tradeTs = Number(t.create_time || nowTs);
+		const claimWindow = buildIncomePacketClaimWindow(tradeTs, claimValidMs);
 		await upsertPacket(
 			db,
 			{
@@ -242,11 +270,11 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 				title: `流水首期补贴 ${tradeNo.slice(-8)}`,
 				amount: Number(firstRelease.toFixed(4)),
 				status: 'pending',
-				create_time: Number(t.create_time || nowTs),
+				create_time: tradeTs,
 				update_time: nowTs,
 				is_deleted: false,
-				expire_time: nowTs + CLAIM_WINDOW_MS,
-				claim_open_time: nowTs,
+				expire_time: claimWindow.expire_time,
+				claim_open_time: claimWindow.claim_open_time,
 				subsidy_kind: 'trade_first',
 				dedup_key: `trade_${merchantUserId}_${tradeNo}`,
 				subsidy_flow_month: ym,
@@ -279,6 +307,7 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 			for (let i = 0; i < canGrant; i += 1) {
 				const chunkAmt = Number(chunks[i] || 0);
 				if (chunkAmt > 0) {
+					const claimWindow = buildIncomePacketClaimWindow(nowTs, claimValidMs);
 					await upsertPacket(
 						db,
 						{
@@ -290,8 +319,8 @@ async function syncSubsidyPackets(db, merchant, nowTs) {
 							create_time: nowTs,
 							update_time: nowTs,
 							is_deleted: false,
-							expire_time: nowTs + CLAIM_WINDOW_MS,
-							claim_open_time: nowTs,
+							expire_time: claimWindow.expire_time,
+							claim_open_time: claimWindow.claim_open_time,
 							subsidy_kind: 'release_pool_history',
 							dedup_key: `pool_hist_${merchantUserId}_${srcYm}_to_${ym}_${i}`,
 							subsidy_flow_month: srcYm,
@@ -331,6 +360,10 @@ module.exports = {
 	POINTS_PER_MONTH,
 	DB_PAGE_SIZE,
 	DB_MAX_ROWS,
+	roundPacketAmountYuan,
+	resolveIncomePacketClaimValidMs,
+	buildIncomePacketClaimWindow,
+	DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS,
 	monthNoFromTs,
 	monthStartEndTs,
 	buildDeferredSlicesByMonth,

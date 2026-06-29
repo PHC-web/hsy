@@ -6944,6 +6944,8 @@ const DEFAULT_BIZ_SETTINGS = {
 	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	/** H5 权益页待领取奖励自流水/生成时刻起的有效天数，到期后不再展示 */
+	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
 	/** H5 充值退款商家转账拆单：单笔上限(元)，受 sanitize 限制在 0.01~500 */
@@ -7014,6 +7016,17 @@ function sanitizeBizSettings(raw = {}) {
 		aboveInstallments: Math.max(1, Number(oc.aboveInstallments || DEFAULT_BIZ_SETTINGS.optimizeConfig.aboveInstallments)),
 		belowInstallments: Math.max(1, Number(oc.belowInstallments || DEFAULT_BIZ_SETTINGS.optimizeConfig.belowInstallments))
 	};
+	const incomePacketClaimValidDays = Math.max(
+		1,
+		Math.min(
+			365,
+			Number(
+				raw.incomePacketClaimValidDays != null && raw.incomePacketClaimValidDays !== ''
+					? raw.incomePacketClaimValidDays
+					: DEFAULT_BIZ_SETTINGS.incomePacketClaimValidDays
+			)
+		)
+	);
 	const rc = raw.refundCycle || {};
 	const refundCycle = {
 		cycleDays: Math.max(1, Number(rc.cycleDays || DEFAULT_BIZ_SETTINGS.refundCycle.cycleDays)),
@@ -7052,6 +7065,7 @@ function sanitizeBizSettings(raw = {}) {
 		withdrawAudit,
 		refundTransferAudit,
 		optimizeConfig,
+		incomePacketClaimValidDays,
 		refundCycle,
 		refundPenaltyRate,
 		refundTransferSliceMaxYuan,
@@ -7108,7 +7122,7 @@ async function getBizSettings() {
 	}
 	const rRedis = await redisH5.h5RedisGetJson(REDIS_KEY_BIZ);
 	if (rRedis && rRedis.rechargeRules && Array.isArray(rRedis.rechargeRules)) {
-		bizSettingsCache = rRedis;
+		bizSettingsCache = sanitizeBizSettings(rRedis);
 		bizSettingsCacheAt = now;
 		return bizSettingsCache;
 	}
@@ -11895,7 +11909,9 @@ async function h5IncomeList(data) {
 		const now = nowTs();
 		const biz = await getBizSettings();
 		try {
-			await subsidyEngine.syncSubsidyPackets(db, merchant, now);
+			await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
+				claimValidDays: biz.incomePacketClaimValidDays
+			});
 		} catch (e) {
 			console.error('syncSubsidyPackets', e);
 		}
@@ -11926,32 +11942,34 @@ async function h5IncomeList(data) {
 			if (x.expire_time && x.expire_time < now) return false;
 			if (!Number(x.claim_open_time || 0)) return false;
 			if (x.claim_open_time && x.claim_open_time > now) return false;
-			if (Number(x.amount || 0) < 0.01) return false;
+			if (subsidyEngine.roundPacketAmountYuan(x.amount) < 0.01) return false;
 			return true;
 		});
 		let pendingTotal = 0;
-		for (const x of pendingRows) {
-			pendingTotal += Number(x.amount || 0);
-		}
-		const packets = pendingRows.map((x) => ({
-			id: x._id,
-			title: x.title || '手续费补贴',
-			amount: Number(x.amount || 0).toFixed(2),
-			monthNo: x.month_no || '',
-			status: x.status,
-			createTime: formatTime(x.create_time)
-		}));
+		const packets = pendingRows.map((x) => {
+			const displayAmt = subsidyEngine.roundPacketAmountYuan(x.amount);
+			pendingTotal += displayAmt;
+			return {
+				id: x._id,
+				title: x.title || '手续费补贴',
+				amount: displayAmt.toFixed(2),
+				monthNo: x.month_no || '',
+				status: x.status,
+				createTime: formatTime(x.create_time)
+			};
+		});
+		pendingTotal = subsidyEngine.roundPacketAmountYuan(pendingTotal);
 		const claimedRes = await incomePacketCollection
 			.where({ merchant_user_id: merchantUserId, is_deleted: false, status: 'claimed' })
 			.orderBy('claimed_time', 'desc')
 			.limit(50)
 			.get();
 		const detailList = (claimedRes.data || [])
-			.filter((x) => Number(x.amount || 0) >= 0.01)
+			.filter((x) => subsidyEngine.roundPacketAmountYuan(x.amount) >= 0.01)
 			.map((x) => ({
 				id: x._id,
 				title: x.title || '手续费补贴',
-				amount: Number(x.amount || 0).toFixed(2),
+				amount: subsidyEngine.roundPacketAmountYuan(x.amount).toFixed(2),
 				timeText: formatTime(x.claimed_time || x.update_time)
 			}));
 		let subsidyTicker = [];
@@ -12044,12 +12062,13 @@ async function claimPackets(merchant, packetIds) {
 		if (row.claim_open_time && row.claim_open_time > now) continue;
 		const need = row.unlock_flow_yuan != null ? Number(row.unlock_flow_yuan) : null;
 		if (need != null && Number.isFinite(need) && flowThisMonth + 1e-6 < need) continue;
-		const amt = Number(row.amount || 0);
+		const amt = subsidyEngine.roundPacketAmountYuan(row.amount);
 		if (amt < 0.01) continue;
 		claimedAmount += amt;
 		claimedIds.push(row._id);
 		await incomePacketCollection.doc(row._id).update({
 			status: 'claimed',
+			amount: amt,
 			claimed_time: now,
 			update_time: now
 		});
@@ -12084,7 +12103,7 @@ async function claimPackets(merchant, packetIds) {
 		// 同步刷新商户基础表 frozen_amount（与商户列表读取口径保持一致）
 		await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
 	}
-	return { claimedCount: claimedIds.length, claimedAmount };
+	return { claimedCount: claimedIds.length, claimedAmount: subsidyEngine.roundPacketAmountYuan(claimedAmount) };
 }
 
 async function h5IncomeClaim(data) {
