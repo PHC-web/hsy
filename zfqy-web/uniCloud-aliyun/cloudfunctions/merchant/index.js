@@ -472,18 +472,57 @@ function maybeMerchantDisplayName(merchant) {
 	);
 }
 
-function isWxBalanceInsufficientError(err) {
-	const txt = String(
-		err?.message ||
-			err?.wxBody?.message ||
-			err?.wxBody?.code ||
-			err?.wxBody?.detail ||
-			err?.wxBody?.err_code_des ||
-			''
-	).toLowerCase();
+const WX_OPERATING_ACCOUNT_INSUFFICIENT_HINT =
+	'商户运营账户资金不足，充值后可以原单号发起重试，请勿更换商户单号';
+
+function extractWxPayErrorText(errOrText) {
+	if (typeof errOrText === 'string') return safeText(errOrText, 500);
+	if (!errOrText) return '';
+	if (errOrText.name === 'WxPayRequestError' && errOrText.wxBody) {
+		const body = errOrText.wxBody;
+		return safeText(body.message || body.err_code_des || body.detail || body.code || errOrText.message, 500);
+	}
+	return safeText(errOrText.message || '', 500);
+}
+
+/** 微信商家转账：运营账户/可用余额不足（含「原单号重试」类文案） */
+function isWxBalanceInsufficientError(errOrText) {
+	const txt = extractWxPayErrorText(errOrText).toLowerCase();
 	if (!txt) return false;
-	const keys = ['余额不足', '账户余额不足', '可用余额不足', 'insufficient', 'not enough', 'balance not enough'];
-	return keys.some((k) => txt.includes(k));
+	const keys = [
+		'商户运营账户资金不足',
+		'运营账户资金不足',
+		'商户号运营账户余额不足',
+		'余额不足',
+		'账户余额不足',
+		'可用余额不足',
+		'原单号发起重试',
+		'请勿更换商户单号',
+		'insufficient',
+		'not enough',
+		'balance not enough'
+	];
+	return keys.some((k) => txt.includes(String(k).toLowerCase()));
+}
+
+async function notifyWxOperatingAccountInsufficientWecom(ctx = {}, wxDetail = '') {
+	const scene = safeText(ctx.scene || '打款', 20);
+	const outBillNo = safeText(ctx.outBillNo || ctx.withdrawNo || ctx.refundNo || '', 64);
+	const merchantName = safeText(ctx.merchantName || '', 80);
+	const detail = safeText(wxDetail || ctx.detail || '', 400);
+	const lines = [
+		`【${scene}】${WX_OPERATING_ACCOUNT_INSUFFICIENT_HINT}`,
+		outBillNo ? `单号：${outBillNo}` : '',
+		merchantName ? `商户：${merchantName}` : '',
+		detail && !detail.includes('商户运营账户资金不足') ? `微信返回：${detail}` : ''
+	].filter(Boolean);
+	await sendWecomRobotText(lines.join('\n'));
+}
+
+async function maybeNotifyWxOperatingAccountInsufficientWecom(errOrText, ctx = {}) {
+	if (!isWxBalanceInsufficientError(errOrText)) return false;
+	await notifyWxOperatingAccountInsufficientWecom(ctx, extractWxPayErrorText(errOrText));
+	return true;
 }
 
 function buildRefundEntryPath(token) {
@@ -4203,7 +4242,15 @@ async function markWithdrawFailNeedsReaudit(row, state, reason, options = {}) {
 	if (shouldNotify) {
 		const merchant = options.merchant || (await resolveMerchantForWithdrawRow(row));
 		const name = merchant ? maybeMerchantDisplayName(merchant) : safeText(row.user_nickname || row.user_mobile, 40) || '商户';
-		await sendWecomRobotText(`${name}微信提现失败，请重新到「提现列表」进行审核`);
+		const notifiedBalance = await maybeNotifyWxOperatingAccountInsufficientWecom(errText, {
+			scene: '提现',
+			withdrawNo: safeText(row.withdraw_no, 64),
+			outBillNo: safeText(row.withdraw_no, 64),
+			merchantName: name
+		});
+		if (!notifiedBalance) {
+			await sendWecomRobotText(`${name}微信提现失败，请重新到「提现列表」进行审核`);
+		}
 	}
 	return true;
 }
@@ -4608,10 +4655,13 @@ async function withdrawApprove(data) {
 				return { code: 0, message: '同意提现成功，微信打款处理中' };
 			} catch (e) {
 				const reason = safeText(e?.message || '微信提现失败', 180);
-				if (isWxBalanceInsufficientError(e)) {
-					await sendWecomRobotText('商户号运营账户余额不足，请及时充值。');
-				}
-				await markWithdrawFailNeedsReaudit(row, 'RETRYABLE_FAIL', reason, { merchant });
+				await maybeNotifyWxOperatingAccountInsufficientWecom(e, {
+					scene: '提现',
+					withdrawNo: safeText(row.withdraw_no, 64),
+					outBillNo: safeText(row.withdraw_no, 64),
+					merchantName: merchant ? maybeMerchantDisplayName(merchant) : safeText(row.user_nickname || row.user_mobile, 40)
+				});
+				await markWithdrawFailNeedsReaudit(row, 'RETRYABLE_FAIL', reason, { merchant, notifyWecom: false });
 				await writeTransferLog({
 					stage: 'approve_failed',
 					level: 'error',
@@ -7966,9 +8016,12 @@ async function h5WithdrawApply(data) {
 					e && e.name === 'WxPayRequestError' && e.wxBody
 						? safeText(e.wxBody.message || e.wxBody.code || e.message, 180)
 						: safeText(e.message || '微信打款失败', 180);
-				if (isWxBalanceInsufficientError(e)) {
-					await sendWecomRobotText('商户号运营账户余额不足，请及时充值。');
-				}
+				await maybeNotifyWxOperatingAccountInsufficientWecom(e, {
+					scene: '提现',
+					withdrawNo,
+					outBillNo: withdrawNo,
+					merchantName: maybeMerchantDisplayName(merchant)
+				});
 				await withdrawCollection.doc(newWithdrawId).update({
 					arrival_status: 'returned',
 					update_time: nowTs(),
@@ -8049,6 +8102,12 @@ async function h5WithdrawApply(data) {
 					transferResp?.fail_reason || transferResp?.message || transferResp?.state || transferState || '微信提现失败',
 					180
 				);
+				await maybeNotifyWxOperatingAccountInsufficientWecom(failMsg, {
+					scene: '提现',
+					withdrawNo,
+					outBillNo: withdrawNo,
+					merchantName: maybeMerchantDisplayName(merchant)
+				});
 				await withdrawCollection.doc(newWithdrawId).update({
 					arrival_status: 'returned',
 					update_time: nowTs(),
@@ -9773,6 +9832,9 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 				transferBillNo = safeText(q?.transfer_bill_no || transferBillNo, 80);
 				first.query_resp = q || {};
 				first.last_error = '';
+				if (['FAIL', 'FAILED', 'CANCELLED'].includes(st)) {
+					first.last_error = safeText(q?.fail_reason || q?.message || st, 200);
+				}
 			} catch (e) {
 				const wxCode = safeText(e?.wxBody?.code || '', 40);
 				const detail =
@@ -9825,6 +9887,14 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 		if (packageInfo) first.package_info = packageInfo;
 		if (st === 'SUCCESS') first.transfer_time = nowTs();
 		items[activeIdx] = first;
+		if (first.last_error) {
+			await maybeNotifyWxOperatingAccountInsufficientWecom(first.last_error, {
+				scene: '退款',
+				refundNo: refundNoMain,
+				outBillNo,
+				merchantName: maybeMerchantDisplayName(merchant)
+			});
+		}
 
 		await writeTransferLog({
 			scene: 'refund',
@@ -9896,6 +9966,12 @@ async function runRefundMerchantTransferPipeline(transferOrderIn, merchant, even
 		};
 	} catch (e) {
 		console.error('runRefundMerchantTransferPipeline failed', e);
+		await maybeNotifyWxOperatingAccountInsufficientWecom(e, {
+			scene: '退款',
+			refundNo: safeText(transferOrderIn?.refund_no, 64),
+			outBillNo: safeText(transferOrderIn?.out_bill_no || transferOrderIn?.refund_no, 64),
+			merchantName: merchant ? maybeMerchantDisplayName(merchant) : ''
+		});
 		return { code: 500, message: safeText(e.message || '退款打款异常', 200) };
 	}
 }
@@ -10137,6 +10213,12 @@ async function refundTransferSyncProcessing(data = {}) {
 				if (polledPkg) cur.package_info = polledPkg;
 				if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
 					cur.last_error = safeText(q?.fail_reason || q?.message || state, 200);
+					await maybeNotifyWxOperatingAccountInsufficientWecom(cur.last_error, {
+						scene: '退款',
+						refundNo: refundMain,
+						outBillNo: pollBill,
+						merchantName: maybeMerchantDisplayName(merchant)
+					});
 				}
 				items[activeIdx] = cur;
 				const batchState = computeMerchantRefundBatchState(items);
@@ -10156,6 +10238,12 @@ async function refundTransferSyncProcessing(data = {}) {
 					processing += 1;
 				}
 			} catch (e) {
+				await maybeNotifyWxOperatingAccountInsufficientWecom(e, {
+					scene: '退款',
+					refundNo: safeText(row.refund_no, 64),
+					outBillNo: safeText(row.out_bill_no || row.refund_no, 64),
+					merchantName: merchant ? maybeMerchantDisplayName(merchant) : ''
+				});
 				await writeTransferLog({
 					scene: 'refund',
 					stage: 'refund_auto_poll_error',
@@ -10851,6 +10939,12 @@ async function h5RefundConfirmPackage(data) {
 				outBillNo: sliceBill,
 				message: queryErrorDetail
 			});
+			await maybeNotifyWxOperatingAccountInsufficientWecom(queryErrorDetail, {
+				scene: '退款',
+				refundNo: refundNoMain,
+				outBillNo: sliceBill,
+				merchantName: maybeMerchantDisplayName(merchant)
+			});
 			if (wxCode === 'NOT_FOUND' && (!row.audit_required || safeText(row.audit_status, 20) === 'approved') && !row.applied) {
 				const openid = safeText(merchant.wx_openid, 100);
 				if (openid) {
@@ -10926,6 +11020,12 @@ async function h5RefundConfirmPackage(data) {
 							transfer_items: items,
 							update_time: nowTs()
 						});
+						await maybeNotifyWxOperatingAccountInsufficientWecom(detail2, {
+							scene: '退款',
+							refundNo: refundNoMain,
+							outBillNo: sliceBill,
+							merchantName: maybeMerchantDisplayName(merchant)
+						});
 					}
 				}
 			}
@@ -10951,6 +11051,13 @@ async function h5RefundConfirmPackage(data) {
 			};
 		}
 		if (['FAIL', 'FAILED', 'CANCELLED'].includes(state)) {
+			const failDetail = safeText(q?.fail_reason || q?.message || first.last_error || state, 200);
+			await maybeNotifyWxOperatingAccountInsufficientWecom(failDetail, {
+				scene: '退款',
+				refundNo: refundNoMain,
+				outBillNo: sliceBill,
+				merchantName: maybeMerchantDisplayName(merchant)
+			});
 			return { code: 400, message: `当前状态为${state}，请联系管理员或稍后重试` };
 		}
 		const packageInfo = safeText(
