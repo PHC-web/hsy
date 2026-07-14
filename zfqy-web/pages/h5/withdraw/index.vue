@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">奖励提现</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -194,12 +197,10 @@ export default {
 	padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 8px;
 }
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -227,21 +228,21 @@ export default {
 .card-label {
 	display: block;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	margin-bottom: 8px;
 }
 .card-points {
 	display: block;
 	font-size: 28px;
 	font-weight: 800;
-	color: #fde68a;
+	color: #2563eb;
 	letter-spacing: 0.02em;
 }
 .card-sub {
 	display: block;
 	margin-top: 10px;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.9);
+	color: #64748b;
 	line-height: 1.5;
 }
 .card-warn {
@@ -256,7 +257,7 @@ export default {
 	display: block;
 	font-size: 13px;
 	font-weight: 600;
-	color: #e2e8f0;
+	color: #334155;
 	margin-bottom: 10px;
 }
 .field-input {
@@ -292,33 +293,33 @@ export default {
 	display: block;
 	margin-top: 10px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 
 .summary .sum-line {
 	display: block;
 	font-size: 13px;
-	color: rgba(226, 232, 240, 0.9);
+	color: #475569;
 	margin-bottom: 6px;
 }
 .summary .sum-strong {
 	margin-top: 8px;
 	font-size: 15px;
 	font-weight: 700;
-	color: #a7f3d0;
+	color: #059669;
 }
 
 .rules-title {
 	display: block;
 	font-size: 14px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 	margin-bottom: 10px;
 }
 .rules-item {
 	display: block;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.92);
+	color: #64748b;
 	line-height: 1.55;
 	margin-bottom: 8px;
 }

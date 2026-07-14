@@ -63,64 +63,57 @@
 				
 
 				<view class="menu-card h5-glass-panel">
-					<view class="menu-item" @click="goRecharge">
-						<text class="menu-title">额度包</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					
-					<view class="menu-item" @click="goFinance">
-						<text class="menu-title">财务管理</text>
-						<text class="menu-arrow">›</text>
-					</view>
-				<!-- 	<view class="menu-item" @click="goRules">
-						<text class="menu-title">活动规则与时间</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view class="menu-item" @click="goRules">
-						<text class="menu-title">参与步骤与领奖说明</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view class="menu-item" @click="goTransferProof">
-						<text class="menu-title">转账场景证明</text>
-						<text class="menu-arrow">›</text>
-					</view> -->
-					<view class="menu-item" @click="goPendingReturn">
-						<text class="menu-title">待返积分</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view class="menu-item" @click="goCoupons">
-						<text class="menu-title">优惠券</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view v-if="showExchangeCodeMenu" class="menu-item" @click="goExchange">
-						<text class="menu-title">兑换码</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					
-					<view class="menu-item" @click="goMobile">
-						<text class="menu-title">手机号维护</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view class="menu-item" @click="goDevice">
-						<text class="menu-title">码牌绑定</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view class="menu-item" @click="goFeedback">
-						<text class="menu-title">售后反馈</text>
-						<view class="menu-right">
-							<view v-if="feedbackUnread" class="menu-badge" aria-hidden="true"></view>
-							<text class="menu-arrow">›</text>
+					<view class="menu-grid">
+						<view class="menu-cell" @click="goRecharge">
+							<view class="menu-icon menu-icon--blue">
+								<text class="bi bi-box-seam"></text>
+							</view>
+							<text class="menu-title">额度包</text>
+						</view>
+						<view class="menu-cell" @click="goFinance">
+							<view class="menu-icon menu-icon--teal">
+								<text class="bi bi-wallet2"></text>
+							</view>
+							<text class="menu-title">财务管理</text>
+						</view>
+						<view class="menu-cell" @click="goPendingReturn">
+							<view class="menu-icon menu-icon--amber">
+								<text class="bi bi-hourglass-split"></text>
+							</view>
+							<text class="menu-title">待返积分</text>
+						</view>
+						<view class="menu-cell" @click="goCoupons">
+							<view class="menu-icon menu-icon--rose">
+								<text class="bi bi-ticket-perforated"></text>
+							</view>
+							<text class="menu-title">优惠券</text>
+						</view>
+						<view v-if="showExchangeCodeMenu" class="menu-cell" @click="goExchange">
+							<view class="menu-icon menu-icon--violet">
+								<text class="bi bi-gift"></text>
+							</view>
+							<text class="menu-title">兑换码</text>
+						</view>
+						<view class="menu-cell" @click="goMobile">
+							<view class="menu-icon menu-icon--sky">
+								<text class="bi bi-phone"></text>
+							</view>
+							<text class="menu-title">手机号维护</text>
+						</view>
+						<view class="menu-cell" @click="goDevice">
+							<view class="menu-icon menu-icon--indigo">
+								<text class="bi bi-qr-code"></text>
+							</view>
+							<text class="menu-title">码牌绑定</text>
+						</view>
+						<view class="menu-cell" @click="goFeedback">
+							<view class="menu-icon menu-icon--orange">
+								<text class="bi bi-headset"></text>
+								<view v-if="feedbackUnread" class="menu-badge" aria-hidden="true"></view>
+							</view>
+							<text class="menu-title">售后反馈</text>
 						</view>
 					</view>
-					
-			<!-- 		<view class="menu-item" @click="goPayNotify">
-						<text class="menu-title">支付结果异步通知地址</text>
-						<text class="menu-arrow">›</text>
-					</view>
-					<view class="menu-item" @click="goRefundNotify">
-						<text class="menu-title">退款结果异步通知地址</text>
-						<text class="menu-arrow">›</text>
-					</view> -->
 				</view>
 
 				<view class="mine-bottom-spacer"></view>
@@ -386,6 +379,7 @@ export default {
 				]);
 				if (dashboardRes.code === 0) {
 					const d = dashboardRes.data || {};
+					if (this.applyH5UiStyleFromApiData) this.applyH5UiStyleFromApiData(d);
 					this.mine = Object.assign({}, d.merchant || {}, {
 						deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || '',
 						membershipTier: d.membership?.tier || ''
@@ -402,6 +396,7 @@ export default {
 					return;
 				}
 				const mData = mineRes.data || {};
+				if (this.applyH5UiStyleFromApiData) this.applyH5UiStyleFromApiData(mData);
 				this.mine = Object.assign({}, this.mine, mData.merchant || {}, {
 					deviceDisplay: (mData.device && mData.device.display) || this.mine.deviceDisplay || ''
 				});
@@ -772,7 +767,7 @@ export default {
 	display: block;
 	font-size: 22px;
 	font-weight: 700;
-	color: rgba(248, 250, 252, 0.96);
+	color: #0f172a;
 	letter-spacing: 0.02em;
 }
 .top-refresh-btn {
@@ -780,9 +775,9 @@ export default {
 	border-radius: 999px;
 	font-size: 12px;
 	font-weight: 600;
-	color: #cbd5e1;
-	background: rgba(15, 23, 42, 0.35);
-	border: 1px solid rgba(255, 255, 255, 0.18);
+	color: #64748b;
+	background: #f1f5f9;
+	border: 1px solid #e2e8f0;
 }
 
 .notice-marquee {
@@ -831,21 +826,21 @@ export default {
 	width: 58px;
 	height: 58px;
 	border-radius: 18px;
-	border: 2px solid rgba(255, 255, 255, 0.18);
-	background: rgba(15, 23, 42, 0.4);
+	border: 2px solid #e2e8f0;
+	background: #f1f5f9;
 }
 
 .name {
 	display: block;
 	font-size: 17px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .sub {
 	display: block;
 	margin-top: 4px;
-	color: rgba(203, 213, 225, 0.85);
+	color: #64748b;
 	font-size: 12px;
 }
 
@@ -858,7 +853,7 @@ export default {
 	display: flex;
 	justify-content: space-between;
 	padding: 12px 0;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	border-bottom: 1px solid #e2e8f0;
 }
 
 .acct-item:last-child {
@@ -901,7 +896,7 @@ export default {
 	display: block;
 	font-size: 13px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 	margin-bottom: 6px;
 }
 
@@ -910,7 +905,7 @@ export default {
 	display: block;
 	font-size: 12px;
 	line-height: 1.6;
-	color: rgba(226, 232, 240, 0.92);
+	color: #475569;
 }
 
 .fixed-notice-content {
@@ -921,55 +916,112 @@ export default {
 }
 
 .k {
-	color: rgba(186, 199, 216, 0.95);
+	color: #64748b;
 	font-size: 13px;
 }
 
 .v {
-	color: #a7f3d0;
+	color: #059669;
 	font-weight: 700;
 }
 
 .menu-card {
 	overflow: hidden;
 	margin-bottom: 8px;
+	padding: 10px 8px 14px;
 }
 
-.menu-item {
+.menu-grid {
 	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 14px 16px;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+	flex-wrap: wrap;
 }
 
-.menu-right {
+.menu-cell {
+	width: 33.333%;
+	box-sizing: border-box;
+	padding: 14px 6px 10px;
 	display: flex;
+	flex-direction: column;
 	align-items: center;
 	gap: 8px;
+	position: relative;
+}
+
+.menu-cell:active {
+	opacity: 0.82;
+	transform: scale(0.97);
+}
+
+.menu-icon {
+	width: 46px;
+	height: 46px;
+	border-radius: 14px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	position: relative;
+	box-shadow:
+		0 6px 16px rgba(15, 23, 42, 0.06),
+		inset 0 1px 0 rgba(255, 255, 255, 0.85);
+	border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.menu-icon .bi {
+	font-size: 20px;
+	line-height: 1;
+}
+
+.menu-icon--blue {
+	background: linear-gradient(145deg, #dbeafe 0%, #eff6ff 100%);
+	color: #2563eb;
+}
+.menu-icon--teal {
+	background: linear-gradient(145deg, #ccfbf1 0%, #f0fdfa 100%);
+	color: #0d9488;
+}
+.menu-icon--amber {
+	background: linear-gradient(145deg, #fef3c7 0%, #fffbeb 100%);
+	color: #d97706;
+}
+.menu-icon--rose {
+	background: linear-gradient(145deg, #ffe4e6 0%, #fff1f2 100%);
+	color: #e11d48;
+}
+.menu-icon--violet {
+	background: linear-gradient(145deg, #ede9fe 0%, #f5f3ff 100%);
+	color: #7c3aed;
+}
+.menu-icon--sky {
+	background: linear-gradient(145deg, #e0f2fe 0%, #f0f9ff 100%);
+	color: #0284c7;
+}
+.menu-icon--indigo {
+	background: linear-gradient(145deg, #e0e7ff 0%, #eef2ff 100%);
+	color: #4f46e5;
+}
+.menu-icon--orange {
+	background: linear-gradient(145deg, #ffedd5 0%, #fff7ed 100%);
+	color: #ea580c;
 }
 
 .menu-badge {
+	position: absolute;
+	top: -2px;
+	right: -2px;
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
 	background: #f87171;
-	box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.5);
-}
-
-.menu-item:last-child {
-	border-bottom: 0;
+	box-shadow: 0 0 0 2px #ffffff;
 }
 
 .menu-title {
-	color: #e2e8f0;
-	font-size: 14px;
-}
-
-.menu-arrow {
-	color: rgba(148, 163, 184, 0.9);
-	font-size: 18px;
-	line-height: 1;
+	color: #334155;
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 1.3;
+	text-align: center;
+	max-width: 100%;
 }
 
 .mine-bottom-spacer {
@@ -1002,7 +1054,7 @@ export default {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: rgba(2, 6, 23, 0.45);
+	background: rgba(15, 23, 42, 0.12);
 	backdrop-filter: blur(2px);
 	-webkit-backdrop-filter: blur(2px);
 }
@@ -1014,21 +1066,21 @@ export default {
 	flex-direction: column;
 	align-items: center;
 	gap: 10px;
-	background: rgba(15, 23, 42, 0.86);
-	border: 1px solid rgba(255, 255, 255, 0.14);
-	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+	background: #ffffff;
+	border: 1px solid #e2e8f0;
+	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
 }
 .loading-spinner {
 	width: 24px;
 	height: 24px;
 	border-radius: 50%;
 	border: 2px solid rgba(148, 163, 184, 0.35);
-	border-top-color: #a5b4fc;
+	border-top-color: #2563eb;
 	animation: h5-spin 0.8s linear infinite;
 }
 .loading-text {
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.95);
+	color: #475569;
 }
 @keyframes h5-spin {
 	from {
@@ -1051,17 +1103,16 @@ export default {
 }
 
 .agreement-sheet--dark {
-	background: rgba(15, 23, 42, 0.92);
-	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: #ffffff;
+	border: 1px solid #e2e8f0;
 	border-bottom: none;
-	backdrop-filter: blur(24px);
-	-webkit-backdrop-filter: blur(24px);
+	box-shadow: 0 -8px 32px rgba(15, 23, 42, 0.08);
 }
 
 .sheet-title {
 	font-size: 16px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .sheet-head {
@@ -1074,11 +1125,11 @@ export default {
 	height: calc(88vh - 300px);
 	max-height: calc(88vh - 300px);
 	margin-top: 10px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
+	border: 1px solid #e2e8f0;
 	border-radius: 12px;
 	padding: 10px;
 	box-sizing: border-box;
-	background: rgba(0, 0, 0, 0.2);
+	background: #f8fafc;
 }
 
 .agreement-sheet .sign-wrap {
@@ -1138,7 +1189,7 @@ export default {
 .p {
 	display: block;
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.92);
+	color: #475569;
 	line-height: 1.6;
 	margin-bottom: 6px;
 }
@@ -1146,12 +1197,12 @@ export default {
 .p-title {
 	font-size: 13px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .p-sub {
 	font-weight: 700;
-	color: #cbd5e1;
+	color: #64748b;
 	margin-top: 8px;
 }
 </style>

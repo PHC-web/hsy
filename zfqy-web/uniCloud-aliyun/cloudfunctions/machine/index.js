@@ -18,6 +18,60 @@ function generateTradeNo() {
 	return `MOCK${ts}${rnd}`;
 }
 
+function generateRefundTradeNo() {
+	const ts = Date.now();
+	const rnd = Math.floor(Math.random() * 9000) + 1000;
+	return `REF${ts}${rnd}`;
+}
+
+async function batchSumRefundedByOriginalTradeNos(tradeNos) {
+	const map = new Map();
+	const nos = [...new Set((tradeNos || []).map((x) => String(x || '').trim()).filter(Boolean))];
+	if (!nos.length) return map;
+	const _ = db.command;
+	const pageSize = 1000;
+	let skip = 0;
+	for (let guard = 0; guard < 20; guard += 1) {
+		const res = await tradeCollection
+			.where({
+				refund_of_trade_no: _.in(nos),
+				is_refund: true,
+				is_deleted: _.neq(true)
+			})
+			.field({ refund_of_trade_no: true, amount: true })
+			.skip(skip)
+			.limit(pageSize)
+			.get();
+		const rows = res.data || [];
+		for (const row of rows) {
+			const key = String(row.refund_of_trade_no || '');
+			if (!key) continue;
+			const prev = Number(map.get(key) || 0);
+			map.set(key, Number((prev + Math.abs(Number(row.amount || 0))).toFixed(2)));
+		}
+		if (rows.length < pageSize) break;
+		skip += pageSize;
+	}
+	return map;
+}
+
+function buildTradeRefundMeta(item, refundedMap) {
+	const amount = Number(item.amount || 0);
+	const isPositive = amount > 0;
+	const tradeNo = String(item.trade_no || '');
+	const refundedTotal = isPositive ? Number(refundedMap.get(tradeNo) || 0) : 0;
+	const refundableAmount = isPositive ? Math.max(0, Number((amount - refundedTotal).toFixed(2))) : 0;
+	return {
+		isRefund: !!item.is_refund || amount < 0,
+		refundOfTradeNo: String(item.refund_of_trade_no || ''),
+		refundedTotal,
+		refundedTotalText: refundedTotal > 0 ? `￥${refundedTotal.toFixed(2)}` : '-',
+		refundableAmount,
+		refundableAmountText: refundableAmount > 0 ? `￥${refundableAmount.toFixed(2)}` : '-',
+		canSimulateRefund: isPositive && refundableAmount >= 0.01
+	};
+}
+
 /** 与商户管理「待提现」一致：优先 withdraw_pending_balance，否则 account_points */
 function rawPendingBalance(row) {
 	if (!row) return 0;
@@ -515,6 +569,140 @@ async function virtualSwipe(data, event) {
 	}
 }
 
+// 模拟退款（关联真实退款积分回冲逻辑）
+async function virtualRefund(data, event) {
+	try {
+		const originalTradeNo = String(data?.tradeNo || data?.originalTradeNo || '').trim();
+		const deviceId = String(data?.deviceId || '').trim();
+		const refundAmount = Number(data?.amount);
+		if (!originalTradeNo) return { code: 400, message: '缺少原交易单号' };
+		if (!Number.isFinite(refundAmount) || refundAmount <= 0) {
+			return { code: 400, message: '退款金额必须为正数' };
+		}
+
+		const origRes = await tradeCollection
+			.where({ trade_no: originalTradeNo, is_deleted: db.command.neq(true) })
+			.limit(1)
+			.get();
+		const original = origRes.data && origRes.data[0];
+		if (!original) return { code: 404, message: '原交易不存在' };
+		if (Number(original.amount || 0) <= 0 || original.is_refund) {
+			return { code: 400, message: '只能对正向消费流水发起退款' };
+		}
+		if (deviceId && String(original.device_id || '') !== deviceId) {
+			return { code: 400, message: '机具编号与原交易不匹配' };
+		}
+
+		const origAmount = Number(original.amount || 0);
+		const refundedMap = await batchSumRefundedByOriginalTradeNos([originalTradeNo]);
+		const refundedTotal = Number(refundedMap.get(originalTradeNo) || 0);
+		const refundable = Number((origAmount - refundedTotal).toFixed(2));
+		if (refundAmount - refundable > 0.009) {
+			return {
+				code: 400,
+				message: `退款金额不能超过可退余额（可退￥${refundable.toFixed(2)}，已退￥${refundedTotal.toFixed(2)}）`
+			};
+		}
+
+		const machineRes = await machineCollection
+			.where({ device_id: original.device_id, is_deleted: false })
+			.limit(1)
+			.get();
+		const machine = machineRes.data && machineRes.data[0];
+		if (!machine) return { code: 404, message: '机具不存在' };
+		if (machine.is_bound !== 1 || !machine.bind_user_id) {
+			return { code: 403, message: '机具未绑定商户，无法模拟退款' };
+		}
+
+		const now = Date.now();
+		const newTotal = Number((Number(machine.total_transaction || 0) - refundAmount).toFixed(2));
+		await machineCollection.where({ device_id: original.device_id, is_deleted: false }).update({
+			total_transaction: newTotal,
+			update_time: now
+		});
+
+		const refundTradeNo = generateRefundTradeNo();
+		const addRes = await tradeCollection.add({
+			device_id: original.device_id,
+			trade_no: refundTradeNo,
+			user_id: original.user_id || machine.bind_user_id,
+			user_name: original.user_name || machine.bind_user_name || '',
+			user_mobile: original.user_mobile || machine.bind_user_mobile || '',
+			trade_type: original.trade_type || 'virtual',
+			trade_source: 'virtual_refund',
+			paychannel: original.paychannel || '',
+			paychannel_text: original.paychannel_text || '模拟退款',
+			is_risk_trade: false,
+			risk_audit_status: 'none',
+			stats_eligible: true,
+			trade_member_bucket: original.trade_member_bucket || 'non_member',
+			amount: -refundAmount,
+			is_refund: true,
+			refund_of_trade_no: originalTradeNo,
+			is_activated: !!original.is_activated,
+			total_transaction: newTotal,
+			cashback: 0,
+			release_amount: 0,
+			release_ratio: 0,
+			is_deleted: false,
+			company: original.company || machine.merchant || '管理员',
+			risk_control_status: 'no',
+			salesman: original.salesman || machine.salesman || '管理员',
+			create_time: now
+		});
+		const refundTradeId = typeof addRes === 'string' ? addRes : addRes?.id || addRes?._id || '';
+
+		try {
+			await uniCloud.callFunction({
+				name: 'merchant',
+				data: {
+					action: 'internalTradeRefundClawback',
+					data: {
+						refundLogno: refundTradeNo,
+						ologno: originalTradeNo,
+						refundAmountAbs: refundAmount,
+						refundTradeId: String(refundTradeId || ''),
+						merchantUserId: String(original.user_id || machine.bind_user_id || '')
+					}
+				}
+			});
+		} catch (e) {
+			console.error('virtualRefund clawback call failed', e);
+		}
+
+		await recordOperationLog(
+			event,
+			'virtualRefund',
+			original.device_id,
+			originalTradeNo,
+			`模拟退款：原单 ${originalTradeNo} 退款单 ${refundTradeNo} 金额￥${refundAmount.toFixed(2)}`
+		);
+
+		const nextRefunded = Number((refundedTotal + refundAmount).toFixed(2));
+		return {
+			code: 0,
+			message: '模拟退款成功',
+			data: {
+				refundTradeNo,
+				originalTradeNo,
+				refundAmount,
+				refundedTotal: nextRefunded,
+				refundableAmount: Math.max(0, Number((origAmount - nextRefunded).toFixed(2))),
+				totalTransaction: newTotal
+			}
+		};
+	} catch (error) {
+		console.error('模拟退款失败:', error);
+		return { code: 500, message: safeText(error?.message || '模拟退款失败', 180) };
+	}
+}
+
+function safeText(v, max = 200) {
+	return String(v == null ? '' : v)
+		.trim()
+		.slice(0, max);
+}
+
 // 获取交易流水列表（虚拟刷卡/真实刷卡）
 async function getTradeList(data) {
 	try {
@@ -533,18 +721,37 @@ async function getTradeList(data) {
 			.limit(pageSize)
 			.get();
 
-		const list = res.data.map(item => ({
-			deviceId: item.device_id,
-			tradeNo: item.trade_no,
-			userInfo: item.user_name ? `${item.user_name}${item.user_mobile ? '\n' + item.user_mobile : ''}` : '',
-			tradeType: item.trade_type === 'real' ? '真实刷卡' : '虚拟刷卡',
-			isActivated: item.is_activated ? '是' : '否',
-			totalTransaction: `￥${Number(item.total_transaction || 0).toFixed(2)}`,
-			cashback: Number(item.cashback || 0) > 0 ? `￥${Number(item.cashback || 0).toFixed(4)}${item.cashback_time ? '\n' + formatTime(item.cashback_time) : ''}` : '-',
-			releaseAmount: Number(item.release_amount || 0) > 0 ? `￥${Number(item.release_amount || 0).toFixed(4)}\n${Number(item.release_ratio || 20)}%` : '-',
-			createTime: formatTime(item.create_time),
-			company: item.company ? `${item.company}\n(${item.company})` : ''
-		}));
+		const rows = res.data || [];
+		const positiveNos = rows.filter((x) => Number(x.amount || 0) > 0).map((x) => String(x.trade_no || ''));
+		const refundedMap = await batchSumRefundedByOriginalTradeNos(positiveNos);
+
+		const list = rows.map((item) => {
+			const amount = Number(item.amount || 0);
+			const refundMeta = buildTradeRefundMeta(item, refundedMap);
+			return {
+				id: item._id,
+				deviceId: item.device_id,
+				tradeNo: item.trade_no,
+				userInfo: item.user_name ? `${item.user_name}${item.user_mobile ? '\n' + item.user_mobile : ''}` : '',
+				tradeType: item.trade_type === 'real' ? '真实刷卡' : '虚拟刷卡',
+				tradeTypeRaw: item.trade_type,
+				amount,
+				amountText: `￥${amount.toFixed(2)}`,
+				isActivated: item.is_activated ? '是' : '否',
+				totalTransaction: `￥${Number(item.total_transaction || 0).toFixed(2)}`,
+				cashback:
+					Number(item.cashback || 0) > 0
+						? `￥${Number(item.cashback || 0).toFixed(4)}${item.cashback_time ? '\n' + formatTime(item.cashback_time) : ''}`
+						: '-',
+				releaseAmount:
+					Number(item.release_amount || 0) > 0
+						? `￥${Number(item.release_amount || 0).toFixed(4)}\n${Number(item.release_ratio || 20)}%`
+						: '-',
+				createTime: formatTime(item.create_time),
+				company: item.company ? `${item.company}\n(${item.company})` : '',
+				...refundMeta
+			};
+		});
 
 		return {
 			code: 0,
@@ -941,6 +1148,8 @@ async function getCardRecordList(data) {
 			const machines = await machineCollection.where({ device_id: db.command.in(deviceIds), is_deleted: false }).field({ device_id: true, brand_name: true }).get();
 			(machines.data || []).forEach(m => { brandMap[m.device_id] = m.brand_name || ''; });
 		}
+		const positiveNos = trades.filter((x) => Number(x.amount || 0) > 0).map((x) => String(x.trade_no || ''));
+		const refundedMap = await batchSumRefundedByOriginalTradeNos(positiveNos);
 
 		const list = trades.map(item => {
 			const amount = Number(item.amount || 0);
@@ -951,6 +1160,7 @@ async function getCardRecordList(data) {
 			// 业务口径：每 10000 元对应 38 积分，折算比例固定为 0.38%
 			const ssfl = totalTx > 0 ? '0.38%' : '-';
 			const bn = brandMap[item.device_id] || '';
+			const refundMeta = buildTradeRefundMeta(item, refundedMap);
 			return {
 				id: item._id,
 				deviceId: item.device_id,
@@ -962,7 +1172,7 @@ async function getCardRecordList(data) {
 				tradeTypeText: item.trade_type === 'real' ? '实际消费' : '虚拟刷卡',
 				tradeType: item.trade_type,
 				amount,
-				amountText: `￥${amount.toFixed(2)}`,
+				amountText: amount >= 0 ? `￥${amount.toFixed(2)}` : `-￥${Math.abs(amount).toFixed(2)}`,
 				isActivated: !!item.is_activated,
 				isActivatedText: item.is_activated ? '是' : '否',
 				activatedTime: item.is_activated ? formatTime(item.create_time) : '',
@@ -991,7 +1201,8 @@ async function getCardRecordList(data) {
 				salesman: item.salesman || '未分配',
 				salesmanTime: '',
 				company: item.company || '管理员',
-				createTime: formatTime(item.create_time)
+				createTime: formatTime(item.create_time),
+				...refundMeta
 			};
 		});
 
@@ -1744,6 +1955,8 @@ exports.main = async (event, context) => {
 			return await getBrandList();
 		case 'virtualSwipe':
 			return await virtualSwipe(actualData, event);
+		case 'virtualRefund':
+			return await virtualRefund(actualData, event);
 		case 'tradeList':
 			return await getTradeList(actualData);
 		case 'freezeBillList':

@@ -1,0 +1,31 @@
+{
+	"bsonType": "object",
+	"required": ["merchant_user_id", "refund_trade_no", "dedup_key", "status", "create_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": false },
+	"properties": {
+		"_id": { "description": "ID" },
+		"merchant_user_id": { "bsonType": "string", "description": "商户 user_id" },
+		"merchant_id": { "bsonType": "string", "description": "商户记录 _id" },
+		"original_trade_no": { "bsonType": "string", "description": "原交易 logno" },
+		"refund_trade_no": { "bsonType": "string", "description": "退款 logno" },
+		"ologno": { "bsonType": "string", "description": "星驿原单号" },
+		"installment_index": { "bsonType": "int", "description": "分期序号 1-5" },
+		"target_ym": { "bsonType": "string", "description": "应扣月份 YYYY-MM" },
+		"amount": { "bsonType": "number", "description": "应扣积分（元）" },
+		"flat_fallback_amount": { "bsonType": "number", "description": "余额不足时一次性扣减=退款金额*0.0038" },
+		"status": {
+			"bsonType": "string",
+			"description": "pending|done|cancelled",
+			"enum": ["pending", "done", "cancelled"]
+		},
+		"dedup_key": { "bsonType": "string", "description": "幂等键" },
+		"applied_amount": { "bsonType": "number", "description": "实际扣减" },
+		"applied_balance_before": { "bsonType": "number" },
+		"applied_balance_after": { "bsonType": "number" },
+		"flat_fallback_applied": { "bsonType": "bool", "description": "是否触发余额不足一次性扣减" },
+		"applied_time": { "bsonType": "timestamp" },
+		"cancel_reason": { "bsonType": "string" },
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" }
+	}
+}

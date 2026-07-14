@@ -80,6 +80,11 @@ export function h5AuthSync(payload) {
 	return merchantCall('h5AuthSync', payload);
 }
 
+/** 公开拉取 H5 UI 风格 A/B（无需登录） */
+export function h5UiStyleGet() {
+	return merchantCall('h5UiStyleGet', {});
+}
+
 export function h5WechatLogin(payload) {
 	return merchantCall('h5WechatLogin', payload);
 }

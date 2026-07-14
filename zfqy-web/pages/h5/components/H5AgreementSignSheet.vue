@@ -343,8 +343,10 @@ export default {
 	box-sizing: border-box;
 }
 .agreement-sheet--dark {
-	background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-	color: #e5e7eb;
+	background: #ffffff;
+	color: #0f172a;
+	border-top: 1px solid #e2e8f0;
+	box-shadow: 0 -8px 32px rgba(15, 23, 42, 0.08);
 }
 .sheet-head {
 	padding: 4px 0 10px;
@@ -360,7 +362,7 @@ export default {
 	min-height: 0;
 	height: calc(88vh - 300px);
 	max-height: calc(88vh - 300px);
-	background: rgba(15, 23, 42, 0.45);
+	background: #e2e8f0;
 	border: 1px solid rgba(148, 163, 184, 0.25);
 	border-radius: 10px;
 	padding: 10px;
@@ -378,7 +380,7 @@ export default {
 .agreement-doc-loading,
 .agreement-doc-empty {
 	padding: 8px 2px;
-	color: #cbd5e1;
+	color: #64748b;
 	font-size: 12px;
 	line-height: 1.7;
 }

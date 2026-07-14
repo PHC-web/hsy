@@ -12,7 +12,7 @@
 		"trade_type": { "bsonType": "string", "description": "交易类型：virtual=虚拟刷卡，real=真实刷卡" },
 		"trade_source": {
 			"bsonType": "string",
-			"description": "来源：xingyi=星驿TYY0001推送；空=后台虚拟刷卡等"
+			"description": "来源：xingyi=星驿TYY0001推送；virtual_refund=后台模拟退款；空=后台虚拟刷卡等"
 		},
 		"paychannel": { "bsonType": "string", "description": "星驿支付渠道编码，如06标准贷记卡、31京东白条" },
 		"paychannel_text": { "bsonType": "string", "description": "支付渠道文案" },
@@ -34,6 +34,14 @@
 			"description": "首页资金汇总分档：member=充值会员刷卡，non_member=非充值会员刷卡；历史回填按当时商户当前身份，新流水在产生时写入"
 		},
 		"amount": { "bsonType": "number", "description": "交易金额" },
+		"is_refund": { "bsonType": "bool", "description": "是否退款流水", "default": false },
+		"refund_of_trade_no": { "bsonType": "string", "description": "退款关联原单 logno（ologno）" },
+		"refund_clawback_status": { "bsonType": "string", "description": "退款积分回冲状态" },
+		"refund_clawback_amount": { "bsonType": "number", "description": "已回冲积分合计" },
+		"subsidy_void": { "bsonType": "bool", "description": "原单补贴作废", "default": false },
+		"subsidy_void_reason": { "bsonType": "string", "description": "作废原因" },
+		"subsidy_void_refund_no": { "bsonType": "string", "description": "触发作废的退款单号" },
+		"subsidy_void_time": { "bsonType": "timestamp", "description": "作废时间" },
 		"is_activated": { "bsonType": "bool", "description": "是否激活" },
 		"total_transaction": { "bsonType": "number", "description": "累计交易（交易后）" },
 		"cashback": { "bsonType": "number", "description": "是否返现（规则未开发，先留空）" },

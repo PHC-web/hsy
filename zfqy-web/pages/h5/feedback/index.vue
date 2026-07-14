@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">售后反馈</text>
 			<view class="nav-end-wrap">
 				<text v-if="ticket" class="nav-end" @click="onCloseFeedback">结束反馈</text>
@@ -35,7 +38,7 @@
 					class="msg-row"
 					:class="m.role === 'user' ? 'msg-row--user' : 'msg-row--admin'"
 				>
-					<view class="bubble h5-glass-panel" :class="m.role === 'user' ? 'bubble--user' : 'bubble--admin'">
+					<view class="bubble" :class="m.role === 'user' ? 'bubble--user' : 'bubble--admin'">
 						<text v-if="m.role === 'admin'" class="bubble-meta">客服</text>
 						<text v-if="m.content && !m.refundEntryPath" class="bubble-text">{{ m.content }}</text>
 						<view v-if="m.images && m.images.length" class="img-grid">
@@ -330,9 +333,7 @@ export default {
 }
 
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 
 .nav-title {
@@ -340,7 +341,7 @@ export default {
 	text-align: center;
 	font-size: 17px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .nav-end {
@@ -388,7 +389,7 @@ export default {
 	display: block;
 	font-size: 15px;
 	font-weight: 600;
-	color: #f1f5f9;
+	color: #0f172a;
 	margin-bottom: 8px;
 }
 
@@ -396,7 +397,7 @@ export default {
 	display: block;
 	font-size: 12px;
 	line-height: 1.55;
-	color: rgba(203, 213, 225, 0.88);
+	color: #64748b;
 }
 
 .msg-row {
@@ -416,16 +417,48 @@ export default {
 	max-width: 86%;
 	padding: 10px 12px;
 	border-radius: 14px;
+	position: relative;
+	overflow: hidden;
+	background: transparent;
+	border: 1px solid rgba(255, 255, 255, 0.72);
 }
 
 .bubble--user {
-	background: rgba(99, 102, 241, 0.35);
-	border: 1px solid rgba(165, 180, 252, 0.35);
+	border-color: rgba(191, 219, 254, 0.85);
+}
+
+.bubble--user::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	background: rgba(219, 234, 254, 0.58);
+	backdrop-filter: blur(14px) saturate(175%);
+	-webkit-backdrop-filter: blur(14px) saturate(175%);
 }
 
 .bubble--admin {
-	background: rgba(15, 23, 42, 0.45);
-	border: 1px solid rgba(148, 163, 184, 0.25);
+	border-color: rgba(255, 255, 255, 0.78);
+}
+
+.bubble--admin::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	pointer-events: none;
+	background: rgba(255, 255, 255, 0.48);
+	backdrop-filter: blur(14px) saturate(175%);
+	-webkit-backdrop-filter: blur(14px) saturate(175%);
+}
+
+.bubble-text,
+.bubble-meta,
+.bubble-time,
+.refund-entry {
+	position: relative;
+	z-index: 1;
 }
 
 .bubble-meta {
@@ -439,7 +472,7 @@ export default {
 	display: block;
 	font-size: 14px;
 	line-height: 1.5;
-	color: #f8fafc;
+	color: #0f172a;
 	white-space: pre-wrap;
 	word-break: break-word;
 }
@@ -448,7 +481,7 @@ export default {
 	display: block;
 	margin-top: 8px;
 	font-size: 10px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 }
 
 .refund-entry-box {
@@ -534,7 +567,8 @@ export default {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: rgba(15, 23, 42, 0.5);
+	background: #f1f5f9;
+	border: 1px solid #e2e8f0;
 	border-radius: 8px;
 	width: auto;
 	padding: 0 10px;
@@ -542,7 +576,7 @@ export default {
 
 .pending-vid-label {
 	font-size: 12px;
-	color: #e2e8f0;
+	color: #334155;
 }
 
 .composer-input {
@@ -550,8 +584,8 @@ export default {
 	min-height: 64px;
 	max-height: 120px;
 	font-size: 14px;
-	color: #f8fafc;
-	background: rgba(15, 23, 42, 0.35);
+	color: #0f172a;
+	background: #f1f5f9;
 	border-radius: 10px;
 	padding: 8px 10px;
 	box-sizing: border-box;
@@ -566,9 +600,9 @@ export default {
 }
 
 .mini-btn {
-	background: rgba(255, 255, 255, 0.12) !important;
-	color: #e2e8f0 !important;
-	border: 1px solid rgba(255, 255, 255, 0.2) !important;
+	background: #f1f5f9 !important;
+	color: #475569 !important;
+	border: 1px solid #e2e8f0 !important;
 }
 
 .send-btn {

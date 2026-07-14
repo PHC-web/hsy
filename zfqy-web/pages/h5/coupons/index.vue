@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">优惠券</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -123,12 +126,10 @@ export default {
 	padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 8px;
 }
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -154,7 +155,7 @@ export default {
 .hero-label {
 	display: block;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 .hero-val {
 	display: block;
@@ -169,7 +170,7 @@ export default {
 	margin-top: 10px;
 	font-size: 11px;
 	line-height: 1.55;
-	color: rgba(203, 213, 225, 0.85);
+	color: #64748b;
 }
 
 .empty {
@@ -178,7 +179,7 @@ export default {
 }
 .empty-txt {
 	font-size: 13px;
-	color: rgba(203, 213, 225, 0.88);
+	color: #64748b;
 	line-height: 1.6;
 }
 
@@ -196,7 +197,7 @@ export default {
 .row-name {
 	font-size: 15px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 	flex: 1;
 	min-width: 0;
 }
@@ -205,12 +206,12 @@ export default {
 	font-weight: 600;
 	padding: 4px 8px;
 	border-radius: 999px;
-	background: rgba(15, 23, 42, 0.45);
-	color: #cbd5e1;
+	background: #e2e8f0;
+	color: #64748b;
 	flex-shrink: 0;
 }
 .st-ok {
-	color: #a7f3d0;
+	color: #059669;
 	border: 1px solid rgba(52, 211, 153, 0.35);
 }
 .st-bad {
@@ -225,7 +226,7 @@ export default {
 	display: block;
 	margin-top: 8px;
 	font-size: 12px;
-	color: rgba(203, 213, 225, 0.88);
+	color: #64748b;
 	line-height: 1.5;
 }
 .row-metrics {
@@ -236,10 +237,10 @@ export default {
 }
 .metric {
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.9);
+	color: #475569;
 }
 .metric-gold {
-	color: #fde68a;
+	color: #b45309;
 	font-weight: 600;
 }
 .progress-wrap {
@@ -248,40 +249,40 @@ export default {
 .progress-bg {
 	height: 6px;
 	border-radius: 999px;
-	background: rgba(15, 23, 42, 0.5);
+	background: #e2e8f0;
 	overflow: hidden;
 }
 .progress-fill {
 	height: 100%;
 	border-radius: 999px;
-	background: linear-gradient(90deg, #6366f1, #a78bfa);
+	background: linear-gradient(90deg, #2563eb, #3b82f6);
 	max-width: 100%;
 }
 .progress-cap {
 	display: block;
 	margin-top: 6px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	text-align: right;
 }
 .row-foot {
 	margin-top: 10px;
 	padding-top: 10px;
-	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	border-top: 1px solid #e2e8f0;
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
 }
 .foot-i {
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #64748b;
 }
 
 .loading-tip {
 	text-align: center;
 	padding: 12px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 }
 .bottom-spacer {
 	height: 16px;

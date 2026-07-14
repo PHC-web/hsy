@@ -9,6 +9,14 @@
 
 		<scroll-view class="recharge-scroll" scroll-y :show-scrollbar="false">
 			<view class="recharge-inner">
+				<view class="nav-bar">
+					<view class="nav-back" @click="goBack">
+						<text class="bi bi-chevron-left nav-back-ico"></text>
+						<text class="nav-back-txt">返回</text>
+					</view>
+					<text class="nav-title">额度包</text>
+					<text class="nav-placeholder"></text>
+				</view>
 				<view v-if="!rechargeReady" class="gate-wrap">
 					<image class="h5-brand-logo h5-brand-logo--hero gate-logo" :src="h5Logo" mode="aspectFit" />
 					<text class="gate-text">{{ gateText }}</text>
@@ -133,6 +141,9 @@ export default {
 		this.initPage();
 	},
 	methods: {
+		goBack() {
+			uni.navigateBack({ fail: () => uni.redirectTo({ url: '/pages/h5/mine/index' }) });
+		},
 		onSelectPackage(item) {
 			this.selectedId = item.id;
 			this.syncGiftChoice();
@@ -303,8 +314,27 @@ export default {
 }
 
 .recharge-inner {
-	padding: 16px 16px calc(32px + env(safe-area-inset-bottom, 0px));
+	padding: 0 16px calc(32px + env(safe-area-inset-bottom, 0px));
 	box-sizing: border-box;
+}
+
+.nav-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: calc(12px + env(safe-area-inset-top, 0px)) 0 10px;
+	position: relative;
+	z-index: 2;
+}
+
+.nav-title {
+	color: #0f172a;
+	font-size: 17px;
+	font-weight: 700;
+}
+
+.nav-placeholder {
+	min-width: 72px;
 }
 
 .bottom-spacer {
@@ -326,7 +356,7 @@ export default {
 
 .gate-text {
 	font-size: 14px;
-	color: rgba(203, 213, 225, 0.92);
+	color: #64748b;
 	text-align: center;
 	line-height: 1.5;
 }
@@ -341,13 +371,13 @@ export default {
 	display: block;
 	font-size: 24px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .sub {
 	display: block;
 	margin-top: 6px;
-	color: rgba(203, 213, 225, 0.88);
+	color: #64748b;
 	font-size: 12px;
 }
 
@@ -357,11 +387,13 @@ export default {
 }
 
 .pkg {
-	border: 1px solid rgba(255, 255, 255, 0.14);
+	border: 1px solid rgba(255, 255, 255, 0.78);
 	border-radius: 16px;
 	padding: 14px 14px 12px;
 	margin-bottom: 12px;
-	background: rgba(15, 23, 42, 0.3);
+	background: rgba(255, 255, 255, 0.48);
+	backdrop-filter: blur(14px) saturate(165%);
+	-webkit-backdrop-filter: blur(14px) saturate(165%);
 	display: flex;
 	flex-direction: column;
 	gap: 0;
@@ -372,9 +404,11 @@ export default {
 }
 
 .pkg-active {
-	border-color: rgba(129, 140, 248, 0.75);
-	background: linear-gradient(145deg, rgba(99, 102, 241, 0.22) 0%, rgba(15, 23, 42, 0.35) 100%);
-	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.28), 0 12px 32px rgba(79, 70, 229, 0.18);
+	border-color: rgba(147, 197, 253, 0.9);
+	background: rgba(239, 246, 255, 0.55);
+	backdrop-filter: blur(16px) saturate(175%);
+	-webkit-backdrop-filter: blur(16px) saturate(175%);
+	box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.15), 0 8px 24px rgba(37, 99, 235, 0.1);
 }
 
 .pkg-top {
@@ -401,42 +435,42 @@ export default {
 	display: block;
 	margin-top: 4px;
 	font-size: 12px;
-	color: rgba(192, 132, 252, 0.95);
+	color: #7c3aed;
 	letter-spacing: 0.02em;
 }
 
 .pkg-title {
 	font-size: 16px;
 	font-weight: 700;
-	color: #e2e8f0;
+	color: #334155;
 	letter-spacing: 0.02em;
 }
 
 .pkg-price {
 	font-size: 18px;
 	font-weight: 800;
-	color: #fda4af;
+	color: #dc2626;
 }
 
 .pkg-check {
 	width: 22px;
 	height: 22px;
 	border-radius: 50%;
-	border: 1px solid rgba(255, 255, 255, 0.2);
+	border: 1px solid #cbd5e1;
 	display: flex;
 	align-items: center;
 	justify-content: center;
 	font-size: 12px;
 	font-weight: 700;
 	color: transparent;
-	background: rgba(15, 23, 42, 0.4);
+	background: #f8fafc;
 }
 
 .pkg-check--on {
 	color: #fff;
-	border-color: rgba(129, 140, 248, 0.9);
-	background: linear-gradient(145deg, #6366f1, #4f46e5);
-	box-shadow: 0 0 12px rgba(99, 102, 241, 0.45);
+	border-color: #2563eb;
+	background: linear-gradient(145deg, #2563eb, #1d4ed8);
+	box-shadow: 0 0 8px rgba(37, 99, 235, 0.25);
 }
 
 .pkg-desc {
@@ -444,36 +478,36 @@ export default {
 	margin-bottom: 12px;
 	padding: 16px 16px 18px;
 	border-radius: 14px;
-	box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
+	box-shadow: 0 4px 16px rgba(15, 23, 42, 0.06);
 }
 
 /* 黄金：暖金色 */
 .pkg-desc--gold {
-	background: linear-gradient(160deg, rgba(66, 48, 12, 0.4) 0%, rgba(15, 23, 42, 0.75) 100%);
-	border: 1px solid rgba(250, 204, 21, 0.42);
-	border-left: 4px solid rgba(251, 191, 36, 0.92);
+	background: linear-gradient(160deg, #fffbeb 0%, #ffffff 100%);
+	border: 1px solid #fde68a;
+	border-left: 4px solid #f59e0b;
 }
 
 /* 白金：银灰 */
 .pkg-desc--white-gold {
-	background: linear-gradient(160deg, rgba(71, 85, 105, 0.48) 0%, rgba(15, 23, 42, 0.78) 100%);
-	border: 1px solid rgba(226, 232, 240, 0.48);
-	border-left: 4px solid rgba(203, 213, 225, 0.95);
+	background: linear-gradient(160deg, #f8fafc 0%, #ffffff 100%);
+	border: 1px solid #e2e8f0;
+	border-left: 4px solid #94a3b8;
 }
 
 /* 铂金（若后台使用该名称） */
 .pkg-desc--platinum {
-	background: linear-gradient(160deg, rgba(76, 29, 149, 0.35) 0%, rgba(15, 23, 42, 0.78) 100%);
-	border: 1px solid rgba(192, 132, 252, 0.45);
-	border-left: 4px solid rgba(168, 85, 247, 0.9);
+	background: linear-gradient(160deg, #faf5ff 0%, #ffffff 100%);
+	border: 1px solid #e9d5ff;
+	border-left: 4px solid #a855f7;
 }
 
 /* 钻石 / 默认：青蓝 */
 .pkg-desc--diamond,
 .pkg-desc--default {
-	background: linear-gradient(160deg, rgba(30, 58, 95, 0.55) 0%, rgba(15, 23, 42, 0.75) 100%);
-	border: 1px solid rgba(125, 211, 252, 0.35);
-	border-left: 4px solid rgba(56, 189, 248, 0.85);
+	background: linear-gradient(160deg, #eff6ff 0%, #ffffff 100%);
+	border: 1px solid #bfdbfe;
+	border-left: 4px solid #3b82f6;
 }
 
 .pkg-desc-body {
@@ -481,7 +515,7 @@ export default {
 	font-size: 12px;
 	font-weight: 600;
 	line-height: 1.75;
-	color: #f1f5f9;
+	color: #334155;
 	letter-spacing: 0.01em;
 	white-space: pre-wrap;
 	word-break: break-word;
@@ -495,11 +529,11 @@ export default {
 	padding: 6px 10px;
 	border-radius: 8px;
 	text-align: center;
-	color: #c7d2fe;
+	color: #2563eb;
 	font-size: 12px;
 	font-weight: 600;
-	background: rgba(99, 102, 241, 0.15);
-	border: 1px solid rgba(129, 140, 248, 0.25);
+	background: #eff6ff;
+	border: 1px solid #bfdbfe;
 }
 
 .actions {
@@ -545,7 +579,7 @@ export default {
 	display: block;
 	font-size: 14px;
 	font-weight: 700;
-	color: #a7f3d0;
+	color: #059669;
 	margin-bottom: 6px;
 }
 
@@ -553,7 +587,7 @@ export default {
 	display: block;
 	font-size: 11px;
 	line-height: 1.55;
-	color: rgba(226, 232, 240, 0.75);
+	color: #475569;
 	margin-bottom: 12px;
 }
 
@@ -564,8 +598,8 @@ export default {
 	padding: 12px 14px;
 	margin-bottom: 8px;
 	border-radius: 12px;
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	background: rgba(15, 23, 42, 0.3);
+	border: 1px solid #e2e8f0;
+	background: #f8fafc;
 }
 
 .gift-row:last-child {
@@ -579,7 +613,7 @@ export default {
 
 .gift-radio {
 	font-size: 14px;
-	color: #6ee7b7;
+	color: #059669;
 	width: 20px;
 	text-align: center;
 }
@@ -587,6 +621,6 @@ export default {
 .gift-label {
 	font-size: 14px;
 	font-weight: 600;
-	color: #f1f5f9;
+	color: #0f172a;
 }
 </style>

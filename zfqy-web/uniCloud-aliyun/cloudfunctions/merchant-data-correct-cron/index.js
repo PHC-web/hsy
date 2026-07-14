@@ -31,6 +31,13 @@ exports.main = async (event) => {
 	const triggerHint = event?.Time || event?.triggerTime || event?.triggerName || 'manual';
 	console.log('[merchant-data-correct-cron] start', triggerHint);
 
+	try {
+		const due = await callMerchant('applyDueRefundClawbackTasks', { limit: 200 });
+		console.log('[merchant-data-correct-cron] refund clawback due', due.data || due);
+	} catch (e) {
+		console.error('[merchant-data-correct-cron] refund clawback due failed', e);
+	}
+
 	let taskId = '';
 
 	try {

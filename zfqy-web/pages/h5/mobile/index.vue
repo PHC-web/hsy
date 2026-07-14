@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">手机号</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -113,9 +116,7 @@ export default {
 }
 
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 
 .nav-title {
@@ -123,7 +124,7 @@ export default {
 	text-align: center;
 	font-size: 17px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .nav-placeholder {
@@ -143,7 +144,7 @@ export default {
 .label {
 	display: block;
 	font-size: 13px;
-	color: rgba(203, 213, 225, 0.9);
+	color: #64748b;
 	margin-bottom: 10px;
 }
 
@@ -153,15 +154,15 @@ export default {
 	padding: 0 14px;
 	box-sizing: border-box;
 	border-radius: 12px;
-	background: rgba(15, 23, 42, 0.45);
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	color: #f8fafc;
+	background: #e2e8f0;
+	border: 1px solid #e2e8f0;
+	color: #0f172a;
 	font-size: 17px;
 	letter-spacing: 0.04em;
 }
 
 .ph {
-	color: rgba(148, 163, 184, 0.75);
+	color: #64748b;
 }
 
 .hint {
@@ -169,7 +170,7 @@ export default {
 	margin-top: 14px;
 	font-size: 12px;
 	line-height: 1.55;
-	color: rgba(186, 199, 216, 0.88);
+	color: #64748b;
 }
 
 .btn-save {

@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">待返积分</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -111,12 +114,10 @@ export default {
 	padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 8px;
 }
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -143,21 +144,21 @@ export default {
 .hero-label {
 	display: block;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	margin-bottom: 8px;
 }
 .hero-val {
 	display: block;
 	font-size: 26px;
 	font-weight: 800;
-	color: #a7f3d0;
+	color: #059669;
 	letter-spacing: 0.02em;
 }
 .hero-sub {
 	display: block;
 	margin-top: 10px;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.88);
+	color: #64748b;
 }
 
 .note-card {
@@ -165,7 +166,7 @@ export default {
 }
 .note-txt {
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	line-height: 1.55;
 }
 
@@ -179,12 +180,12 @@ export default {
 .row-month {
 	font-size: 15px;
 	font-weight: 600;
-	color: #e2e8f0;
+	color: #334155;
 }
 .row-amt {
 	font-size: 16px;
 	font-weight: 700;
-	color: #fde68a;
+	color: #059669;
 	font-variant-numeric: tabular-nums;
 }
 
@@ -194,7 +195,7 @@ export default {
 }
 .empty-txt {
 	font-size: 13px;
-	color: rgba(186, 199, 216, 0.9);
+	color: #64748b;
 	line-height: 1.55;
 }
 
@@ -202,7 +203,7 @@ export default {
 	text-align: center;
 	padding: 12px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 }
 .bottom-spacer {
 	height: 20px;

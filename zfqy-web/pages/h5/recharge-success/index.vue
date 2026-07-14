@@ -13,7 +13,7 @@
 				<text class="title">恭喜你成为{{ tierName }}</text>
 				<text class="desc">会员权益已生效，快去首页查看最新额度与奖励。</text>
 
-				<view class="meta">
+				<view class="meta h5-glass-surface">
 					<text class="meta-row">订单号：{{ orderNo || '-' }}</text>
 					<text class="meta-row">本次支付：¥{{ paidAmount }}</text>
 					<text class="meta-row">新增额度：{{ quotaAdded }}</text>
@@ -61,6 +61,7 @@ export default {
 	min-height: 100vh;
 	position: relative;
 	overflow: hidden;
+	background: transparent;
 }
 .wrap {
 	position: relative;
@@ -94,28 +95,26 @@ export default {
 	margin-top: 8px;
 	font-size: 24px;
 	font-weight: 800;
-	color: #f8fafc;
+	color: #0f172a;
 	line-height: 1.35;
 }
 .desc {
 	display: block;
 	margin-top: 8px;
 	font-size: 12px;
-	color: rgba(203, 213, 225, 0.9);
+	color: #64748b;
 	line-height: 1.55;
 }
 .meta {
 	margin-top: 14px;
 	padding: 12px;
 	border-radius: 12px;
-	background: rgba(15, 23, 42, 0.36);
-	border: 1px solid rgba(255, 255, 255, 0.12);
 	text-align: left;
 }
 .meta-row {
 	display: block;
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.95);
+	color: #475569;
 	line-height: 1.7;
 	word-break: break-all;
 }

@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">退款与周期</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -710,12 +713,10 @@ export default {
 	padding: calc(12px + env(safe-area-inset-top, 0px)) 12px 8px;
 }
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -748,14 +749,14 @@ export default {
 .cd-title {
 	font-size: 15px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 .cd-badge {
 	font-size: 11px;
 	padding: 4px 10px;
 	border-radius: 999px;
 	background: rgba(99, 102, 241, 0.25);
-	color: #c7d2fe;
+	color: #2563eb;
 	border: 1px solid rgba(129, 140, 248, 0.35);
 	flex-shrink: 0;
 }
@@ -764,24 +765,24 @@ export default {
 	align-items: center;
 	gap: 2px;
 	padding: 6px 12px;
-	background: rgba(255, 255, 255, 0.12);
-	border: 1px solid rgba(199, 210, 254, 0.45);
-	color: #e0e7ff;
+	background: #eff6ff;
+	border: 1px solid #bfdbfe;
+	color: #475569;
 }
 .cd-badge-action-txt {
 	font-size: 12px;
 	font-weight: 600;
-	color: #e0e7ff;
+	color: #475569;
 }
 .cd-badge-action-arrow {
 	font-size: 14px;
-	color: rgba(199, 210, 254, 0.95);
+	color: #2563eb;
 	line-height: 1;
 }
 .cd-desc {
 	display: block;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.92);
+	color: #64748b;
 	line-height: 1.55;
 	margin-bottom: 14px;
 }
@@ -795,8 +796,8 @@ export default {
 	min-width: 52px;
 	padding: 10px 12px;
 	border-radius: 14px;
-	background: rgba(15, 23, 42, 0.4);
-	border: 1px solid rgba(255, 255, 255, 0.1);
+	background: #f1f5f9;
+	border: 1px solid #e2e8f0;
 	text-align: center;
 }
 .cd-num {
@@ -804,18 +805,18 @@ export default {
 	font-size: 20px;
 	font-weight: 800;
 	font-variant-numeric: tabular-nums;
-	color: #e0e7ff;
+	color: #475569;
 	letter-spacing: 0.04em;
 }
 .cd-unit {
 	display: block;
 	margin-top: 2px;
 	font-size: 10px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 .cd-idle {
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 }
 
 .rule-card {
@@ -861,18 +862,17 @@ export default {
 	text-align: center;
 	padding: 12px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 }
 .bottom-spacer {
 	height: 20px;
 }
 
 .agreement-sheet--dark {
-	background: rgba(15, 23, 42, 0.92);
-	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: #ffffff;
+	border: 1px solid #e2e8f0;
 	border-bottom: none;
-	backdrop-filter: blur(24px);
-	-webkit-backdrop-filter: blur(24px);
+	box-shadow: 0 -8px 32px rgba(15, 23, 42, 0.08);
 }
 .agreement-view-sheet {
 	border-radius: 20px 20px 0 0;
@@ -884,16 +884,16 @@ export default {
 .sheet-title {
 	font-size: 16px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 .agreement-view-scroll {
 	max-height: 62vh;
 	margin-top: 10px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
+	border: 1px solid #e2e8f0;
 	border-radius: 12px;
 	padding: 10px;
 	box-sizing: border-box;
-	background: rgba(0, 0, 0, 0.2);
+	background: #f8fafc;
 }
 .agreement-preview-image {
 	display: block;
@@ -906,7 +906,7 @@ export default {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	color: rgba(203, 213, 225, 0.85);
+	color: #64748b;
 	font-size: 12px;
 }
 .agreement-view-actions {

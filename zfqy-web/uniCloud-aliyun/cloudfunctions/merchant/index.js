@@ -30,6 +30,7 @@ const { promisify } = require('util');
 const gzipAsync = promisify(zlib.gzip);
 const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 const subsidyEngine = require('./subsidy-engine.js');
+const refundClawback = require('./refund-clawback.js');
 const redisH5 = require('./redis-h5.js');
 const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
 /** Redis 键：与云函数多实例共享热点，未开通 Redis 时自动跳过 */
@@ -5707,10 +5708,16 @@ function pickAuthProfile(data) {
 		return { authMode, openid, nickname, avatar, mobile };
 	}
 	const mockMobile = safeText(data?.mobile || '', 20);
+	// 本地调试默认固定 openid，避免每次 Mock 都新建商户；可用入参或 HSY_H5_MOCK_OPENID 覆盖
+	const fixedMockOpenid = safeText(process.env.HSY_H5_MOCK_OPENID || 'mock_dev_test', 80) || 'mock_dev_test';
+	const openid = safeText(
+		data?.openid || (mockMobile ? `mock_${mockMobile}` : fixedMockOpenid),
+		80
+	);
 	return {
 		authMode: 'mock',
-		openid: safeText(data?.openid || `mock_${mockMobile || Math.random().toString(36).slice(2, 10)}`, 80),
-		nickname: safeText(data?.wxNickname || data?.nickname || '微信用户', 60),
+		openid,
+		nickname: safeText(data?.wxNickname || data?.nickname || 'test', 60),
 		avatar: safeText(data?.wxAvatar || data?.avatar || '', 500),
 		mobile: mockMobile
 	};
@@ -5897,7 +5904,7 @@ function rawPendingBalance(row) {
 }
 
 function normalizePendingBalance(row) {
-	return Math.max(0, Number(Number(rawPendingBalance(row)).toFixed(2)));
+	return Number(Number(rawPendingBalance(row)).toFixed(2));
 }
 
 const CURRENT_AGREEMENT_CACHE_MS = 30000;
@@ -6085,6 +6092,7 @@ async function h5WechatLogin(data) {
 		const upsertRes = await upsertMerchantByAuth(profile);
 		const merchant = await getMerchantByIdOrUserId(upsertRes.id);
 		const hasBound = await merchantHasBoundMachine(merchant);
+		const bizUi = await getBizSettings();
 		return {
 			code: 0,
 			message: '登录成功',
@@ -6093,6 +6101,7 @@ async function h5WechatLogin(data) {
 				isNew: upsertRes.created,
 				needBindMobile: false,
 				needBind: !hasBound,
+				h5UiStyle: String(bizUi.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A',
 				merchant: compactMerchantInfo(merchant)
 			}
 		};
@@ -6268,8 +6277,12 @@ async function h5AuthSync(data) {
 			return { code: 400, message: '未获取到用户身份信息，请重试' };
 		}
 		const upsertRes = await upsertMerchantByAuth(profile);
-		const merchant = await getMerchantByIdOrUserId(upsertRes.id);
+		let merchant = await getMerchantByIdOrUserId(upsertRes.id);
 		const hasBound = await merchantHasBoundMachine(merchant);
+		if (hasBound) {
+			await refreshMerchantPrimaryMachine(merchant._id);
+			merchant = await getMerchantByIdOrUserId(upsertRes.id);
+		}
 		return {
 			code: 0,
 			message: '登录成功',
@@ -6278,6 +6291,7 @@ async function h5AuthSync(data) {
 				isNew: upsertRes.created,
 				needBindMobile: false,
 				needBind: !hasBound,
+				h5UiStyle: String((await getBizSettings()).h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A',
 				merchant: compactMerchantInfo(merchant)
 			}
 		};
@@ -6894,7 +6908,8 @@ async function h5MineInfo(data) {
 				},
 				feedback: {
 					unreadReply: openTicket ? !!openTicket.user_unread_reply : false
-				}
+				},
+				h5UiStyle: String(biz.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A'
 			}
 		};
 	} catch (e) {
@@ -6990,6 +7005,18 @@ const DEFAULT_BIZ_SETTINGS = {
 		nonMember4To6: 50,
 		nonMember7Plus: 100
 	},
+	/**
+	 * 会员分档日/周累计提现上限（积分=元；0=不限制）
+	 * - exchangeCoupon：兑换券/兑换码开通的非付费会员（业务所称「兑换券铂金」等）
+	 * - paidGoldPlatinum：600 元黄金 / 800 元白金（含历史白金/铂金命名）
+	 * - paidDiamond：1000 元钻石
+	 * 周=北京时间周一至周日
+	 */
+	withdrawPeriodLimits: {
+		exchangeCoupon: { dayMax: 200, weekMax: 300 },
+		paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
+		paidDiamond: { dayMax: 200, weekMax: 500 }
+	},
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
 	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
@@ -7005,6 +7032,8 @@ const DEFAULT_BIZ_SETTINGS = {
 	riskRates: { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 },
 	testMerchantIds: [],
 	servicePhone: '400-668-5796',
+	/** H5 UI：A=紫色深色，B=明亮亮色 */
+	h5UiStyle: 'A',
 	h5RefundRuleLines: DEFAULT_H5_REFUND_RULE_LINES.slice(),
 	wxPayMch: sanitizeWxPayMchSelection(null, resolveDefaultWxPayMchIds())
 };
@@ -7048,6 +7077,17 @@ function sanitizeBizSettings(raw = {}) {
 		nonMemberFirst3: Math.max(1, Number(wm.nonMemberFirst3 || defWm.nonMemberFirst3)),
 		nonMember4To6: Math.max(1, Number(wm.nonMember4To6 || defWm.nonMember4To6)),
 		nonMember7Plus: Math.max(1, Number(wm.nonMember7Plus || defWm.nonMember7Plus))
+	};
+	const defPeriod = DEFAULT_BIZ_SETTINGS.withdrawPeriodLimits;
+	const srcPeriod = raw.withdrawPeriodLimits && typeof raw.withdrawPeriodLimits === 'object' ? raw.withdrawPeriodLimits : {};
+	const normPeriodGroup = (g, d) => ({
+		dayMax: Math.max(0, Number(g && g.dayMax != null ? g.dayMax : d.dayMax)),
+		weekMax: Math.max(0, Number(g && g.weekMax != null ? g.weekMax : d.weekMax))
+	});
+	const withdrawPeriodLimits = {
+		exchangeCoupon: normPeriodGroup(srcPeriod.exchangeCoupon, defPeriod.exchangeCoupon),
+		paidGoldPlatinum: normPeriodGroup(srcPeriod.paidGoldPlatinum, defPeriod.paidGoldPlatinum),
+		paidDiamond: normPeriodGroup(srcPeriod.paidDiamond, defPeriod.paidDiamond)
 	};
 	const wa = raw.withdrawAudit || {};
 	const withdrawAudit = {
@@ -7106,12 +7146,14 @@ function sanitizeBizSettings(raw = {}) {
 			.filter(Boolean);
 	const testMerchantIds = [...new Set(rawTestMerchantIds.map((x) => safeText(x, 80)).filter(Boolean))];
 	const servicePhone = safeText(raw.servicePhone || DEFAULT_BIZ_SETTINGS.servicePhone, 30);
+	const h5UiStyle = String(raw.h5UiStyle || DEFAULT_BIZ_SETTINGS.h5UiStyle || 'A').trim().toUpperCase() === 'B' ? 'B' : 'A';
 	const h5RefundRuleLines = sanitizeH5RefundRuleLines(raw.h5RefundRuleLines);
 	const wxPayMch = sanitizeWxPayMchSelection(raw.wxPayMch, resolveDefaultWxPayMchIds());
 	return {
 		rechargeRules: normRules,
 		withdrawRange,
 		withdrawMinByCount,
+		withdrawPeriodLimits,
 		withdrawAudit,
 		refundTransferAudit,
 		optimizeConfig,
@@ -7123,6 +7165,7 @@ function sanitizeBizSettings(raw = {}) {
 		riskRates,
 		testMerchantIds,
 		servicePhone,
+		h5UiStyle,
 		h5RefundRuleLines,
 		wxPayMch
 	};
@@ -7238,6 +7281,14 @@ function chinaRangeMs(which, ts) {
 	if (which === 'day') {
 		const start = new Date(`${y}-${pad(m)}-${pad(d)}T00:00:00+08:00`).getTime();
 		return { start, end: start + 86400000 - 1 };
+	}
+	if (which === 'week') {
+		// 北京时间自然周：周一 00:00:00 ~ 周日 23:59:59.999
+		const startOfDay = new Date(`${y}-${pad(m)}-${pad(d)}T00:00:00+08:00`).getTime();
+		const { weekday } = shanghaiWeekdayAndMinuteOfDay(ts); // 0=周日 … 6=周六
+		const daysFromMon = weekday === 0 ? 6 : weekday - 1;
+		const start = startOfDay - daysFromMon * 86400000;
+		return { start, end: start + 7 * 86400000 - 1 };
 	}
 	if (which === 'month') {
 		const start = new Date(`${y}-${pad(m)}-01T00:00:00+08:00`).getTime();
@@ -7766,6 +7817,169 @@ function h5WithdrawOutsideHoursMessage() {
 	return '提现在工作日 9:00–18:00（北京时间）开放办理，请于该时段再试。';
 }
 
+/** 用于分档提现日/周限额：解析套餐价格（元） */
+function resolveWithdrawPackagePriceYuan(merchant) {
+	let price = Number(merchant?.recharge_package_price || 0);
+	const pid = safeText(merchant?.recharge_package_id || '', 40);
+	if (pid === H5_RECHARGE_TEST_AS_1000_PKG_ID) price = 1000;
+	return price;
+}
+
+/**
+ * 提现日/周累计限额分档：
+ * - exchangeCoupon：兑换券/兑换码开通的非付费会员（业务「兑换券铂金」）
+ * - paidGoldPlatinum：600 黄金 / 800 白金
+ * - paidDiamond：1000 钻石
+ */
+function resolveWithdrawPeriodLimitGroup(merchant) {
+	if (!merchant) return '';
+	if (!isH5RechargeMemberForWithdraw(merchant)) {
+		if (
+			merchant.exchange_code_claimed === true ||
+			merchant.redeem_code_claimed === true ||
+			isH5SilverMemberForWithdraw(merchant)
+		) {
+			return 'exchangeCoupon';
+		}
+		return '';
+	}
+	const price = resolveWithdrawPackagePriceYuan(merchant);
+	const name = String(merchant.membership_name || '').trim();
+	if (price >= 1000 || name.includes('钻石')) return 'paidDiamond';
+	if (
+		price >= 600 ||
+		price === 0.1 ||
+		name.includes('黄金') ||
+		name.includes('白金') ||
+		name.includes('铂金')
+	) {
+		return 'paidGoldPlatinum';
+	}
+	return 'paidGoldPlatinum';
+}
+
+function withdrawPeriodLimitGroupLabel(group) {
+	if (group === 'exchangeCoupon') return '兑换券铂金会员';
+	if (group === 'paidGoldPlatinum') return '黄金/白金会员';
+	if (group === 'paidDiamond') return '钻石会员';
+	return '会员';
+}
+
+function buildWithdrawCreatedInRange(merchantUserId, timeStart, timeEnd) {
+	const _ = db.command;
+	return _.and([
+		{ is_deleted: _.neq(true) },
+		{ merchant_user_id: String(merchantUserId) },
+		{ create_time: _.gte(Number(timeStart)) },
+		{ create_time: _.lte(Number(timeEnd)) },
+		{ arrival_status: _.neq('returned') },
+		{ audit_status: _.neq('rejected') }
+	]);
+}
+
+async function sumWithdrawPointsInCreateRange(merchantUserId, timeStart, timeEnd) {
+	const sum = await withdrawSummary(buildWithdrawCreatedInRange(merchantUserId, timeStart, timeEnd));
+	return Math.max(0, Number(sum.totalWithdraw || 0));
+}
+
+async function getH5WithdrawPeriodUsage(merchantUserId, now = nowTs()) {
+	const dayR = chinaRangeMs('day', now);
+	const weekR = chinaRangeMs('week', now);
+	const [dayUsed, weekUsed] = await Promise.all([
+		sumWithdrawPointsInCreateRange(merchantUserId, dayR.start, dayR.end),
+		sumWithdrawPointsInCreateRange(merchantUserId, weekR.start, weekR.end)
+	]);
+	return {
+		dayUsed: Number(dayUsed.toFixed(2)),
+		weekUsed: Number(weekUsed.toFixed(2)),
+		dayRange: dayR,
+		weekRange: weekR
+	};
+}
+
+function pickWithdrawPeriodLimitConfig(biz, group) {
+	const limits = (biz && biz.withdrawPeriodLimits) || DEFAULT_BIZ_SETTINGS.withdrawPeriodLimits;
+	const conf = (limits && limits[group]) || { dayMax: 0, weekMax: 0 };
+	return {
+		dayMax: Math.max(0, Number(conf.dayMax || 0)),
+		weekMax: Math.max(0, Number(conf.weekMax || 0))
+	};
+}
+
+/**
+ * @returns {{ ok:boolean, message?:string, group:string, dayMax:number, weekMax:number, dayUsed:number, weekUsed:number, dayRemain:number, weekRemain:number, periodCap?:number }}
+ */
+async function evaluateH5WithdrawPeriodLimits(merchant, biz, points, now = nowTs(), options = {}) {
+	const skip = !!options.skip;
+	const empty = {
+		ok: true,
+		group: '',
+		dayMax: 0,
+		weekMax: 0,
+		dayUsed: 0,
+		weekUsed: 0,
+		dayRemain: Infinity,
+		weekRemain: Infinity,
+		periodCap: 0
+	};
+	if (skip || !merchant) return empty;
+	const group = resolveWithdrawPeriodLimitGroup(merchant);
+	if (!group) return empty;
+	const { dayMax, weekMax } = pickWithdrawPeriodLimitConfig(biz, group);
+	if (!(dayMax > 0) && !(weekMax > 0)) {
+		return { ...empty, group, dayMax, weekMax };
+	}
+	const merchantUserId = String(merchant.user_id || merchant._id || '');
+	const usage = await getH5WithdrawPeriodUsage(merchantUserId, now);
+	const dayRemain = dayMax > 0 ? Math.max(0, Number((dayMax - usage.dayUsed).toFixed(2))) : Infinity;
+	const weekRemain = weekMax > 0 ? Math.max(0, Number((weekMax - usage.weekUsed).toFixed(2))) : Infinity;
+	let periodCap = Infinity;
+	if (dayMax > 0) periodCap = Math.min(periodCap, dayRemain);
+	if (weekMax > 0) periodCap = Math.min(periodCap, weekRemain);
+	if (!Number.isFinite(periodCap)) periodCap = 0;
+	const need = Math.max(0, Number(points || 0));
+	// 对商户不暴露具体日/周额度数字，仅区分今日/本周用尽
+	if (need > 0 && dayMax > 0 && usage.dayUsed + need > dayMax + 1e-9) {
+		return {
+			ok: false,
+			message: '今日提现额度已用完',
+			group,
+			dayMax,
+			weekMax,
+			dayUsed: usage.dayUsed,
+			weekUsed: usage.weekUsed,
+			dayRemain,
+			weekRemain,
+			periodCap: Math.floor(periodCap)
+		};
+	}
+	if (need > 0 && weekMax > 0 && usage.weekUsed + need > weekMax + 1e-9) {
+		return {
+			ok: false,
+			message: '本周提现额度已用完',
+			group,
+			dayMax,
+			weekMax,
+			dayUsed: usage.dayUsed,
+			weekUsed: usage.weekUsed,
+			dayRemain,
+			weekRemain,
+			periodCap: Math.floor(periodCap)
+		};
+	}
+	return {
+		ok: true,
+		group,
+		dayMax,
+		weekMax,
+		dayUsed: usage.dayUsed,
+		weekUsed: usage.weekUsed,
+		dayRemain: Number.isFinite(dayRemain) ? dayRemain : 0,
+		weekRemain: Number.isFinite(weekRemain) ? weekRemain : 0,
+		periodCap: Math.floor(Number.isFinite(periodCap) ? periodCap : 0)
+	};
+}
+
 async function h5WithdrawInfo(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
@@ -7799,7 +8013,14 @@ async function h5WithdrawInfo(data) {
 		const redeemable = Math.max(0, Math.floor(Math.min(ar, ap)));
 		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
 		const minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(isRechargeMember, biz, withdrawTimes);
-		const maxPoints = isRechargeMember ? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS) : Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
+		let maxPoints = isRechargeMember
+			? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS)
+			: Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
+		const periodEval = await evaluateH5WithdrawPeriodLimits(merchant, biz, 0, now, { skip: testMerchant });
+		if (periodEval.periodCap > 0 || periodEval.dayMax > 0 || periodEval.weekMax > 0) {
+			const cap = Math.max(0, Number(periodEval.periodCap || 0));
+			maxPoints = Math.max(0, Math.min(maxPoints, cap));
+		}
 		const rechargePackages = await loadRechargePackagesFromQuota();
 		const mship = h5MembershipInfo(merchant, rechargePackages);
 		return {
@@ -7879,6 +8100,20 @@ async function h5WithdrawApply(data) {
 		}
 		if (points > maxP) {
 			return { code: 400, message: `单次兑换最高为 ${maxP} 积分` };
+		}
+		const periodCheck = await evaluateH5WithdrawPeriodLimits(merchant, biz, points, now, { skip: testMerchant });
+		if (!periodCheck.ok) {
+			return { code: 400, message: periodCheck.message || '已超过日/周提现上限' };
+		}
+		if (
+			(periodCheck.dayMax > 0 || periodCheck.weekMax > 0) &&
+			Number(periodCheck.periodCap || 0) >= 0 &&
+			points > Number(periodCheck.periodCap || 0)
+		) {
+			return {
+				code: 400,
+				message: `受日/周提现上限限制，本次最多可兑换 ${Math.floor(Number(periodCheck.periodCap || 0))} 积分`
+			};
 		}
 		const afford = validateH5WithdrawPointsAffordable(merchant, points);
 		if (!afford.ok) return { code: afford.code, message: afford.message };
@@ -8289,7 +8524,8 @@ async function h5HomeDashboard(data) {
 					windowDays: Number(cycleCfg.windowDays || 3)
 				},
 				refundPenaltyRate: Number(biz.refundPenaltyRate != null ? biz.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate),
-				refundRuleLines: formatH5RefundRuleLines(biz)
+				refundRuleLines: formatH5RefundRuleLines(biz),
+				h5UiStyle: String(biz.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A'
 			}
 		};
 		h5HomeDashboardCache.set(cacheSign, { at: now, payload: JSON.parse(JSON.stringify(out)) });
@@ -12007,6 +12243,44 @@ async function couponIssue(data, event) {
 	}
 }
 
+async function internalTradeRefundClawback(data = {}) {
+	try {
+		const claw = await refundClawback.processTradeRefundClawback(db, {
+			refundLogno: data?.refundLogno,
+			ologno: data?.ologno,
+			refundAmountAbs: data?.refundAmountAbs,
+			refundTradeId: data?.refundTradeId,
+			merchantUserId: data?.merchantUserId,
+			nowTs: data?.nowTs || nowTs()
+		});
+		let due = null;
+		if (claw.ok && !claw.skipped) {
+			try {
+				due = await refundClawback.applyDueRefundClawbackTasks(db, { nowTs: nowTs(), limit: 100 });
+			} catch (e) {
+				console.error('applyDueRefundClawbackTasks after clawback', e);
+			}
+		}
+		return { code: 0, message: claw.skipped ? `skipped:${claw.reason}` : 'ok', data: { claw, due } };
+	} catch (e) {
+		console.error('internalTradeRefundClawback failed', e);
+		return { code: 500, message: safeText(e?.message || '退款回冲失败', 180) };
+	}
+}
+
+async function applyDueRefundClawbackTasksAction(data = {}) {
+	try {
+		const due = await refundClawback.applyDueRefundClawbackTasks(db, {
+			nowTs: data?.nowTs || nowTs(),
+			limit: data?.limit
+		});
+		return { code: 0, message: 'ok', data: due };
+	} catch (e) {
+		console.error('applyDueRefundClawbackTasksAction failed', e);
+		return { code: 500, message: safeText(e?.message || '执行待扣任务失败', 180) };
+	}
+}
+
 async function h5IncomeList(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
@@ -12021,6 +12295,11 @@ async function h5IncomeList(data) {
 			});
 		} catch (e) {
 			console.error('syncSubsidyPackets', e);
+		}
+		try {
+			await refundClawback.applyDueRefundClawbackTasks(db, { nowTs: now, limit: 50, merchantUserId });
+		} catch (e) {
+			console.error('applyDueRefundClawbackTasks', e);
 		}
 		try {
 			await syncCouponInstancesForMerchant(merchant, now);
@@ -15050,6 +15329,22 @@ async function quotaDelete(data, event) {
 	}
 }
 
+async function h5UiStyleGet() {
+	try {
+		const biz = await getBizSettings();
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				h5UiStyle: String(biz.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A'
+			}
+		};
+	} catch (e) {
+		console.error('h5UiStyleGet failed', e);
+		return { code: 0, message: 'ok', data: { h5UiStyle: 'A' } };
+	}
+}
+
 async function bizConfigGet() {
 	try {
 		const value = await getBizSettings();
@@ -15235,6 +15530,8 @@ exports.main = async (event, context) => {
 			return await rechargeGiftShipmentUpdate(actualData, event);
 		case 'h5AuthSync':
 			return await h5AuthSync(actualData);
+		case 'h5UiStyleGet':
+			return await h5UiStyleGet();
 		case 'h5WechatLogin':
 			return await h5WechatLogin(actualData);
 		case 'h5SendBindMobileCode':
@@ -15301,6 +15598,10 @@ exports.main = async (event, context) => {
 			return await h5TransferStatus(actualData, event);
 		case 'h5PendingReturnPoints':
 			return await h5PendingReturnPoints(actualData);
+		case 'internalTradeRefundClawback':
+			return await internalTradeRefundClawback(actualData);
+		case 'applyDueRefundClawbackTasks':
+			return await applyDueRefundClawbackTasksAction(actualData);
 		case 'h5IncomeList':
 			return await h5IncomeList(actualData);
 		case 'h5IncomeClaim':

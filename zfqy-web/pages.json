@@ -852,8 +852,8 @@
 	"globalStyle": {
 		"navigationBarTextStyle": "black",
 		"navigationBarTitleText": "管理系统",
-		"navigationBarBackgroundColor": "#F8F8F8",
-		"backgroundColor": "#F8F8F8",
+		"navigationBarBackgroundColor": "#070b14",
+		"backgroundColor": "#070b14",
 		"h5": {
 			"titleNView": false
 		}

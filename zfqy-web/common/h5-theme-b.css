@@ -1,0 +1,128 @@
+/* H5 B 风格（明亮）：在 A 默认之上的亮色覆盖 */
+
+html.h5-ui-b .page-title,
+html.h5-ui-b .nav-title,
+html.h5-ui-b .nick,
+html.h5-ui-b .name,
+html.h5-ui-b .title,
+html.h5-ui-b .detail-title,
+html.h5-ui-b .menu-title,
+html.h5-ui-b .section-title,
+html.h5-ui-b .card-title,
+html.h5-ui-b .row-title,
+html.h5-ui-b .field-label,
+html.h5-ui-b .gate-title,
+html.h5-ui-b .mock-title,
+html.h5-ui-b .ok {
+	color: #0f172a !important;
+}
+
+html.h5-ui-b .sub,
+html.h5-ui-b .mobile,
+html.h5-ui-b .k,
+html.h5-ui-b .label,
+html.h5-ui-b .hint,
+html.h5-ui-b .section-sub,
+html.h5-ui-b .hero-sub,
+html.h5-ui-b .detail-meta,
+html.h5-ui-b .detail-hint,
+html.h5-ui-b .row-time,
+html.h5-ui-b .empty,
+html.h5-ui-b .empty-txt,
+html.h5-ui-b .loading-hint,
+html.h5-ui-b .mock-desc,
+html.h5-ui-b .gate-tip,
+html.h5-ui-b .stat-label,
+html.h5-ui-b .duo-label,
+html.h5-ui-b .card-label,
+html.h5-ui-b .card-sub,
+html.h5-ui-b .f-label,
+html.h5-ui-b .f-hint,
+html.h5-ui-b .desc {
+	color: #64748b !important;
+}
+
+html.h5-ui-b .v,
+html.h5-ui-b .stat-value,
+html.h5-ui-b .accent-mint,
+html.h5-ui-b .hero-val,
+html.h5-ui-b .amt-val {
+	color: #059669 !important;
+}
+
+html.h5-ui-b .accent-gold,
+html.h5-ui-b .card-points {
+	color: #2563eb !important;
+}
+
+html.h5-ui-b .metric-gold {
+	color: #b45309 !important;
+}
+
+html.h5-ui-b .top-refresh-btn {
+	color: #2563eb !important;
+	background: rgba(219, 234, 254, 0.55) !important;
+	border: 1px solid rgba(191, 219, 254, 0.85) !important;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75) !important;
+	backdrop-filter: blur(10px) saturate(160%) !important;
+	-webkit-backdrop-filter: blur(10px) saturate(160%) !important;
+}
+
+html.h5-ui-b .row-amt,
+html.h5-ui-b .row-amt.plus {
+	color: #047857 !important;
+}
+
+html.h5-ui-b .loading-card {
+	background: #ffffff !important;
+	border-color: #e2e8f0 !important;
+}
+
+html.h5-ui-b .loading-text {
+	color: #475569 !important;
+}
+
+html.h5-ui-b .loading-spinner {
+	border-color: #e2e8f0 !important;
+	border-top-color: #2563eb !important;
+}
+
+html.h5-ui-b .safe-input-wrap,
+html.h5-ui-b .composer-input,
+html.h5-ui-b .picker-val {
+	background: #ffffff !important;
+	border-color: #cbd5e1 !important;
+	color: #0f172a !important;
+}
+
+html.h5-ui-b .agreement-sheet--dark {
+	background: #ffffff !important;
+	border-color: #e2e8f0 !important;
+	color: #0f172a !important;
+}
+
+/* B 风格：玻璃卡片保持透明，让 ::before 毛玻璃生效 */
+html.h5-ui-b .card.h5-glass-panel,
+html.h5-ui-b .h5-glass-panel.card,
+html.h5-ui-b .profile-card.h5-glass-panel,
+html.h5-ui-b .acct-card.h5-glass-panel,
+html.h5-ui-b .menu-card.h5-glass-panel,
+html.h5-ui-b .notice-marquee.h5-glass-panel,
+html.h5-ui-b .fixed-notice.h5-glass-panel,
+html.h5-ui-b .detail-card.h5-glass-panel,
+html.h5-ui-b .hero-card.h5-glass-panel,
+html.h5-ui-b .stat-grid.h5-glass-panel,
+html.h5-ui-b .duo-row.h5-glass-panel,
+html.h5-ui-b .quota-bar-wrap.h5-glass-panel,
+html.h5-ui-b .prestore-card.h5-glass-panel,
+html.h5-ui-b .silver-trade-card.h5-glass-panel,
+html.h5-ui-b .rule-card.h5-glass-panel,
+html.h5-ui-b .gift-card.h5-glass-panel,
+html.h5-ui-b .filters.h5-glass-panel,
+html.h5-ui-b .row.h5-glass-panel,
+html.h5-ui-b .log-row.h5-glass-panel,
+html.h5-ui-b .composer.h5-glass-panel,
+html.h5-ui-b .empty.h5-glass-panel,
+html.h5-ui-b .empty-hint.h5-glass-panel {
+	background: transparent !important;
+}

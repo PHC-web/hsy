@@ -56,6 +56,9 @@
 							<uni-th align="center" width="140" filter-type="timestamp" @filter-change="headerFilterChange($event, 'tradeTime')">交易时间</uni-th>
 							<uni-th align="center" width="100">业务员</uni-th>
 							<uni-th align="center" width="100">分公司</uni-th>
+							<uni-th align="center" width="100">已退</uni-th>
+							<uni-th align="center" width="100">可退</uni-th>
+							<uni-th align="center" width="100">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="(item, idx) in list" :key="item.id || idx" v-if="item">
 							<uni-td>{{ item.devicePlain || item.deviceId }}</uni-td>
@@ -92,6 +95,19 @@
 								<text class="company-main">{{ item.company }}</text>
 								<text v-if="item.company" class="company-sub">({{ item.company }})</text>
 							</uni-td>
+							<uni-td align="center">{{ item.refundedTotalText || '-' }}</uni-td>
+							<uni-td align="center">{{ item.refundableAmountText || '-' }}</uni-td>
+							<uni-td align="center">
+								<button
+									v-if="item.canSimulateRefund"
+									class="uni-button"
+									size="mini"
+									type="warn"
+									@click="openRefund(item)"
+								>模拟退款</button>
+								<text v-else-if="item.isRefund" class="refund-tag">退款</text>
+								<text v-else>-</text>
+							</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
@@ -103,6 +119,26 @@
 		<!-- #ifndef H5 -->
 		<fix-window />
 		<!-- #endif -->
+
+		<uni-popup ref="refundPopup" type="center">
+			<view class="refund-popup-card">
+				<view class="refund-popup-title">模拟退款</view>
+				<text class="refund-popup-sub">原交易单号：{{ refundForm.tradeNo }}</text>
+				<view class="refund-hint">
+					<text>原交易：￥{{ refundForm.originalAmountText }}</text>
+					<text>已退：￥{{ refundForm.refundedTotalText }}</text>
+					<text>可退：￥{{ refundForm.refundableAmountText }}</text>
+				</view>
+				<view class="refund-field">
+					<text class="refund-label">退款金额</text>
+					<input v-model="refundForm.amount" class="refund-input" type="digit" placeholder="不超过可退金额" />
+				</view>
+				<view class="refund-actions">
+					<button class="uni-button" size="mini" type="warn" :disabled="refundSubmitting" @click="submitRefund">提交</button>
+					<button class="uni-button" size="mini" @click="$refs.refundPopup.close()">取消</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -165,7 +201,19 @@ export default {
 				{ text: 'TXT', value: 'txt' },
 				{ text: 'MS-Word', value: 'word' },
 				{ text: 'MS-Excel', value: 'excel' }
-			]
+			],
+			refundSubmitting: false,
+			refundForm: {
+				deviceId: '',
+				tradeNo: '',
+				originalAmount: 0,
+				refundedTotal: 0,
+				refundableAmount: 0,
+				originalAmountText: '0.00',
+				refundedTotalText: '0.00',
+				refundableAmountText: '0.00',
+				amount: ''
+			}
 		};
 	},
 	computed: {
@@ -347,6 +395,64 @@ export default {
 			this.pageInfo.pageSize = Number.isFinite(s) && s > 0 ? s : 10;
 			this.pageInfo.currentPage = 1;
 			this.search();
+		},
+		openRefund(item) {
+			if (!item || !item.canSimulateRefund) return;
+			const orig = Math.abs(Number(item.amount || 0));
+			const refunded = Number(item.refundedTotal || 0);
+			const refundable = Number(item.refundableAmount || 0);
+			this.refundForm = {
+				deviceId: item.deviceId,
+				tradeNo: item.tradeNo,
+				originalAmount: orig,
+				refundedTotal: refunded,
+				refundableAmount: refundable,
+				originalAmountText: orig.toFixed(2),
+				refundedTotalText: refunded.toFixed(2),
+				refundableAmountText: refundable.toFixed(2),
+				amount: refundable > 0 ? String(refundable) : ''
+			};
+			this.$refs.refundPopup.open();
+		},
+		submitRefund() {
+			if (this.refundSubmitting) return;
+			const v = Number(this.refundForm.amount);
+			const max = Number(this.refundForm.refundableAmount || 0);
+			if (!Number.isFinite(v) || v <= 0) {
+				uni.showToast({ title: '退款金额必须为正数', icon: 'none' });
+				return;
+			}
+			if (v - max > 0.009) {
+				uni.showToast({ title: `不能超过可退￥${max.toFixed(2)}`, icon: 'none' });
+				return;
+			}
+			this.refundSubmitting = true;
+			uni.showLoading({ title: '提交中...', mask: true });
+			this.$request(
+				'virtualRefund',
+				{
+					deviceId: this.refundForm.deviceId,
+					tradeNo: this.refundForm.tradeNo,
+					amount: v
+				},
+				{ functionName: 'machine' }
+			)
+				.then((res) => {
+					if (res.code === 0) {
+						uni.showToast({ title: '模拟退款成功', icon: 'success' });
+						this.$refs.refundPopup.close();
+						this.search();
+					} else {
+						uni.showToast({ title: res.message || '模拟退款失败', icon: 'none' });
+					}
+				})
+				.catch((err) => {
+					uni.showModal({ content: err?.message || '请求失败', showCancel: false });
+				})
+				.finally(() => {
+					this.refundSubmitting = false;
+					uni.hideLoading();
+				});
 		},
 		toggleExportMenu() {
 			this.showExportMenu = !this.showExportMenu;
@@ -568,5 +674,66 @@ export default {
 ::v-deep .uni-table .uni-table-th:first-child .dropdown-popup-right {
 	left: 0 !important;
 	right: auto !important;
+}
+
+.refund-tag {
+	color: #f56c6c;
+	font-size: 12px;
+}
+
+.refund-popup-card {
+	width: 420px;
+	background: #fff;
+	border-radius: 12px;
+	padding: 20px;
+	box-shadow: 0 12px 36px rgba(0, 0, 0, 0.18);
+}
+
+.refund-popup-title {
+	font-size: 18px;
+	font-weight: 600;
+	margin-bottom: 8px;
+}
+
+.refund-popup-sub {
+	font-size: 13px;
+	color: #606266;
+	display: block;
+	margin-bottom: 12px;
+}
+
+.refund-hint {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	font-size: 13px;
+	color: #303133;
+	margin-bottom: 16px;
+}
+
+.refund-field {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 16px;
+}
+
+.refund-label {
+	width: 72px;
+	font-size: 14px;
+}
+
+.refund-input {
+	flex: 1;
+	border: 1px solid #dcdfe6;
+	border-radius: 6px;
+	height: 36px;
+	padding: 0 10px;
+}
+
+.refund-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 12px;
 }
 </style>

@@ -357,6 +357,9 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const deviceId = normalizeEnumKey(termphyno);
 	if (!deviceId) return;
 
+	const refundFlag = normalizeEnumKey(d.refund) === '1';
+	const ologno = safeText(d.ologno || '', 64);
+
 	const dup = await machineTradesCol.where({ device_id: deviceId, trade_no: String(d.logno) }).count();
 	if (dup.total > 0) return;
 
@@ -365,7 +368,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const machine = mRes.data[0];
 
 	let amount = parseXingyiAmount(d.txnamt);
-	if (normalizeEnumKey(d.refund) === '1') {
+	if (refundFlag) {
 		amount = amount > 0 ? -amount : amount;
 	}
 
@@ -404,7 +407,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		}
 	}
 
-	await machineTradesCol.add({
+	const addRes = await machineTradesCol.add({
 		device_id: deviceId,
 		trade_no: String(d.logno),
 		user_id: bound ? machine.bind_user_id : '',
@@ -419,6 +422,8 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		stats_eligible: !!bound,
 		trade_member_bucket: tradeMemberBucket,
 		amount,
+		is_refund: refundFlag,
+		refund_of_trade_no: refundFlag ? ologno : '',
 		is_activated: !!activated,
 		total_transaction: newTotal,
 		cashback: cashback,
@@ -431,6 +436,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		salesman: machine.salesman || '管理员',
 		create_time: createTime
 	});
+	const refundTradeId = typeof addRes === 'string' ? addRes : addRes?.id || addRes?._id || '';
 
 	if (risk.is_risk && risk.risk_audit_status === 'pending' && amount > 0) {
 		try {
@@ -458,6 +464,26 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 				frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
 				update_time: createTime
 			});
+		}
+	}
+
+	if (refundFlag && ologno) {
+		try {
+			await uniCloud.callFunction({
+				name: 'merchant',
+				data: {
+					action: 'internalTradeRefundClawback',
+					data: {
+						refundLogno: String(d.logno),
+						ologno,
+						refundAmountAbs: Math.abs(Number(amount || 0)),
+						refundTradeId: String(refundTradeId || ''),
+						merchantUserId: String(machine.bind_user_id || '')
+					}
+				}
+			});
+		} catch (e) {
+			console.error('trade refund clawback call failed', e);
 		}
 	}
 }

@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">规则说明</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -126,13 +129,11 @@ export default {
 }
 
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -164,7 +165,7 @@ export default {
 	display: block;
 	font-size: 15px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 	margin-bottom: 8px;
 }
 
@@ -178,7 +179,7 @@ export default {
 	display: block;
 	font-size: 13px;
 	line-height: 1.65;
-	color: rgba(226, 232, 240, 0.94);
+	color: #475569;
 }
 
 .step-list {
@@ -211,7 +212,7 @@ export default {
 	flex: 1;
 	font-size: 13px;
 	line-height: 1.65;
-	color: rgba(226, 232, 240, 0.94);
+	color: #475569;
 }
 
 .quick-actions {

@@ -24,6 +24,7 @@
 					<text class="gate-tip">请先绑定机具号后即可进入慧收盈系统。</text>
 					<input v-model="deviceId" class="input h5-glass-input gate-input" maxlength="50" placeholder="请输入机具号码" />
 					<button class="btn-primary" type="primary" @click="submitBind">绑定并进入</button>
+					<button v-if="showDevTools" class="btn-secondary" @click="submitTestLogin">改用 test 账号一键登录</button>
 				</view>
 
 				<view v-else-if="!isWechat" class="browser-login">
@@ -36,17 +37,25 @@
 					</view>
 
 					<view v-if="showDevTools" class="card h5-glass-panel mock-dev">
-						<text class="mock-title">本地调试 · Mock 登录</text>
-						<text class="mock-desc">模拟微信身份，无需手机号；进入后需绑定机具号。</text>
+						<text class="mock-title">本地调试 · test 账号</text>
+						<text class="mock-desc">
+							固定账号 test（openid: mock_dev_test）。首次需绑定机具号，之后一键登录直接进入，不会再新建商户。
+						</text>
+						<button class="btn-primary" type="primary" @click="submitTestLogin">一键登录（test）</button>
+					</view>
+
+					<view v-if="showDevTools" class="card h5-glass-panel mock-dev">
+						<text class="mock-title">本地调试 · 自定义 Mock</text>
+						<text class="mock-desc">可改昵称/头像；仍使用同一固定 openid，不会每次新建商户。</text>
 						<view class="field">
 							<text class="label">微信昵称</text>
-							<input v-model="form.nickname" class="input h5-glass-input" maxlength="40" placeholder="昵称" />
+							<input v-model="form.nickname" class="input h5-glass-input" maxlength="40" placeholder="昵称，默认 test" />
 						</view>
 						<view class="field">
 							<text class="label">头像 URL</text>
 							<input v-model="form.avatar" class="input h5-glass-input" maxlength="500" placeholder="头像地址，可空" />
 						</view>
-						<button class="btn-primary" type="primary" @click="submitAuth">Mock 进入并同步</button>
+						<button class="btn-secondary" @click="submitAuth">Mock 同步登录</button>
 					</view>
 
 					<view v-if="showDevTools" class="card h5-glass-panel mock-dev">
@@ -74,9 +83,9 @@
 
 <script>
 import { h5AuthSync, h5BindMachine, h5WechatLogin } from '@/pages/h5/common/api';
-import { saveSession, getSession } from '@/pages/h5/common/session';
+import { saveSession, getSession, clearSession } from '@/pages/h5/common/session';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
-import { isH5DevToolsEnabled } from '@/pages/h5/common/env';
+import { isH5DevToolsEnabled, H5_MOCK_TEST_OPENID, H5_MOCK_TEST_NICKNAME } from '@/pages/h5/common/env';
 
 const WX_MP_APPID = 'wxeeb5a3a25894c4e1';
 
@@ -251,12 +260,66 @@ export default {
 		},
 		afterLoginReady(data) {
 			this.wechatLoading = false;
+			if (this.applyH5UiStyleFromApiData) this.applyH5UiStyleFromApiData(data);
 			const s = getSession();
 			this.pendingBindDevice = !!(s.merchantId && !s.deviceId);
 			if (data && data.needBind) {
 				return;
 			}
 			uni.redirectTo({ url: '/pages/h5/home/index' });
+		},
+		async loginWithMockProfile({ nickname, avatar } = {}) {
+			const res = await h5AuthSync({
+				authMode: 'mock',
+				h5DevMock: true,
+				openid: H5_MOCK_TEST_OPENID,
+				wxNickname: nickname || H5_MOCK_TEST_NICKNAME,
+				wxAvatar: avatar || '',
+				mobile: ''
+			});
+			if (res.code !== 0) {
+				uni.showToast({ title: res.message || '登录失败', icon: 'none' });
+				return;
+			}
+			if (this.applyH5UiStyleFromApiData) this.applyH5UiStyleFromApiData(res.data);
+			const m = res.data && res.data.merchant;
+			this.merchantId = m && m.id;
+			saveSession({
+				merchantId: m && m.id,
+				userId: m && m.userId,
+				wxNickname: m && m.wxNickname,
+				wxAvatar: m && m.wxAvatar,
+				mobile: m && m.mobile,
+				deviceId: m && m.deviceId
+			});
+			this.pendingBindDevice = !!(m && m.id && !(m.deviceId || '').trim());
+			if (res.data && res.data.needBind) {
+				return;
+			}
+			uni.redirectTo({ url: '/pages/h5/home/index' });
+		},
+		async submitTestLogin() {
+			// #ifndef H5
+			uni.showToast({ title: '请在 H5 环境使用', icon: 'none' });
+			return;
+			// #endif
+			if (!this.showDevTools) {
+				uni.showToast({ title: '请使用微信打开本页面', icon: 'none' });
+				return;
+			}
+			clearSession();
+			this.deviceId = '';
+			this.merchantId = '';
+			this.pendingBindDevice = false;
+			uni.showLoading({ title: '登录中...', mask: true });
+			try {
+				await this.loginWithMockProfile({
+					nickname: H5_MOCK_TEST_NICKNAME,
+					avatar: ''
+				});
+			} finally {
+				uni.hideLoading();
+			}
 		},
 		async submitAuth() {
 			// #ifndef H5
@@ -269,32 +332,10 @@ export default {
 			}
 			uni.showLoading({ title: '登录中...', mask: true });
 			try {
-				const res = await h5AuthSync({
-					authMode: 'mock',
-					h5DevMock: true,
-					wxNickname: this.form.nickname || '微信用户',
-					wxAvatar: this.form.avatar || '',
-					mobile: ''
+				await this.loginWithMockProfile({
+					nickname: this.form.nickname || H5_MOCK_TEST_NICKNAME,
+					avatar: this.form.avatar || ''
 				});
-				if (res.code !== 0) {
-					uni.showToast({ title: res.message || '登录失败', icon: 'none' });
-					return;
-				}
-				const m = res.data && res.data.merchant;
-				this.merchantId = m && m.id;
-				saveSession({
-					merchantId: m && m.id,
-					userId: m && m.userId,
-					wxNickname: m && m.wxNickname,
-					wxAvatar: m && m.wxAvatar,
-					mobile: m && m.mobile,
-					deviceId: m && m.deviceId
-				});
-				this.pendingBindDevice = !!(m && m.id && !m.deviceId);
-				if (res.data && res.data.needBind) {
-					return;
-				}
-				uni.redirectTo({ url: '/pages/h5/home/index' });
 			} finally {
 				uni.hideLoading();
 			}
@@ -362,14 +403,14 @@ export default {
 	display: block;
 	font-size: 30px;
 	font-weight: 800;
-	color: #f8fafc;
+	color: #0f172a;
 	letter-spacing: 0.03em;
 }
 
 .sub {
 	display: block;
 	margin-top: 8px;
-	color: rgba(203, 213, 225, 0.9);
+	color: #64748b;
 	font-size: 13px;
 }
 
@@ -386,21 +427,21 @@ export default {
 
 .wait-text {
 	font-size: 14px;
-	color: rgba(226, 232, 240, 0.95);
+	color: #475569;
 }
 
 .gate-title {
 	display: block;
 	font-size: 17px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 	margin-bottom: 8px;
 }
 
 .gate-tip {
 	display: block;
 	font-size: 13px;
-	color: rgba(203, 213, 225, 0.88);
+	color: #64748b;
 	line-height: 1.55;
 	margin-bottom: 14px;
 }
@@ -416,7 +457,7 @@ export default {
 .label {
 	display: block;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.95);
+	color: #64748b;
 	margin-bottom: 6px;
 }
 
@@ -440,31 +481,31 @@ export default {
 }
 
 .tip-card {
-	border-color: rgba(251, 191, 36, 0.35);
-	box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.12), 0 12px 40px rgba(0, 0, 0, 0.25);
+	border-color: rgba(251, 191, 36, 0.45);
+	box-shadow: 0 4px 20px rgba(251, 191, 36, 0.12);
 }
 
 .tip-title {
 	display: block;
 	font-size: 16px;
 	font-weight: 700;
-	color: #fde68a;
+	color: #b45309;
 	margin-bottom: 10px;
 }
 
 .tip-text {
 	display: block;
 	font-size: 13px;
-	color: rgba(254, 243, 199, 0.88);
+	color: #92400e;
 	line-height: 1.55;
 	margin-bottom: 8px;
 }
 
 .btn-outline {
 	margin-top: 10px;
-	background: rgba(255, 255, 255, 0.1);
-	color: #fde68a;
-	border: 1px solid rgba(251, 191, 36, 0.45);
+	background: #ffffff;
+	color: #b45309;
+	border: 1px solid #fbbf24;
 	border-radius: 999px;
 	font-size: 14px;
 }
@@ -473,23 +514,23 @@ export default {
 	display: block;
 	font-size: 15px;
 	font-weight: 700;
-	color: #f1f5f9;
+	color: #0f172a;
 	margin-bottom: 6px;
 }
 
 .mock-desc {
 	display: block;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.92);
+	color: #64748b;
 	line-height: 1.5;
 	margin-bottom: 12px;
 }
 
 .btn-secondary {
 	margin-top: 8px;
-	background: rgba(255, 255, 255, 0.1);
-	color: #e2e8f0;
-	border: 1px solid rgba(255, 255, 255, 0.18);
+	background: #f8fafc;
+	color: #334155;
+	border: 1px solid #e2e8f0;
 	border-radius: 999px;
 	font-size: 14px;
 }

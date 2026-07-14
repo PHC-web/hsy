@@ -2,6 +2,7 @@ import App from './App'
 import store from './store'
 import plugin from './js_sdk/uni-admin/plugin'
 import messages from './i18n/index.js'
+import h5UiStyleMixin from '@/pages/h5/common/ui-style-mixin.js'
 
 const lang = uni.getLocale()
 // #ifndef VUE3
@@ -15,6 +16,7 @@ const i18n = new VueI18n({
   messages, // 设置地区信息
 })
 Vue.use(plugin)
+Vue.mixin(h5UiStyleMixin)
 App.mpType = 'app'
 const app = new Vue({
   i18n,
@@ -36,6 +38,7 @@ export function createApp() {
   app.use(i18n)
   app.use(plugin)
   app.use(store)
+  app.mixin(h5UiStyleMixin)
   return {
     app
   }

@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">码牌绑定</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -188,13 +191,11 @@ export default {
 }
 
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -225,7 +226,7 @@ export default {
 .label {
 	display: block;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.9);
+	color: #64748b;
 	margin-bottom: 6px;
 }
 
@@ -237,21 +238,21 @@ export default {
 	height: 44px;
 	padding: 0 12px;
 	border-radius: 12px;
-	background: rgba(15, 23, 42, 0.45);
-	border: 1px solid rgba(255, 255, 255, 0.12);
-	color: #f8fafc;
+	background: #e2e8f0;
+	border: 1px solid #e2e8f0;
+	color: #0f172a;
 	font-size: 15px;
 }
 
 .ph {
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 }
 
 .hint {
 	display: block;
 	margin-top: 10px;
 	font-size: 11px;
-	color: rgba(203, 213, 225, 0.82);
+	color: #64748b;
 	line-height: 1.5;
 }
 
@@ -261,10 +262,12 @@ export default {
 
 .bind-item {
 	padding: 10px 12px;
-	border: 1px solid rgba(255, 255, 255, 0.1);
+	border: 1px solid rgba(255, 255, 255, 0.72);
 	border-radius: 10px;
 	margin-bottom: 8px;
-	background: rgba(15, 23, 42, 0.28);
+	background: rgba(255, 255, 255, 0.45);
+	backdrop-filter: blur(12px) saturate(160%);
+	-webkit-backdrop-filter: blur(12px) saturate(160%);
 }
 
 .bind-main {
@@ -276,7 +279,7 @@ export default {
 .bind-device {
 	font-size: 14px;
 	font-weight: 700;
-	color: #e2e8f0;
+	color: #334155;
 }
 
 .bind-meta {
@@ -284,7 +287,7 @@ export default {
 	margin-top: 4px;
 	margin-bottom: 8px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 
 .btn-unbind {
@@ -299,14 +302,14 @@ export default {
 .section-title {
 	font-size: 14px;
 	font-weight: 700;
-	color: rgba(248, 250, 252, 0.92);
+	color: #0f172a;
 	margin: 8px 0 10px;
 }
 
 .empty {
 	padding: 20px;
 	text-align: center;
-	color: rgba(148, 163, 184, 0.9);
+	color: #64748b;
 	font-size: 13px;
 }
 
@@ -330,24 +333,24 @@ export default {
 }
 
 .tag-bind {
-	background: rgba(34, 197, 94, 0.2);
-	color: #86efac;
+	background: #dcfce7;
+	color: #15803d;
 }
 
 .tag-unbind {
-	background: rgba(248, 113, 113, 0.2);
-	color: #fecaca;
+	background: #fee2e2;
+	color: #b91c1c;
 }
 
 .log-time {
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 
 .log-content {
 	display: block;
 	font-size: 13px;
-	color: rgba(226, 232, 240, 0.95);
+	color: #475569;
 	line-height: 1.45;
 	word-break: break-all;
 }
@@ -356,14 +359,15 @@ export default {
 	display: block;
 	margin-top: 6px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #64748b;
 }
 
 .btn-more {
 	margin-top: 8px;
 	margin-bottom: 16px;
-	background: rgba(255, 255, 255, 0.08);
-	color: #e2e8f0;
+	background: #f1f5f9;
+	border: 1px solid #e2e8f0;
+	color: #334155;
 	font-size: 13px;
 	border-radius: 999px;
 	border: none;

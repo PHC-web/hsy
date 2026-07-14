@@ -8,7 +8,10 @@
 		</view>
 
 		<view class="nav-bar">
-			<text class="nav-back" @click="goBack">‹ 返回</text>
+			<view class="nav-back" @click="goBack">
+				<text class="bi bi-chevron-left nav-back-ico"></text>
+				<text class="nav-back-txt">返回</text>
+			</view>
 			<text class="nav-title">财务管理</text>
 			<text class="nav-placeholder"></text>
 		</view>
@@ -256,13 +259,11 @@ export default {
 }
 
 .nav-back {
-	color: rgba(226, 232, 240, 0.95);
-	font-size: 15px;
-	min-width: 64px;
+	flex-shrink: 0;
 }
 
 .nav-title {
-	color: #f8fafc;
+	color: #0f172a;
 	font-size: 17px;
 	font-weight: 700;
 }
@@ -282,7 +283,7 @@ export default {
 .f-label {
 	display: block;
 	font-size: 11px;
-	color: rgba(186, 199, 216, 0.85);
+	color: #64748b;
 	margin-top: 8px;
 	margin-bottom: 4px;
 }
@@ -294,16 +295,16 @@ export default {
 .f-hint {
 	display: block;
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.75);
+	color: #64748b;
 	margin-bottom: 8px;
 }
 
 .picker-val {
 	padding: 8px 10px;
 	border-radius: 10px;
-	background: rgba(15, 23, 42, 0.4);
-	border: 1px solid rgba(255, 255, 255, 0.1);
-	color: #e2e8f0;
+	background: #f1f5f9;
+	border: 1px solid #e2e8f0;
+	color: #334155;
 	font-size: 14px;
 }
 
@@ -330,7 +331,7 @@ export default {
 
 .empty {
 	text-align: center;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	padding: 24px;
 	font-size: 14px;
 }
@@ -360,25 +361,25 @@ export default {
 
 .t-withdraw {
 	background: rgba(16, 185, 129, 0.25);
-	color: #6ee7b7;
+	color: #059669;
 }
 
 .row-time {
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 
 .row-title {
 	font-size: 15px;
 	font-weight: 600;
-	color: #f8fafc;
+	color: #0f172a;
 }
 
 .row-sub {
 	display: block;
 	margin-top: 4px;
 	font-size: 12px;
-	color: rgba(203, 213, 225, 0.88);
+	color: #64748b;
 	word-break: break-all;
 }
 
@@ -387,25 +388,25 @@ export default {
 	justify-content: space-between;
 	margin-top: 8px;
 	padding-top: 8px;
-	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	border-top: 1px solid #e2e8f0;
 }
 
 .amt-label {
 	font-size: 12px;
-	color: rgba(186, 199, 216, 0.9);
+	color: #64748b;
 }
 
 .amt-val {
 	font-size: 16px;
 	font-weight: 700;
-	color: #a7f3d0;
+	color: #059669;
 }
 
 .row-status {
 	display: block;
 	margin-top: 6px;
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.85);
+	color: #475569;
 }
 
 .row-action-tip {
@@ -419,7 +420,7 @@ export default {
 	display: block;
 	margin-top: 4px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #64748b;
 	word-break: break-all;
 }
 
@@ -427,7 +428,7 @@ export default {
 .load-more {
 	text-align: center;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #64748b;
 	padding: 10px;
 }
 </style>

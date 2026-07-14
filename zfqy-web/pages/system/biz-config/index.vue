@@ -95,6 +95,52 @@
 			</view>
 
 			<view class="card">
+				<view class="card-title">1.1）日/周累计提现上限</view>
+				<text class="card-tip">
+					按会员分档限制「自然日 / 自然周（周一至周日，北京时间）」累计提现积分（含审核中、待打款、已到账；不含已拒绝/已退回）。填写 0 表示该分档不限额。测试商户白名单不受此限制。
+				</text>
+				<view class="period-block">
+					<text class="period-title">兑换券铂金会员（兑换码/兑换券开通的非付费会员）</text>
+					<view class="form-grid">
+						<view class="field">
+							<text class="label">每日上限(积分)</text>
+							<uni-easyinput v-model="form.withdrawPeriodLimits.exchangeCoupon.dayMax" type="number" placeholder="200" />
+						</view>
+						<view class="field">
+							<text class="label">每周上限(积分)</text>
+							<uni-easyinput v-model="form.withdrawPeriodLimits.exchangeCoupon.weekMax" type="number" placeholder="300" />
+						</view>
+					</view>
+				</view>
+				<view class="period-block">
+					<text class="period-title">600 元黄金会员 + 800 元白金会员</text>
+					<view class="form-grid">
+						<view class="field">
+							<text class="label">每日上限(积分)</text>
+							<uni-easyinput v-model="form.withdrawPeriodLimits.paidGoldPlatinum.dayMax" type="number" placeholder="200" />
+						</view>
+						<view class="field">
+							<text class="label">每周上限(积分)</text>
+							<uni-easyinput v-model="form.withdrawPeriodLimits.paidGoldPlatinum.weekMax" type="number" placeholder="500" />
+						</view>
+					</view>
+				</view>
+				<view class="period-block">
+					<text class="period-title">1000 元钻石会员</text>
+					<view class="form-grid">
+						<view class="field">
+							<text class="label">每日上限(积分)</text>
+							<uni-easyinput v-model="form.withdrawPeriodLimits.paidDiamond.dayMax" type="number" placeholder="200" />
+						</view>
+						<view class="field">
+							<text class="label">每周上限(积分)</text>
+							<uni-easyinput v-model="form.withdrawPeriodLimits.paidDiamond.weekMax" type="number" placeholder="500" />
+						</view>
+					</view>
+				</view>
+			</view>
+
+			<view class="card">
 				<view class="card-title">2）优化金额分期策略</view>
 				<text class="card-tip">例：阈值 300 元；300 及以上分 5 期，300 以下一次返还。</text>
 				<view class="form-grid">
@@ -214,6 +260,28 @@
 				<text class="card-tip">用于 H5 权益页右上角“联系客服”按钮展示及拨号，支持固话或手机号。</text>
 				<uni-easyinput v-model.trim="form.servicePhone" placeholder="如 400-668-5796" />
 			</view>
+
+			<view class="card">
+				<view class="card-title">7）H5 界面风格</view>
+				<text class="card-tip">A = 紫色深色（原风格）；B = 明亮亮色。保存后 H5 端约 30 秒内自动切换，也可让用户刷新页面立即生效。</text>
+				<view class="ui-style-opts">
+					<button
+						size="mini"
+						:type="form.h5UiStyle === 'A' ? 'primary' : 'default'"
+						@click="form.h5UiStyle = 'A'"
+					>
+						A 紫色深色
+					</button>
+					<button
+						size="mini"
+						:type="form.h5UiStyle === 'B' ? 'primary' : 'default'"
+						@click="form.h5UiStyle = 'B'"
+					>
+						B 明亮亮色
+					</button>
+				</view>
+				<text class="ui-style-current">当前：{{ form.h5UiStyle === 'B' ? 'B 明亮亮色' : 'A 紫色深色' }}</text>
+			</view>
 		</view>
 	</view>
 </template>
@@ -236,6 +304,11 @@ const defaultForm = () => ({
 		nonMember4To6: 50,
 		nonMember7Plus: 100
 	},
+	withdrawPeriodLimits: {
+		exchangeCoupon: { dayMax: 200, weekMax: 300 },
+		paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
+		paidDiamond: { dayMax: 200, weekMax: 500 }
+	},
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -246,6 +319,7 @@ const defaultForm = () => ({
 	testMerchantIds: [],
 	testMerchantIdsText: '',
 	servicePhone: '400-668-5796',
+	h5UiStyle: 'A',
 	refundRuleLinesText: ''
 });
 
@@ -306,10 +380,25 @@ export default {
 				if (wm.member6To10 == null && wm.member4To6 != null) wm.member6To10 = wm.member4To6;
 				if (wm.member11Plus == null && wm.member7Plus != null) wm.member11Plus = wm.member7Plus;
 				merged.withdrawMinByCount = wm;
+				merged.withdrawPeriodLimits = Object.assign(
+					{
+						exchangeCoupon: { dayMax: 200, weekMax: 300 },
+						paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
+						paidDiamond: { dayMax: 200, weekMax: 500 }
+					},
+					merged.withdrawPeriodLimits || {}
+				);
+				['exchangeCoupon', 'paidGoldPlatinum', 'paidDiamond'].forEach((k) => {
+					merged.withdrawPeriodLimits[k] = Object.assign(
+						{ dayMax: 0, weekMax: 0 },
+						merged.withdrawPeriodLimits[k] || {}
+					);
+				});
 				if (Array.isArray(res.data?.wxPayMchOptions) && res.data.wxPayMchOptions.length) {
 					this.wxPayMchOptions = res.data.wxPayMchOptions;
 				}
 				merged.wxPayMch = Object.assign(defaultWxPayMch(), merged.wxPayMch || {});
+				merged.h5UiStyle = String(merged.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A';
 				const ids = Array.isArray(merged.testMerchantIds) ? merged.testMerchantIds : [];
 				merged.testMerchantIdsText = ids.join('\n');
 				const ruleLines = Array.isArray(merged.h5RefundRuleLines) ? merged.h5RefundRuleLines : [];
@@ -400,6 +489,17 @@ export default {
 .intro-text { display: block; font-size: 12px; color: #606266; line-height: 1.6; }
 .card-title { font-size: 14px; font-weight: 700; color: #303133; margin-bottom: 6px; }
 .card-tip { display: block; font-size: 12px; color: #909399; margin-bottom: 10px; }
+.period-block { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #ebeef5; }
+.period-block:first-of-type { margin-top: 4px; padding-top: 0; border-top: 0; }
+.period-title { display: block; font-size: 13px; font-weight: 600; color: #606266; margin-bottom: 8px; }
+.ui-style-opts {
+	display: flex;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-bottom: 8px;
+}
+.ui-style-opts button { margin: 0; min-width: 110px; }
+.ui-style-current { display: block; font-size: 12px; color: #606266; }
 .form-grid {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(240px, 1fr));

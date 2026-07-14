@@ -114,6 +114,31 @@
 			</view>
 		</uni-popup>
 
+		<uni-popup ref="refundPopup" type="center">
+			<view class="popup-card">
+				<view class="popup-header">
+					<text class="popup-title">模拟退款</text>
+					<text class="popup-subtitle">原交易单号：{{ (refundForm && refundForm.tradeNo) || '' }}</text>
+				</view>
+				<view class="popup-body">
+					<view class="refund-hint">
+						<text>原交易金额：￥{{ refundForm.originalAmountText }}</text>
+						<text>已退：￥{{ refundForm.refundedTotalText }}</text>
+						<text>可退：￥{{ refundForm.refundableAmountText }}</text>
+					</view>
+					<uni-forms ref="refundFormRef" v-model="refundForm" :rules="refundRules" validateTrigger="bind" @submit="submitRefund">
+						<uni-forms-item name="amount" label="退款金额" required>
+							<uni-easyinput v-model="refundForm.amount" type="number" :clearable="false" placeholder="不超过可退金额" />
+						</uni-forms-item>
+						<view class="uni-button-group">
+							<button style="width: 100px;" type="warn" class="uni-button" :disabled="refundSubmitting" @click="triggerRefundSubmit">提交</button>
+							<button style="width: 100px; margin-left: 15px;" class="uni-button" :disabled="refundSubmitting" @click="$refs.refundPopup.close()">返回</button>
+						</view>
+					</uni-forms>
+				</view>
+			</view>
+		</uni-popup>
+
 		<uni-popup ref="bindPopup" type="center">
 			<view class="popup-card">
 				<view class="popup-header">
@@ -151,27 +176,39 @@
 					<uni-table border stripe :loading="tradeLoading">
 						<uni-tr>
 							<uni-th align="center" width="120">机具编号</uni-th>
-							<uni-th align="center" width="220">交易单号</uni-th>
-							<uni-th align="center" width="140">用户信息</uni-th>
-							<uni-th align="center" width="100">交易类型</uni-th>
+							<uni-th align="center" width="200">交易单号</uni-th>
+							<uni-th align="center" width="120">用户信息</uni-th>
+							<uni-th align="center" width="90">交易类型</uni-th>
+							<uni-th align="center" width="90">交易金额</uni-th>
+							<uni-th align="center" width="80">已退</uni-th>
+							<uni-th align="center" width="80">可退</uni-th>
 							<uni-th align="center" width="90">是否激活</uni-th>
-							<uni-th align="center" width="110">累计交易</uni-th>
-							<uni-th align="center" width="90">是否返现</uni-th>
-							<uni-th align="center" width="90">本次释放</uni-th>
+							<uni-th align="center" width="100">累计交易</uni-th>
 							<uni-th align="center" width="130">时间</uni-th>
-							<uni-th align="center" width="110">分公司</uni-th>
+							<uni-th align="center" width="100">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="(row, idx) in tradeList" :key="idx" v-if="row">
 							<uni-td align="center">{{ row.deviceId }}</uni-td>
 							<uni-td align="center">{{ row.tradeNo }}</uni-td>
 							<uni-td align="center" class="trade-user">{{ row.userInfo }}</uni-td>
 							<uni-td align="center">{{ row.tradeType }}</uni-td>
+							<uni-td align="center" class="trade-money">{{ row.amountText || row.totalTransaction }}</uni-td>
+							<uni-td align="center">{{ row.refundedTotalText || '-' }}</uni-td>
+							<uni-td align="center">{{ row.refundableAmountText || '-' }}</uni-td>
 							<uni-td align="center">{{ row.isActivated }}</uni-td>
 							<uni-td align="center" class="trade-money">{{ row.totalTransaction }}</uni-td>
-							<uni-td align="center">{{ row.cashback }}</uni-td>
-							<uni-td align="center">{{ row.releaseAmount }}</uni-td>
 							<uni-td align="center">{{ row.createTime }}</uni-td>
-							<uni-td align="center">{{ row.company }}</uni-td>
+							<uni-td align="center">
+								<button
+									v-if="row.canSimulateRefund"
+									class="uni-button"
+									size="mini"
+									type="warn"
+									@click="openRefund(row)"
+								>模拟退款</button>
+								<text v-else-if="row.isRefund" class="refund-tag">退款</text>
+								<text v-else>-</text>
+							</uni-td>
 						</uni-tr>
 					</uni-table>
 					</view>
@@ -370,6 +407,40 @@ export default {
 								callback();
 							},
 							errorMessage: '刷卡金额只允许输入正数'
+						}
+					]
+				}
+			},
+			refundSubmitting: false,
+			refundForm: {
+				deviceId: '',
+				tradeNo: '',
+				originalAmount: 0,
+				refundedTotal: 0,
+				refundableAmount: 0,
+				originalAmountText: '0.00',
+				refundedTotalText: '0.00',
+				refundableAmountText: '0.00',
+				amount: ''
+			},
+			refundRules: {
+				amount: {
+					rules: [
+						{ required: true, errorMessage: '请输入退款金额' },
+						{
+							validateFunction: (rule, value, data, callback) => {
+								const v = Number(value);
+								const max = Number(data.refundableAmount || 0);
+								if (!Number.isFinite(v) || v <= 0) {
+									callback('退款金额必须为正数');
+									return;
+								}
+								if (v - max > 0.009) {
+									callback(`退款金额不能超过可退￥${max.toFixed(2)}`);
+									return;
+								}
+								callback();
+							}
 						}
 					]
 				}
@@ -900,6 +971,56 @@ export default {
 					uni.showModal({ content: err?.message || '请求服务失败', showCancel: false });
 				}).finally(() => {
 					this.swipeSubmitting = false;
+					uni.hideLoading();
+				});
+			},
+
+			openRefund(row) {
+				if (!row || !row.canSimulateRefund) return;
+				const orig = Math.abs(Number(row.amount || 0));
+				const refunded = Number(row.refundedTotal || 0);
+				const refundable = Number(row.refundableAmount || 0);
+				this.refundForm = {
+					deviceId: row.deviceId || this.tradeDeviceId,
+					tradeNo: row.tradeNo,
+					originalAmount: orig,
+					refundedTotal: refunded,
+					refundableAmount: refundable,
+					originalAmountText: orig.toFixed(2),
+					refundedTotalText: refunded.toFixed(2),
+					refundableAmountText: refundable.toFixed(2),
+					amount: refundable > 0 ? String(refundable) : ''
+				};
+				this.$refs.refundPopup.open();
+			},
+
+			triggerRefundSubmit() {
+				this.$refs.refundFormRef.submit();
+			},
+
+			submitRefund(event) {
+				if (this.refundSubmitting) return;
+				const { value, errors } = event.detail || {};
+				if (errors) return;
+				this.refundSubmitting = true;
+				uni.showLoading({ title: '提交中...', mask: true });
+				this.$request('virtualRefund', {
+					deviceId: this.refundForm.deviceId,
+					tradeNo: this.refundForm.tradeNo,
+					amount: value.amount
+				}, { functionName: 'machine' }).then(res => {
+					if (res.code === 0) {
+						uni.showToast({ title: '模拟退款成功', icon: 'success' });
+						this.$refs.refundPopup.close();
+						this.fetchTrades();
+						this.search();
+					} else {
+						uni.showToast({ title: res.message || '模拟退款失败', icon: 'none' });
+					}
+				}).catch(err => {
+					uni.showModal({ content: err?.message || '请求服务失败', showCancel: false });
+				}).finally(() => {
+					this.refundSubmitting = false;
 					uni.hideLoading();
 				});
 			},
@@ -1486,6 +1607,20 @@ export default {
 .trade-user {
 	white-space: pre-line;
 	color: #111827;
+}
+
+.refund-hint {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	font-size: 13px;
+	color: #303133;
+	margin-bottom: 12px;
+}
+
+.refund-tag {
+	color: #f56c6c;
+	font-size: 12px;
 }
 
 .trade-money {

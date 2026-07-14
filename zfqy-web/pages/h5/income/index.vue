@@ -9,7 +9,7 @@
 		<!-- 可滚动主区域：高度 = 视口 − 底部 tabbar（含安全区），超出时出现滚动条 -->
 		<scroll-view class="page-income__scroll" scroll-y :scroll-with-animation="true">
 			<view class="page-income__scroll-inner">
-			<view class="hero h5-glass-panel">
+			<view class="hero">
 				<view class="hero-top">
 					<view class="pill pill-gold">
 						<text class="pill-icon">◎</text>
@@ -387,13 +387,18 @@ export default {
 	max-width: 52%;
 }
 .pill-gold {
-	background: rgba(15, 23, 42, 0.35);
-	color: #fde68a;
-	border: 2rpx solid rgba(250, 204, 21, 0.35);
+	background: rgba(255, 251, 235, 0.96);
+	color: #92400e;
+	border: 2rpx solid rgba(217, 119, 6, 0.5);
+}
+.pill-gold .pill-icon,
+.pill-gold .pill-txt {
+	color: #92400e;
+	font-weight: 700;
 }
 .pill-service {
-	background: rgba(15, 23, 42, 0.35);
-	color: #e2e8f0;
+	background: #f1f5f9;
+	color: #334155;
 	border: 2rpx solid rgba(255, 255, 255, 0.16);
 }
 .pill-icon { font-size: 24rpx; line-height: 1; }
@@ -620,7 +625,7 @@ export default {
 }
 .claim-btn--disabled {
 	background: rgba(255, 255, 255, 0.1);
-	color: rgba(226, 232, 240, 0.65);
+	color: #475569;
 	box-shadow: none;
 }
 
@@ -643,27 +648,27 @@ export default {
 .detail-title {
 	font-size: 16px;
 	font-weight: 700;
-	color: #f1f5f9;
+	color: #0f172a;
 	flex: 1;
 }
 .detail-meta {
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 .detail-hint {
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 .detail-arrow {
 	font-size: 12px;
-	color: #fcd34d;
+	color: #d97706;
 	width: 20px;
 	text-align: right;
 }
 
 .detail-divider {
 	height: 1px;
-	background: rgba(255, 255, 255, 0.08);
+	background: #e2e8f0;
 	margin: 12px 0 16px;
 }
 
@@ -676,7 +681,7 @@ export default {
 	justify-content: space-between;
 	align-items: center;
 	padding: 14px 0;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+	border-bottom: 1px solid #e2e8f0;
 }
 .detail-row:last-child {
 	border-bottom: none;
@@ -689,14 +694,14 @@ export default {
 .row-title {
 	display: block;
 	font-size: 15px;
-	color: #e2e8f0;
+	color: #334155;
 	font-weight: 600;
 }
 .row-time {
 	display: block;
 	margin-top: 4px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 
 .row-right {
@@ -711,17 +716,17 @@ export default {
 .row-amt {
 	font-size: 17px;
 	font-weight: 700;
-	color: #fde68a;
+	color: #059669;
 }
 .row-amt.plus {
-	color: #fde68a;
+	color: #047857;
 }
 
 .detail-empty {
 	padding: 16px 0;
 	text-align: center;
 	font-size: 13px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #64748b;
 }
 
 .tab {

@@ -9,6 +9,7 @@
 	} from './package.json';
 	import { uniAdminCacheKey } from './store/constants.js';
 	import uploadFileForExtStorage from '@/js_sdk/ext-storage/uploadFileForExtStorage.js';
+	import { applyH5UiStyle, getCachedH5UiStyle } from '@/pages/h5/common/ui-style.js';
 	
 	export default {
 		created() {
@@ -42,6 +43,11 @@
 			const hash = (window.location && window.location.hash) || '';
 			const search = (window.location && window.location.search) || '';
 			const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/');
+			if (!isAdminPath) {
+				try {
+					applyH5UiStyle(getCachedH5UiStyle());
+				} catch (e) {}
+			}
 			if (!isAdminPath && hash.indexOf('/pages/h5/') === -1) {
 				// 保留 ?code=&state= 等查询参数（微信 OAuth 回调会带在 search 上）
 				window.location.replace(`${pathname}${search}#/pages/h5/auth/index`);
@@ -104,7 +110,10 @@
 	@import '@/common/bootstrap-icons.css';
 	@import '@/common/theme.scss';
 	@import '@/common/admin-shell.scss';
-	
+	@import '@/common/h5-glass.css';
+	@import '@/common/h5-theme-a.css';
+	@import '@/common/h5-theme-b.css';
+	@import '@/common/h5-brand.css';
 	/* 提高日期选择器的层级 */
 	.uni-date-picker__container {
 		z-index: 9999 !important;

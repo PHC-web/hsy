@@ -1,10 +1,10 @@
 <template>
 	<view class="page">
-		<view class="page-bg" aria-hidden="true">
-			<view class="orb orb-a"></view>
-			<view class="orb orb-b"></view>
-			<view class="orb orb-c"></view>
-			<view class="mesh"></view>
+		<view class="h5-glass-bg" aria-hidden="true">
+			<view class="h5-glass-orb h5-glass-orb-a"></view>
+			<view class="h5-glass-orb h5-glass-orb-b"></view>
+			<view class="h5-glass-orb h5-glass-orb-c"></view>
+			<view class="h5-glass-mesh"></view>
 		</view>
 
 		<scroll-view class="scroll" scroll-y :show-scrollbar="false">
@@ -15,7 +15,7 @@
 				</view>
 
 				<!-- 会员与头像 -->
-				<view class="glass hero-card" :class="'tier-' + (membership.tier || 'normal')">
+				<view class="h5-glass-panel hero-card" :class="'tier-' + (membership.tier || 'normal')">
 					<view class="hero-shine" aria-hidden="true"></view>
 					<view class="hero-row">
 						<image class="avatar" :src="avatarUrl" mode="aspectFill" />
@@ -35,7 +35,7 @@
 					</view>
 				</view>
 
-				<view v-if="showSilverTradeStat" class="glass silver-trade-card">
+				<view v-if="showSilverTradeStat" class="h5-glass-panel silver-trade-card">
 					<text class="silver-trade-title">当月流水统计</text>
 					<text class="silver-trade-value">¥{{ silverMonthTradeYuan }}</text>
 				</view>
@@ -45,7 +45,7 @@
 					<text class="section-title">提现累积</text>
 					<text class="section-sub">已到账金额（北京时间自然日/月/年）</text>
 				</view>
-				<view class="glass stat-grid">
+				<view class="h5-glass-panel stat-grid">
 					<view class="stat-cell">
 						<text class="stat-label">今日</text>
 						<text class="stat-value">¥{{ withdraw.today }}</text>
@@ -63,7 +63,7 @@
 				</view>
 
 				<!-- 待提现 + 剩余额度 -->
-				<view class="glass duo-row">
+				<view class="h5-glass-panel duo-row">
 					<view class="duo-block">
 						<text class="duo-label">待提现金额</text>
 						<text class="duo-value accent-gold">¥{{ pendingWithdraw }}</text>
@@ -78,17 +78,17 @@
 					</view>
 				</view>
 
-				<view v-if="quota.totalGrantedYuan > 0" class="glass quota-bar-wrap">
+				<view v-if="quota.totalGrantedYuan > 0" class="h5-glass-panel quota-bar-wrap">
 					<view class="quota-bar-bg">
 						<view class="quota-bar-fill" :style="{ width: quotaBarPercent + '%' }"></view>
 					</view>
 					<text class="quota-bar-cap">剩余 {{ quotaBarPercent }}%</text>
 				</view>
-				<view class="glass prestore-card" @click="goPrestore">
+				<view class="h5-glass-panel prestore-card" @click="goPrestore">
 					<view class="prestore-main">
 						<text class="prestore-title">额度包</text>
 						<text class="prestore-sub">快捷进入升级页面，升级档位与额度</text>
-						<view class="prestore-packages">
+						<view class="prestore-packages h5-glass-surface">
 							<view v-for="pkg in prestorePackages" :key="pkg.id || pkg.price" class="prestore-pkg-row">
 								<text class="prestore-pkg-tag">{{ pkg.membershipName || '会员' }}</text>
 								<text class="prestore-pkg-text">{{ pkg.benefitTip || '查看详情请进入额度包' }}</text>
@@ -106,7 +106,7 @@
 			</view>
 		</scroll-view>
 
-		<view class="tabbar safe-bottom">
+		<view class="tabbar h5-glass-tabbar safe-bottom">
 			<view class="tab active">首页</view>
 			<view class="tab" @click="goIncome">收益</view>
 			<view class="tab" @click="goMine">我的</view>
@@ -214,6 +214,7 @@ export default {
 					return;
 				}
 				const d = res.data || {};
+				if (this.applyH5UiStyleFromApiData) this.applyH5UiStyleFromApiData(d);
 				this.mine = Object.assign({}, d.merchant || {}, {
 					deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || ''
 				});
@@ -253,6 +254,7 @@ export default {
 };
 </script>
 
+<style src="@/common/h5-glass.css"></style>
 <style scoped>
 .page {
 	min-height: 100vh;
@@ -260,53 +262,7 @@ export default {
 	box-sizing: border-box;
 	padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
 	overflow: hidden;
-}
-
-.page-bg {
-	position: fixed;
-	left: 0;
-	right: 0;
-	top: 0;
-	bottom: 0;
-	z-index: 0;
-	background: linear-gradient(160deg, #070b14 0%, #121829 38%, #0b1020 70%, #15102a 100%);
-}
-
-.mesh {
-	position: absolute;
-	inset: 0;
-	opacity: 0.35;
-	background-image: radial-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
-	background-size: 14px 14px;
-	pointer-events: none;
-}
-
-.orb {
-	position: absolute;
-	border-radius: 50%;
-	filter: blur(72px);
-	pointer-events: none;
-}
-.orb-a {
-	width: 220px;
-	height: 220px;
-	top: -40px;
-	right: -30px;
-	background: rgba(99, 102, 241, 0.45);
-}
-.orb-b {
-	width: 280px;
-	height: 280px;
-	top: 28%;
-	left: -80px;
-	background: rgba(56, 189, 248, 0.28);
-}
-.orb-c {
-	width: 200px;
-	height: 200px;
-	bottom: 18%;
-	right: -40px;
-	background: rgba(244, 114, 182, 0.22);
+	background: transparent;
 }
 
 .scroll {
@@ -328,7 +284,7 @@ export default {
 .page-title {
 	font-size: 22px;
 	font-weight: 700;
-	color: rgba(248, 250, 252, 0.96);
+	color: #0f172a;
 	letter-spacing: 0.02em;
 }
 .top-refresh-btn {
@@ -336,37 +292,27 @@ export default {
 	border-radius: 999px;
 	font-size: 12px;
 	font-weight: 600;
-	color: #cbd5e1;
-	background: rgba(15, 23, 42, 0.35);
-	border: 1px solid rgba(255, 255, 255, 0.18);
-}
-
-.glass {
-	position: relative;
-	background: rgba(255, 255, 255, 0.07);
-	border: 1px solid rgba(255, 255, 255, 0.14);
-	border-radius: 22px;
-	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-	backdrop-filter: blur(22px);
-	-webkit-backdrop-filter: blur(22px);
-	overflow: hidden;
+	color: #2563eb;
+	background: #dbeafe;
+	border: 1px solid #bfdbfe;
 }
 
 .hero-card {
 	padding: 18px 18px 14px;
 	margin-bottom: 16px;
+	overflow: hidden;
 }
 .hero-card.tier-diamond {
-	border-color: rgba(125, 211, 252, 0.35);
-	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(56, 189, 248, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+	border-color: #7dd3fc;
+	box-shadow: 0 8px 24px rgba(14, 165, 233, 0.12);
 }
 .hero-card.tier-platinum {
-	border-color: rgba(216, 180, 254, 0.35);
-	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(192, 132, 252, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	border-color: #d8b4fe;
+	box-shadow: 0 8px 24px rgba(168, 85, 247, 0.1);
 }
 .hero-card.tier-white_gold {
-	border-color: rgba(253, 224, 71, 0.28);
-	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(250, 204, 21, 0.1), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	border-color: #fde047;
+	box-shadow: 0 8px 24px rgba(234, 179, 8, 0.1);
 }
 .hero-shine {
 	position: absolute;
@@ -374,7 +320,7 @@ export default {
 	left: -20%;
 	width: 70%;
 	height: 80%;
-	background: linear-gradient(120deg, rgba(255, 255, 255, 0.14), transparent 55%);
+	background: linear-gradient(120deg, rgba(255, 255, 255, 0.85), transparent 55%);
 	transform: rotate(-18deg);
 	pointer-events: none;
 }
@@ -389,8 +335,8 @@ export default {
 	width: 64px;
 	height: 64px;
 	border-radius: 20px;
-	border: 2px solid rgba(255, 255, 255, 0.2);
-	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+	border: 2px solid #e2e8f0;
+	box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 	flex-shrink: 0;
 }
 .hero-text {
@@ -401,13 +347,13 @@ export default {
 	display: block;
 	font-size: 18px;
 	font-weight: 700;
-	color: #f8fafc;
+	color: #0f172a;
 }
 .mobile {
 	display: block;
 	margin-top: 4px;
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.65);
+	color: #64748b;
 }
 .badge-row {
 	margin-top: 10px;
@@ -418,29 +364,27 @@ export default {
 	gap: 6px;
 	padding: 5px 12px 5px 10px;
 	border-radius: 999px;
-	background: rgba(15, 23, 42, 0.35);
-	border: 1px solid rgba(255, 255, 255, 0.2);
-}
-.member-badge-dot {
-	font-size: 8px;
-	line-height: 1;
+	background: rgba(255, 255, 255, 0.55);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	border: 1px solid rgba(255, 255, 255, 0.72);
 }
 .member-badge-txt {
 	font-size: 13px;
 	font-weight: 600;
-	color: rgba(254, 252, 232, 0.95);
+	color: #334155;
 	letter-spacing: 0.04em;
 }
 .hero-foot {
 	margin-top: 14px;
 	padding-top: 12px;
-	border-top: 1px solid rgba(255, 255, 255, 0.08);
+	border-top: 1px solid #e2e8f0;
 	position: relative;
 	z-index: 1;
 }
 .hero-foot-txt {
 	font-size: 12px;
-	color: rgba(203, 213, 225, 0.72);
+	color: #64748b;
 }
 
 .silver-trade-card {
@@ -450,14 +394,14 @@ export default {
 .silver-trade-title {
 	display: block;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 .silver-trade-value {
 	display: block;
 	margin-top: 6px;
 	font-size: 24px;
 	font-weight: 800;
-	color: #a7f3d0;
+	color: #059669;
 	letter-spacing: 0.02em;
 }
 
@@ -468,13 +412,13 @@ export default {
 	display: block;
 	font-size: 14px;
 	font-weight: 600;
-	color: rgba(226, 232, 240, 0.88);
+	color: #334155;
 }
 .section-sub {
 	display: block;
 	margin-top: 2px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.85);
+	color: #94a3b8;
 }
 
 .stat-grid {
@@ -491,19 +435,19 @@ export default {
 .stat-label {
 	display: block;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	margin-bottom: 6px;
 }
 .stat-value {
 	display: block;
 	font-size: 17px;
 	font-weight: 700;
-	color: #f1f5f9;
+	color: #0f172a;
 	letter-spacing: 0.02em;
 }
 .stat-div {
 	width: 1px;
-	background: rgba(255, 255, 255, 0.08);
+	background: #e2e8f0;
 	margin: 12px 0;
 }
 
@@ -518,13 +462,13 @@ export default {
 }
 .duo-v {
 	width: 1px;
-	background: rgba(255, 255, 255, 0.08);
+	background: #e2e8f0;
 	margin: 14px 0;
 }
 .duo-label {
 	display: block;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 	margin-bottom: 8px;
 }
 .duo-value {
@@ -534,18 +478,16 @@ export default {
 	letter-spacing: 0.02em;
 }
 .accent-gold {
-	color: #fde68a;
-	text-shadow: 0 0 24px rgba(250, 204, 21, 0.25);
+	color: #d97706;
 }
 .accent-mint {
-	color: #a7f3d0;
-	text-shadow: 0 0 24px rgba(52, 211, 153, 0.2);
+	color: #059669;
 }
 .duo-hint {
 	display: block;
 	margin-top: 8px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #94a3b8;
 	line-height: 1.45;
 }
 
@@ -556,22 +498,20 @@ export default {
 .quota-bar-bg {
 	height: 8px;
 	border-radius: 999px;
-	background: rgba(15, 23, 42, 0.45);
+	background: #e2e8f0;
 	overflow: hidden;
-	border: 1px solid rgba(255, 255, 255, 0.06);
 }
 .quota-bar-fill {
 	height: 100%;
 	border-radius: 999px;
-	background: linear-gradient(90deg, #34d399, #6ee7b7, #a7f3d0);
-	box-shadow: 0 0 16px rgba(52, 211, 153, 0.35);
+	background: linear-gradient(90deg, #10b981, #34d399, #6ee7b7);
 	transition: width 0.45s ease;
 }
 .quota-bar-cap {
 	display: block;
 	margin-top: 8px;
 	font-size: 11px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #94a3b8;
 	text-align: right;
 }
 .prestore-card {
@@ -590,20 +530,18 @@ export default {
 	display: block;
 	font-size: 15px;
 	font-weight: 700;
-	color: #e2e8f0;
+	color: #0f172a;
 }
 .prestore-sub {
 	display: block;
 	margin-top: 4px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #64748b;
 }
 .prestore-packages {
 	margin-top: 10px;
 	padding: 8px 10px;
 	border-radius: 12px;
-	background: rgba(15, 23, 42, 0.36);
-	border: 1px solid rgba(255, 255, 255, 0.1);
 }
 .prestore-pkg-row {
 	display: flex;
@@ -622,16 +560,16 @@ export default {
 	font-size: 10px;
 	font-weight: 700;
 	line-height: 1.4;
-	color: #fef3c7;
-	background: rgba(245, 158, 11, 0.24);
-	border: 1px solid rgba(251, 191, 36, 0.35);
+	color: #b45309;
+	background: #fef3c7;
+	border: 1px solid #fde68a;
 }
 .prestore-pkg-text {
 	flex: 1;
 	min-width: 0;
 	font-size: 11px;
 	line-height: 1.5;
-	color: rgba(226, 232, 240, 0.95);
+	color: #475569;
 }
 .prestore-gift {
 	display: block;
@@ -639,18 +577,18 @@ export default {
 	font-size: 11px;
 	font-weight: 700;
 	line-height: 1.5;
-	color: #fbbf24;
+	color: #d97706;
 }
 .prestore-arrow {
 	font-size: 20px;
-	color: rgba(148, 163, 184, 0.95);
+	color: #94a3b8;
 }
 
 .loading-hint {
 	text-align: center;
 	padding: 8px;
 	font-size: 12px;
-	color: rgba(148, 163, 184, 0.8);
+	color: #94a3b8;
 }
 .loading-mask {
 	position: fixed;
@@ -659,7 +597,7 @@ export default {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	background: rgba(2, 6, 23, 0.45);
+	background: rgba(15, 23, 42, 0.12);
 	backdrop-filter: blur(2px);
 	-webkit-backdrop-filter: blur(2px);
 }
@@ -671,21 +609,21 @@ export default {
 	flex-direction: column;
 	align-items: center;
 	gap: 10px;
-	background: rgba(15, 23, 42, 0.86);
-	border: 1px solid rgba(255, 255, 255, 0.14);
-	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.3);
+	background: #ffffff;
+	border: 1px solid #e2e8f0;
+	box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
 }
 .loading-spinner {
 	width: 24px;
 	height: 24px;
 	border-radius: 50%;
-	border: 2px solid rgba(148, 163, 184, 0.35);
-	border-top-color: #a5b4fc;
+	border: 2px solid #e2e8f0;
+	border-top-color: #2563eb;
 	animation: h5-spin 0.8s linear infinite;
 }
 .loading-text {
 	font-size: 12px;
-	color: rgba(226, 232, 240, 0.95);
+	color: #475569;
 }
 @keyframes h5-spin {
 	from {
@@ -710,22 +648,16 @@ export default {
 	padding-bottom: env(safe-area-inset-bottom, 0px);
 	box-sizing: border-box;
 	align-items: flex-start;
-	padding-top: 0;
-	background: rgba(15, 23, 42, 0.72);
-	border-top: 1px solid rgba(255, 255, 255, 0.08);
-	backdrop-filter: blur(20px);
-	-webkit-backdrop-filter: blur(20px);
-	box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.2);
 }
 .tab {
 	flex: 1;
 	text-align: center;
 	line-height: 56px;
-	color: rgba(148, 163, 184, 0.9);
+	color: #94a3b8;
 	font-size: 14px;
 }
 .tab.active {
-	color: #a5b4fc;
+	color: #2563eb;
 	font-weight: 700;
 }
 </style>
