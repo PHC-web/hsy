@@ -217,19 +217,19 @@ html.h5-ui-a .agreement-sheet--dark {
 	color: #e5e7eb !important;
 }
 
-/* 额度包页：恢复原紫色 UI（深色套餐卡 + 白色说明块 + 红色价格） */
+/* 额度包页：原紫色 UI（深色套餐卡 + 深色说明块 + 左侧色条 + 白字 + 红粉价格） */
 html.h5-ui-a .pkg {
-	background: rgba(15, 23, 42, 0.42) !important;
-	border: 1px solid rgba(255, 255, 255, 0.14) !important;
+	background: rgba(27, 28, 49, 0.88) !important;
+	border: 1px solid rgba(142, 146, 177, 0.22) !important;
 	box-shadow: none !important;
 	backdrop-filter: blur(16px) !important;
 	-webkit-backdrop-filter: blur(16px) !important;
 }
 
 html.h5-ui-a .pkg-active {
-	border-color: rgba(129, 140, 248, 0.55) !important;
-	background: rgba(49, 46, 129, 0.35) !important;
-	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.22) !important;
+	border-color: rgba(99, 140, 255, 0.72) !important;
+	background: rgba(36, 38, 72, 0.92) !important;
+	box-shadow: 0 0 0 1px rgba(80, 120, 255, 0.28), 0 0 18px rgba(50, 107, 255, 0.18) !important;
 }
 
 html.h5-ui-a .pkg-title {
@@ -237,25 +237,25 @@ html.h5-ui-a .pkg-title {
 }
 
 html.h5-ui-a .pkg-member {
-	color: #c4b5fd !important;
+	color: #8e92b1 !important;
 }
 
 html.h5-ui-a .pkg-price {
-	color: #ef4444 !important;
+	color: #f1618e !important;
 }
 
 html.h5-ui-a .pkg-check {
-	background: rgba(15, 23, 42, 0.55) !important;
-	border-color: rgba(255, 255, 255, 0.28) !important;
+	background: transparent !important;
+	border-color: rgba(142, 146, 177, 0.55) !important;
 	color: transparent !important;
 	box-shadow: none !important;
 }
 
 html.h5-ui-a .pkg-check--on {
 	color: #fff !important;
-	border-color: #3b82f6 !important;
-	background: #2563eb !important;
-	box-shadow: 0 0 10px rgba(37, 99, 235, 0.35) !important;
+	border-color: #326bff !important;
+	background: #326bff !important;
+	box-shadow: none !important;
 }
 
 html.h5-ui-a .pkg-desc,
@@ -264,40 +264,37 @@ html.h5-ui-a .pkg-desc--white-gold,
 html.h5-ui-a .pkg-desc--platinum,
 html.h5-ui-a .pkg-desc--diamond,
 html.h5-ui-a .pkg-desc--default {
-	background: #ffffff !important;
-	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18) !important;
+	background: rgba(18, 19, 36, 0.92) !important;
+	box-shadow: none !important;
+	border: 1px solid rgba(142, 146, 177, 0.16) !important;
 }
 
 html.h5-ui-a .pkg-desc--gold {
-	border: 1px solid #fde68a !important;
-	border-left: 4px solid #f59e0b !important;
+	border-left: 4px solid #e8b84a !important;
 }
 
 html.h5-ui-a .pkg-desc--white-gold {
-	border: 1px solid #e2e8f0 !important;
-	border-left: 4px solid #94a3b8 !important;
+	border-left: 4px solid #c8cdd8 !important;
 }
 
 html.h5-ui-a .pkg-desc--platinum {
-	border: 1px solid #e9d5ff !important;
-	border-left: 4px solid #a855f7 !important;
+	border-left: 4px solid #a78bfa !important;
 }
 
 html.h5-ui-a .pkg-desc--diamond,
 html.h5-ui-a .pkg-desc--default {
-	border: 1px solid #bfdbfe !important;
-	border-left: 4px solid #3b82f6 !important;
+	border-left: 4px solid #38bdf8 !important;
 }
 
 html.h5-ui-a .pkg-desc-body {
-	color: #1e293b !important;
-	font-weight: 600 !important;
+	color: #f1f5f9 !important;
+	font-weight: 500 !important;
 }
 
 html.h5-ui-a .pkg-upgrade {
 	color: #93c5fd !important;
-	background: rgba(37, 99, 235, 0.16) !important;
-	border-color: rgba(59, 130, 246, 0.35) !important;
+	background: rgba(50, 107, 255, 0.16) !important;
+	border-color: rgba(50, 107, 255, 0.35) !important;
 }
 
 html.h5-ui-a .gift-title {

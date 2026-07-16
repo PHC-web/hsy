@@ -624,11 +624,23 @@ async function validateRefundEntryToken(merchantId, token) {
 	return { ok: true, row };
 }
 
+/** 完整机具号走等值（可走索引）；短关键词仍用模糊正则 */
+function isLikelyExactDeviceId(kw) {
+	return /^[A-Za-z0-9][A-Za-z0-9_-]{6,48}$/.test(String(kw || ''));
+}
+
+/** 机具号字段条件：完整号等值，否则不区分大小写模糊 */
+function buildDeviceIdFieldCond(deviceKeyword) {
+	const kw = safeText(deviceKeyword, 50);
+	if (!kw) return null;
+	if (isLikelyExactDeviceId(kw)) return { device_id: kw };
+	return { device_id: new RegExp(escapeReg(kw), 'i') };
+}
+
 /** 按机具号关键词查 hsy-machine，返回对应 bind_user_id（含非主快照机具） */
 async function listBindUserIdsByBoundDeviceKeyword(deviceKeyword) {
-	const kw = safeText(deviceKeyword, 50);
-	if (!kw) return [];
-	const re = new RegExp(escapeReg(kw), 'i');
+	const deviceCond = buildDeviceIdFieldCond(deviceKeyword);
+	if (!deviceCond) return [];
 	const userSet = new Set();
 	let skip = 0;
 	const PAGE = 1000;
@@ -638,7 +650,7 @@ async function listBindUserIdsByBoundDeviceKeyword(deviceKeyword) {
 				is_deleted: false,
 				is_bound: 1,
 				bind_user_id: db.command.neq(''),
-				device_id: re
+				...deviceCond
 			})
 			.field({ bind_user_id: true })
 			.skip(skip)
@@ -656,21 +668,32 @@ async function listBindUserIdsByBoundDeviceKeyword(deviceKeyword) {
 	return [...userSet];
 }
 
+/**
+ * 商户列表机具号条件：
+ * - 机具表已解析出 bind_user_id 时，只用 user_id/_id $in（避免与 device_id 正则 $or 导致全表扫）
+ * - 未命中时再回退到商户文档上的 device_id（兼容旧数据）
+ */
 function buildMerchantListDeviceIdWhere(deviceKeyword, bindUserIds) {
 	const kw = safeText(deviceKeyword, 50);
 	if (!kw) return null;
-	const re = new RegExp(escapeReg(kw), 'i');
-	const orParts = [{ device_id: re }];
-	const ids = [...new Set((Array.isArray(bindUserIds) ? bindUserIds : []).map((x) => String(x || '').trim()).filter(Boolean))];
+	const ids = [
+		...new Set(
+			(Array.isArray(bindUserIds) ? bindUserIds : [])
+				.map((x) => String(x || '').trim())
+				.filter(Boolean)
+		)
+	];
 	if (ids.length) {
+		const orParts = [];
 		const CHUNK = 450;
 		for (let i = 0; i < ids.length; i += CHUNK) {
 			const part = ids.slice(i, i + CHUNK);
 			orParts.push({ user_id: db.command.in(part) });
 			orParts.push({ _id: db.command.in(part) });
 		}
+		return orParts.length === 1 ? orParts[0] : db.command.or(orParts);
 	}
-	return orParts.length === 1 ? orParts[0] : db.command.or(orParts);
+	return buildDeviceIdFieldCond(kw);
 }
 
 async function listMerchants(data) {
