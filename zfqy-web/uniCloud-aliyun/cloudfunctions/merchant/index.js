@@ -6936,6 +6936,7 @@ async function h5MineInfo(data) {
 				feedback: {
 					unreadReply: openTicket ? !!openTicket.user_unread_reply : false
 				},
+				servicePhone: safeText(biz?.servicePhone || DEFAULT_BIZ_SETTINGS.servicePhone, 30),
 				h5UiStyle: String(biz.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A'
 			}
 		};

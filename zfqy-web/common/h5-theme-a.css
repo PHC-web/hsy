@@ -104,6 +104,7 @@ html.h5-ui-a .prestore-sub,
 html.h5-ui-a .prestore-pkg-text,
 html.h5-ui-a .prestore-arrow,
 html.h5-ui-a .silver-trade-title,
+html.h5-ui-a .menu-sub,
 html.h5-ui-a .rules-item {
 	/* 次要文字提高亮度，避免紫底上看不清 */
 	color: #cbd5e1 !important;
@@ -211,6 +212,17 @@ html.h5-ui-a .input {
 	color: #f1f5f9 !important;
 }
 
+html.h5-ui-a .safe-input-native {
+	color: #f8fafc !important;
+	caret-color: #f8fafc !important;
+	-webkit-text-fill-color: #f8fafc !important;
+}
+
+html.h5-ui-a .safe-input-native::placeholder {
+	color: #94a3b8 !important;
+	-webkit-text-fill-color: #94a3b8 !important;
+}
+
 html.h5-ui-a .agreement-sheet--dark {
 	background: linear-gradient(180deg, #0f172a 0%, #111827 100%) !important;
 	border-color: rgba(255, 255, 255, 0.12) !important;
@@ -237,7 +249,8 @@ html.h5-ui-a .pkg-title {
 }
 
 html.h5-ui-a .pkg-member {
-	color: #8e92b1 !important;
+	color: #fcd34d !important;
+	font-weight: 600 !important;
 }
 
 html.h5-ui-a .pkg-price {
@@ -314,4 +327,92 @@ html.h5-ui-a .gift-row {
 html.h5-ui-a .gift-row--on {
 	border-color: rgba(96, 165, 250, 0.55) !important;
 	background: rgba(37, 99, 235, 0.18) !important;
+}
+
+/* 售后反馈：空状态 / 气泡正文 / 时间戳提高对比度 */
+html.h5-ui-a .empty-title {
+	color: #f8fafc !important;
+}
+
+html.h5-ui-a .empty-sub {
+	color: #cbd5e1 !important;
+}
+
+html.h5-ui-a .bubble {
+	border-color: rgba(255, 255, 255, 0.16) !important;
+}
+
+html.h5-ui-a .bubble--user {
+	border-color: rgba(96, 165, 250, 0.45) !important;
+}
+
+html.h5-ui-a .bubble--user::before {
+	background: rgba(30, 58, 138, 0.55) !important;
+}
+
+html.h5-ui-a .bubble--admin {
+	border-color: rgba(255, 255, 255, 0.18) !important;
+}
+
+html.h5-ui-a .bubble--admin::before {
+	background: rgba(30, 41, 59, 0.72) !important;
+}
+
+html.h5-ui-a .bubble-text {
+	color: #f1f5f9 !important;
+}
+
+html.h5-ui-a .bubble-time {
+	color: #94a3b8 !important;
+}
+
+html.h5-ui-a .bubble-meta {
+	color: #fbbf24 !important;
+}
+
+/* 码牌绑定：列表副文案 / 记录正文 / 输入框对比度 */
+html.h5-ui-a .bind-item {
+	background: rgba(15, 23, 42, 0.45) !important;
+	border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+html.h5-ui-a .bind-device {
+	color: #f8fafc !important;
+}
+
+html.h5-ui-a .bind-meta,
+html.h5-ui-a .log-time,
+html.h5-ui-a .log-reason {
+	color: #cbd5e1 !important;
+}
+
+html.h5-ui-a .log-content {
+	color: #f1f5f9 !important;
+}
+
+html.h5-ui-a .log-tag.tag-bind {
+	color: #86efac !important;
+	background: rgba(22, 163, 74, 0.22) !important;
+}
+
+html.h5-ui-a .log-tag.tag-unbind {
+	color: #fda4af !important;
+	background: rgba(225, 29, 72, 0.2) !important;
+}
+
+html.h5-ui-a .input {
+	background: rgba(15, 23, 42, 0.45) !important;
+	border-color: rgba(255, 255, 255, 0.12) !important;
+	color: #f8fafc !important;
+	-webkit-text-fill-color: #f8fafc !important;
+	caret-color: #f8fafc !important;
+}
+
+html.h5-ui-a .ph {
+	color: #94a3b8 !important;
+	-webkit-text-fill-color: #94a3b8 !important;
+}
+
+html.h5-ui-a .btn-more {
+	color: #e2e8f0 !important;
 }

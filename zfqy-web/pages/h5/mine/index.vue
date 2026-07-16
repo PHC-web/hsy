@@ -113,6 +113,19 @@
 							</view>
 							<text class="menu-title">售后反馈</text>
 						</view>
+						<view class="menu-cell" @click="callServicePhone">
+							<view class="menu-icon menu-icon--emerald">
+								<text class="bi bi-telephone"></text>
+							</view>
+							<text class="menu-title">客服电话</text>
+						</view>
+						<view v-if="showGiftExchangeMenu" class="menu-cell" @click="onGiftExchange">
+							<view class="menu-icon menu-icon--fuchsia">
+								<text class="bi bi-box2-heart"></text>
+							</view>
+							<text class="menu-title">礼品兑换</text>
+							<text class="menu-sub">未开放</text>
+						</view>
 					</view>
 				</view>
 
@@ -198,6 +211,7 @@ export default {
 			accountPointsVisible: false,
 			defaultAvatar: H5_APP_LOGO,
 			feedbackUnread: false,
+			servicePhone: '400-668-5796',
 			agreement: {
 				needSign: false,
 				currentVersion: '',
@@ -352,6 +366,10 @@ export default {
 			const ra = Number(this.mine.rechargeAmount || 0);
 			if (Number.isFinite(ra) && ra > 0) return false;
 			return true;
+		},
+		/** 兑换码显示时隐藏礼品兑换，保持 9 宫格 */
+		showGiftExchangeMenu() {
+			return !this.showExchangeCodeMenu;
 		}
 	},
 	onShow() {
@@ -412,6 +430,8 @@ export default {
 				if (fb) {
 					this.feedbackUnread = !!fb.unreadReply;
 				}
+				const phone = String(mData.servicePhone || this.servicePhone || '400-668-5796').trim();
+				if (phone) this.servicePhone = phone;
 			} finally {
 				clearTimeout(maskTimer);
 				this.pending = false;
@@ -450,6 +470,22 @@ export default {
 		},
 		goFeedback() {
 			uni.navigateTo({ url: '/pages/h5/feedback/index' });
+		},
+		callServicePhone() {
+			const phone = String(this.servicePhone || '400-668-5796').replace(/[^\d+]/g, '');
+			if (!phone) {
+				uni.showToast({ title: '客服电话未配置', icon: 'none' });
+				return;
+			}
+			uni.makePhoneCall({
+				phoneNumber: phone,
+				fail: () => {
+					uni.showToast({ title: '拨号失败，请稍后重试', icon: 'none' });
+				}
+			});
+		},
+		onGiftExchange() {
+			uni.showToast({ title: '未开放', icon: 'none' });
 		},
 		async onAvailableRewardClick() {
 			const ar = Number(this.account.availableReward || 0);
@@ -1003,6 +1039,14 @@ export default {
 	background: linear-gradient(145deg, #ffedd5 0%, #fff7ed 100%);
 	color: #ea580c;
 }
+.menu-icon--emerald {
+	background: linear-gradient(145deg, #d1fae5 0%, #ecfdf5 100%);
+	color: #059669;
+}
+.menu-icon--fuchsia {
+	background: linear-gradient(145deg, #fae8ff 0%, #fdf4ff 100%);
+	color: #c026d3;
+}
 
 .menu-badge {
 	position: absolute;
@@ -1022,6 +1066,15 @@ export default {
 	line-height: 1.3;
 	text-align: center;
 	max-width: 100%;
+}
+
+.menu-sub {
+	margin-top: -4px;
+	color: #94a3b8;
+	font-size: 10px;
+	font-weight: 500;
+	line-height: 1.2;
+	text-align: center;
 }
 
 .mine-bottom-spacer {
