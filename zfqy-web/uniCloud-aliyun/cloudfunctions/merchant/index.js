@@ -17,6 +17,10 @@ const feedbackTicketCollection = db.collection('hsy-h5-feedback');
 const feedbackMessageCollection = db.collection('hsy-h5-feedback-messages');
 const rechargeGiftShipmentCollection = db.collection('hsy-recharge-gift-shipments');
 const systemSettingCollection = db.collection('hsy-system-settings');
+const periodLimitsCollection = db.collection('hsy-biz-period-limits');
+const PERIOD_LIMITS_DOC_KEY = 'default';
+/** 用于后台校验是否已部署带日周限额的云函数版本 */
+const MERCHANT_CF_BUILD = 'PERIOD_V4_20260715';
 const agreementCollection = db.collection('hsy-agreements');
 const transferOrderCollection = db.collection('hsy-transfer-orders');
 const exchangeCouponCollection = db.collection('hsy-exchange-coupons');
@@ -6947,6 +6951,47 @@ async function h5AgreementSignedSnapshot(data) {
 }
 
 const BIZ_SETTING_KEY = 'h5_biz_params';
+
+async function loadPeriodLimitsFromStore() {
+	try {
+		const r = await periodLimitsCollection.where({ key: PERIOD_LIMITS_DOC_KEY }).limit(1).get();
+		if (!(r.data && r.data[0])) return null;
+		const d = r.data[0];
+		return sanitizeBizSettings({
+			withdrawPeriodLimits: {
+				exchangeCoupon: d.exchangeCoupon,
+				paidGoldPlatinum: d.paidGoldPlatinum,
+				paidDiamond: d.paidDiamond
+			}
+		}).withdrawPeriodLimits;
+	} catch (e) {
+		console.error('loadPeriodLimitsFromStore failed', e);
+		return null;
+	}
+}
+
+async function savePeriodLimitsToStore(limits, operator = '') {
+	const clean = sanitizeBizSettings({
+		withdrawPeriodLimits: limits || {}
+	}).withdrawPeriodLimits;
+	const now = nowTs();
+	const payload = {
+		key: PERIOD_LIMITS_DOC_KEY,
+		exchangeCoupon: clean.exchangeCoupon,
+		paidGoldPlatinum: clean.paidGoldPlatinum,
+		paidDiamond: clean.paidDiamond,
+		update_time: now,
+		update_user: safeText(operator, 80)
+	};
+	const r = await periodLimitsCollection.where({ key: PERIOD_LIMITS_DOC_KEY }).limit(1).get();
+	if (r.data && r.data[0]) {
+		await periodLimitsCollection.doc(r.data[0]._id).update(payload);
+	} else {
+		await periodLimitsCollection.add(payload);
+	}
+	return clean;
+}
+
 const DEFAULT_RECHARGE_RULES = [
 	{ price: 600, rewardYuan: 3800, quota: 1000000, tip: '600元配置100万交易量，等于补贴市场价的3800元手续费' },
 	{ price: 800, rewardYuan: 5700, quota: 1500000, tip: '800元配置150万交易量，等于补贴市场价的5700元手续费' },
@@ -7079,16 +7124,42 @@ function sanitizeBizSettings(raw = {}) {
 		nonMember7Plus: Math.max(1, Number(wm.nonMember7Plus || defWm.nonMember7Plus))
 	};
 	const defPeriod = DEFAULT_BIZ_SETTINGS.withdrawPeriodLimits;
-	const srcPeriod = raw.withdrawPeriodLimits && typeof raw.withdrawPeriodLimits === 'object' ? raw.withdrawPeriodLimits : {};
+	let srcPeriodRaw = raw.withdrawPeriodLimits;
+	if (typeof srcPeriodRaw === 'string') {
+		try {
+			srcPeriodRaw = JSON.parse(srcPeriodRaw);
+		} catch (e) {
+			srcPeriodRaw = null;
+		}
+	}
+	const srcPeriod = srcPeriodRaw && typeof srcPeriodRaw === 'object' ? srcPeriodRaw : {};
+	const normPeriodNum = (v, fallback) => {
+		const n = Number(v);
+		if (Number.isFinite(n) && n >= 0) return n;
+		const fb = Number(fallback);
+		return Number.isFinite(fb) && fb >= 0 ? fb : 0;
+	};
 	const normPeriodGroup = (g, d) => ({
-		dayMax: Math.max(0, Number(g && g.dayMax != null ? g.dayMax : d.dayMax)),
-		weekMax: Math.max(0, Number(g && g.weekMax != null ? g.weekMax : d.weekMax))
+		dayMax: normPeriodNum(g && g.dayMax != null && g.dayMax !== '' ? g.dayMax : d.dayMax, d.dayMax),
+		weekMax: normPeriodNum(g && g.weekMax != null && g.weekMax !== '' ? g.weekMax : d.weekMax, d.weekMax)
 	});
 	const withdrawPeriodLimits = {
 		exchangeCoupon: normPeriodGroup(srcPeriod.exchangeCoupon, defPeriod.exchangeCoupon),
 		paidGoldPlatinum: normPeriodGroup(srcPeriod.paidGoldPlatinum, defPeriod.paidGoldPlatinum),
 		paidDiamond: normPeriodGroup(srcPeriod.paidDiamond, defPeriod.paidDiamond)
 	};
+	// 扁平字段兜底（避免深层对象在 callFunction 传参时丢失）
+	const applyFlat = (group, dayKey, weekKey) => {
+		if (raw[dayKey] != null && raw[dayKey] !== '') {
+			withdrawPeriodLimits[group].dayMax = normPeriodNum(raw[dayKey], withdrawPeriodLimits[group].dayMax);
+		}
+		if (raw[weekKey] != null && raw[weekKey] !== '') {
+			withdrawPeriodLimits[group].weekMax = normPeriodNum(raw[weekKey], withdrawPeriodLimits[group].weekMax);
+		}
+	};
+	applyFlat('exchangeCoupon', 'periodExchangeDay', 'periodExchangeWeek');
+	applyFlat('paidGoldPlatinum', 'periodGoldDay', 'periodGoldWeek');
+	applyFlat('paidDiamond', 'periodDiamondDay', 'periodDiamondWeek');
 	const wa = raw.withdrawAudit || {};
 	const withdrawAudit = {
 		memberRequired: wa.memberRequired === true || wa.memberRequired === '1' || wa.memberRequired === 1,
@@ -7210,30 +7281,36 @@ function isTestMerchantByBiz(merchant, biz) {
 
 async function getBizSettings() {
 	const now = Date.now();
-	if (bizSettingsCache && now - bizSettingsCacheAt < BIZ_SETTINGS_CACHE_TTL_MS) {
-		return bizSettingsCache;
-	}
+	let settings = null;
+	// 优先读 Redis（跨实例一致）。禁止「仅内存缓存优先」：多实例下 A 保存后 B 仍会返回旧值，导致后台改参回弹。
 	const rRedis = await redisH5.h5RedisGetJson(REDIS_KEY_BIZ);
 	if (rRedis && rRedis.rechargeRules && Array.isArray(rRedis.rechargeRules)) {
-		bizSettingsCache = sanitizeBizSettings(rRedis);
-		bizSettingsCacheAt = now;
-		return bizSettingsCache;
-	}
-	try {
-		const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(1).get();
-		if (r.data && r.data.length) {
-			bizSettingsCache = sanitizeBizSettings(r.data[0].value || {});
-			bizSettingsCacheAt = now;
-			await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, bizSettingsCache, REDIS_EX_BIZ_SEC);
-			return bizSettingsCache;
+		settings = sanitizeBizSettings(rRedis);
+	} else if (bizSettingsCache && now - bizSettingsCacheAt < 2000) {
+		settings = bizSettingsCache;
+	} else {
+		try {
+			const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(20).get();
+			const doc = pickBizSettingDoc(r.data || []);
+			if (doc) {
+				settings = sanitizeBizSettings(resolveBizRawFromDoc(doc));
+			}
+		} catch (e) {
+			console.error('getBizSettings failed', e);
 		}
-	} catch (e) {
-		console.error('getBizSettings failed', e);
+		if (!settings) {
+			settings = sanitizeBizSettings(DEFAULT_BIZ_SETTINGS);
+		}
+		await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, settings, REDIS_EX_BIZ_SEC);
 	}
-	bizSettingsCache = sanitizeBizSettings(DEFAULT_BIZ_SETTINGS);
+	// 独立表覆盖日/周限额（不依赖旧版 system-settings.value 是否含新字段）
+	const periodOverride = await loadPeriodLimitsFromStore();
+	if (periodOverride) {
+		settings.withdrawPeriodLimits = periodOverride;
+	}
+	bizSettingsCache = settings;
 	bizSettingsCacheAt = now;
-	await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, bizSettingsCache, REDIS_EX_BIZ_SEC);
-	return bizSettingsCache;
+	return settings;
 }
 
 function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES) {
@@ -15345,9 +15422,40 @@ async function h5UiStyleGet() {
 	}
 }
 
+function pickBizSettingDoc(rows) {
+	const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+	if (!list.length) return null;
+	list.sort((a, b) => Number(b.update_time || b.create_time || 0) - Number(a.update_time || a.create_time || 0));
+	return list[0];
+}
+
+function resolveBizRawFromDoc(doc) {
+	if (!doc) return {};
+	const raw = Object.assign({}, doc.value && typeof doc.value === 'object' ? doc.value : {});
+	// 独立字段优先：避免 value 对象合并/截断导致限额丢失
+	if (doc.biz_period_limits && typeof doc.biz_period_limits === 'object') {
+		raw.withdrawPeriodLimits = doc.biz_period_limits;
+	}
+	return raw;
+}
+
 async function bizConfigGet() {
 	try {
-		const value = await getBizSettings();
+		// 后台配置页必须直读数据库，避免 Redis/内存缓存导致「已保存又回弹默认值」
+		let raw = {};
+		try {
+			const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(20).get();
+			const doc = pickBizSettingDoc(r.data || []);
+			raw = resolveBizRawFromDoc(doc);
+		} catch (e) {
+			console.error('bizConfigGet db read failed, fallback getBizSettings', e);
+			raw = await getBizSettings();
+		}
+		const value = sanitizeBizSettings(raw);
+		const periodOverride = await loadPeriodLimitsFromStore();
+		if (periodOverride) {
+			value.withdrawPeriodLimits = periodOverride;
+		}
 		const wxPayMch = value.wxPayMch || sanitizeWxPayMchSelection(null, resolveDefaultWxPayMchIds());
 		const wxPayMchEffective = WX_PAY_MCH_OPTIONS.map((opt) => ({
 			mchId: opt.mchId,
@@ -15361,6 +15469,7 @@ async function bizConfigGet() {
 			message: 'ok',
 			data: {
 				...value,
+				cfBuild: MERCHANT_CF_BUILD,
 				wxPayMch,
 				wxPayMchOptions: WX_PAY_MCH_OPTIONS,
 				wxPayMchDefaults: resolveDefaultWxPayMchIds(),
@@ -15376,34 +15485,137 @@ async function bizConfigGet() {
 async function bizConfigSave(data, event) {
 	try {
 		const now = nowTs();
-		const val = sanitizeBizSettings(data || {});
 		const operator = getOperator(event);
-		const exist = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(1).get();
-		if (exist.data && exist.data.length) {
-			await systemSettingCollection.doc(exist.data[0]._id).update({
-				value: val,
-				update_time: now,
-				update_user: operator
-			});
+		const exist = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(20).get();
+		const rows = Array.isArray(exist.data) ? exist.data : [];
+		const primary = pickBizSettingDoc(rows);
+		const prev = resolveBizRawFromDoc(primary);
+		const incoming = data && typeof data === 'object' ? data : {};
+
+		const periodFromIncoming =
+			incoming.withdrawPeriodLimits && typeof incoming.withdrawPeriodLimits === 'object'
+				? incoming.withdrawPeriodLimits
+				: prev.withdrawPeriodLimits;
+
+		const mergedRaw = Object.assign({}, prev, incoming, {
+			withdrawPeriodLimits: periodFromIncoming,
+			// 显式带上扁平字段，sanitize 内会优先用它们覆盖
+			periodExchangeDay: incoming.periodExchangeDay != null ? incoming.periodExchangeDay : undefined,
+			periodExchangeWeek: incoming.periodExchangeWeek != null ? incoming.periodExchangeWeek : undefined,
+			periodGoldDay: incoming.periodGoldDay != null ? incoming.periodGoldDay : undefined,
+			periodGoldWeek: incoming.periodGoldWeek != null ? incoming.periodGoldWeek : undefined,
+			periodDiamondDay: incoming.periodDiamondDay != null ? incoming.periodDiamondDay : undefined,
+			periodDiamondWeek: incoming.periodDiamondWeek != null ? incoming.periodDiamondWeek : undefined,
+			withdrawRange: Object.assign({}, prev.withdrawRange || {}, incoming.withdrawRange || {}),
+			withdrawMinByCount: Object.assign({}, prev.withdrawMinByCount || {}, incoming.withdrawMinByCount || {}),
+			optimizeConfig: Object.assign({}, prev.optimizeConfig || {}, incoming.optimizeConfig || {}),
+			refundCycle: Object.assign({}, prev.refundCycle || {}, incoming.refundCycle || {}),
+			withdrawAudit: Object.assign({}, prev.withdrawAudit || {}, incoming.withdrawAudit || {}),
+			refundTransferAudit: Object.assign({}, prev.refundTransferAudit || {}, incoming.refundTransferAudit || {}),
+			wxPayMch: Object.assign({}, prev.wxPayMch || {}, incoming.wxPayMch || {}),
+			riskRates: Object.assign({}, prev.riskRates || {}, incoming.riskRates || {})
+		});
+		const val = sanitizeBizSettings(mergedRaw);
+		// 优先写入独立表：即使旧版 system-settings 合并失败，限额也能落库
+		const periodLimits = await savePeriodLimitsToStore(val.withdrawPeriodLimits, operator);
+		val.withdrawPeriodLimits = periodLimits;
+		const _ = db.command;
+		const patch = {
+			value: _.set(val),
+			biz_period_limits: _.set(periodLimits),
+			update_time: now,
+			update_user: operator
+		};
+
+		let updated = 0;
+		if (rows.length) {
+			for (const row of rows) {
+				try {
+					const ur = await systemSettingCollection.doc(row._id).update(patch);
+					updated += Number(ur && ur.updated != null ? ur.updated : 1);
+				} catch (e) {
+					console.error('bizConfigSave update row failed', row._id, e);
+				}
+			}
 		} else {
 			await systemSettingCollection.add({
 				key: BIZ_SETTING_KEY,
 				value: val,
+				biz_period_limits: periodLimits,
 				create_time: now,
 				update_time: now,
 				update_user: operator
 			});
+			updated = 1;
 		}
-		bizSettingsCache = null;
-		bizSettingsCacheAt = 0;
+
+		// 若 update 未生效，强制删后重建主文档
+		let verifyDoc = null;
+		{
+			const vr = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(20).get();
+			verifyDoc = pickBizSettingDoc(vr.data || []);
+			const verifyRaw = resolveBizRawFromDoc(verifyDoc);
+			const verifyVal = sanitizeBizSettings(verifyRaw);
+			const want = Number(periodLimits.paidDiamond.weekMax);
+			const got = Number(verifyVal.withdrawPeriodLimits.paidDiamond.weekMax);
+			if (got !== want) {
+				console.error('bizConfigSave verify mismatch, force rewrite', { want, got, updated });
+				for (const row of vr.data || []) {
+					try {
+						await systemSettingCollection.doc(row._id).remove();
+					} catch (e) {}
+				}
+				await systemSettingCollection.add({
+					key: BIZ_SETTING_KEY,
+					value: val,
+					biz_period_limits: periodLimits,
+					create_time: now,
+					update_time: now,
+					update_user: operator
+				});
+				const vr2 = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(1).get();
+				verifyDoc = pickBizSettingDoc(vr2.data || []);
+			}
+		}
+
+		const finalRaw = resolveBizRawFromDoc(verifyDoc);
+		const finalVal = sanitizeBizSettings(finalRaw);
+		finalVal.withdrawPeriodLimits = periodLimits;
+
+		bizSettingsCache = finalVal;
+		bizSettingsCacheAt = Date.now();
 		await redisH5.h5RedisDel(REDIS_KEY_BIZ);
+		await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, finalVal, REDIS_EX_BIZ_SEC);
 		try {
 			h5HomeDashboardCache.clear();
 		} catch (e) {}
-		return { code: 0, message: '保存成功' };
+
+		const debug = {
+			incomingHasPeriod: !!(incoming && incoming.withdrawPeriodLimits),
+			incomingDiamondWeek:
+				incoming && incoming.withdrawPeriodLimits && incoming.withdrawPeriodLimits.paidDiamond
+					? incoming.withdrawPeriodLimits.paidDiamond.weekMax
+					: incoming.periodDiamondWeek,
+			flatDiamondWeek: incoming.periodDiamondWeek,
+			savedDiamondWeek: periodLimits.paidDiamond.weekMax,
+			dbDiamondWeek: finalVal.withdrawPeriodLimits.paidDiamond.weekMax,
+			updated,
+			docId: verifyDoc && verifyDoc._id
+		};
+
+		return {
+			code: 0,
+			message: `保存成功（钻石周上限 ${Number(finalVal.withdrawPeriodLimits.paidDiamond.weekMax || 0)}）`,
+			data: {
+				...finalVal,
+				cfBuild: MERCHANT_CF_BUILD,
+				_savedWithdrawPeriodLimits: finalVal.withdrawPeriodLimits,
+				_debugPeriod: debug
+			}
+		};
 	} catch (error) {
 		console.error('bizConfigSave failed:', error);
-		return { code: 500, message: '保存参数配置失败' };
+		return { code: 500, message: '保存参数配置失败: ' + safeText(error && error.message, 120) };
 	}
 }
 

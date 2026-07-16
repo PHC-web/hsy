@@ -9,7 +9,7 @@
 	} from './package.json';
 	import { uniAdminCacheKey } from './store/constants.js';
 	import uploadFileForExtStorage from '@/js_sdk/ext-storage/uploadFileForExtStorage.js';
-	import { applyH5UiStyle, getCachedH5UiStyle } from '@/pages/h5/common/ui-style.js';
+	import { applyH5UiStyle, clearH5UiStyle, getCachedH5UiStyle } from '@/pages/h5/common/ui-style.js';
 	
 	export default {
 		created() {
@@ -43,7 +43,12 @@
 			const hash = (window.location && window.location.hash) || '';
 			const search = (window.location && window.location.search) || '';
 			const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/');
-			if (!isAdminPath) {
+			if (isAdminPath) {
+				// 后台入口清除 H5 主题 class，防止菜单/标题被染成白色看不见
+				try {
+					clearH5UiStyle();
+				} catch (e) {}
+			} else {
 				try {
 					applyH5UiStyle(getCachedH5UiStyle());
 				} catch (e) {}

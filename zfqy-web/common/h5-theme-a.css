@@ -1,182 +1,129 @@
 /* H5 A 风格（紫色深色）：修正页面 scoped 亮色文字/边框 */
 
 html.h5-ui-a .page-title,
-html:not(.h5-ui-b) .page-title,
 html.h5-ui-a .nav-title,
-html:not(.h5-ui-b) .nav-title,
 html.h5-ui-a .nick,
-html:not(.h5-ui-b) .nick,
 html.h5-ui-a .name,
-html:not(.h5-ui-b) .name,
 html.h5-ui-a .title,
-html:not(.h5-ui-b) .title,
 html.h5-ui-a .detail-title,
-html:not(.h5-ui-b) .detail-title,
 html.h5-ui-a .menu-title,
-html:not(.h5-ui-b) .menu-title,
 html.h5-ui-a .section-title,
-html:not(.h5-ui-b) .section-title,
 html.h5-ui-a .card-title,
-html:not(.h5-ui-b) .card-title,
 html.h5-ui-a .row-title,
-html:not(.h5-ui-b) .row-title,
+html.h5-ui-a .row-name,
+html.h5-ui-a .row-month,
 html.h5-ui-a .field-label,
-html:not(.h5-ui-b) .field-label,
 html.h5-ui-a .gate-title,
-html:not(.h5-ui-b) .gate-title,
 html.h5-ui-a .mock-title,
-html:not(.h5-ui-b) .mock-title,
 html.h5-ui-a .prestore-title,
-html:not(.h5-ui-b) .prestore-title,
 html.h5-ui-a .member-badge-txt,
-html:not(.h5-ui-b) .member-badge-txt,
 html.h5-ui-a .rules-title,
-html:not(.h5-ui-b) .rules-title,
 html.h5-ui-a .duo-value,
-html:not(.h5-ui-b) .duo-value,
-html.h5-ui-a .ok,
-html:not(.h5-ui-b) .ok {
+html.h5-ui-a .ok {
 	color: #f8fafc !important;
 }
 
 /* 会员徽章：深色底 + 浅色字，避免半透明白底上深灰字发糊 */
-html.h5-ui-a .member-badge,
-html:not(.h5-ui-b) .member-badge {
+html.h5-ui-a .member-badge {
 	background: rgba(15, 23, 42, 0.62) !important;
 	border-color: rgba(255, 255, 255, 0.22) !important;
 	backdrop-filter: blur(12px) !important;
 	-webkit-backdrop-filter: blur(12px) !important;
 }
 
-html.h5-ui-a .hero-foot,
-html:not(.h5-ui-b) .hero-foot {
+html.h5-ui-a .hero-foot {
 	border-top-color: rgba(255, 255, 255, 0.12) !important;
 }
 
 html.h5-ui-a .stat-div,
-html:not(.h5-ui-b) .stat-div,
-html.h5-ui-a .duo-v,
-html:not(.h5-ui-b) .duo-v {
+html.h5-ui-a .duo-v {
 	background: rgba(255, 255, 255, 0.12) !important;
 }
 
-html.h5-ui-a .quota-bar-bg,
-html:not(.h5-ui-b) .quota-bar-bg {
+html.h5-ui-a .quota-bar-bg {
 	background: rgba(255, 255, 255, 0.12) !important;
 }
 
-html.h5-ui-a .prestore-pkg-tag,
-html:not(.h5-ui-b) .prestore-pkg-tag {
+html.h5-ui-a .prestore-pkg-tag {
 	color: #fde68a !important;
 	background: rgba(251, 191, 36, 0.18) !important;
 	border-color: rgba(251, 191, 36, 0.4) !important;
 }
 
-html.h5-ui-a .prestore-gift,
-html:not(.h5-ui-b) .prestore-gift {
+html.h5-ui-a .prestore-gift {
 	color: #fde68a !important;
 }
 
-html.h5-ui-a .silver-trade-value,
-html:not(.h5-ui-b) .silver-trade-value {
+html.h5-ui-a .silver-trade-value {
 	color: #a7f3d0 !important;
 }
 
-html.h5-ui-a .avatar,
-html:not(.h5-ui-b) .avatar {
+html.h5-ui-a .avatar {
 	border-color: rgba(255, 255, 255, 0.22) !important;
 }
 
 html.h5-ui-a .sub,
-html:not(.h5-ui-b) .sub,
 html.h5-ui-a .mobile,
-html:not(.h5-ui-b) .mobile,
 html.h5-ui-a .k,
-html:not(.h5-ui-b) .k,
 html.h5-ui-a .label,
-html:not(.h5-ui-b) .label,
 html.h5-ui-a .hint,
-html:not(.h5-ui-b) .hint,
 html.h5-ui-a .section-sub,
-html:not(.h5-ui-b) .section-sub,
 html.h5-ui-a .hero-sub,
-html:not(.h5-ui-b) .hero-sub,
+html.h5-ui-a .hero-label,
 html.h5-ui-a .hero-foot-txt,
-html:not(.h5-ui-b) .hero-foot-txt,
 html.h5-ui-a .detail-meta,
-html:not(.h5-ui-b) .detail-meta,
 html.h5-ui-a .detail-hint,
-html:not(.h5-ui-b) .detail-hint,
 html.h5-ui-a .row-time,
-html:not(.h5-ui-b) .row-time,
+html.h5-ui-a .row-sub,
+html.h5-ui-a .row-status,
+html.h5-ui-a .row-extra,
+html.h5-ui-a .row-desc,
+html.h5-ui-a .amt-label,
+html.h5-ui-a .metric,
+html.h5-ui-a .foot-i,
+html.h5-ui-a .progress-cap,
+html.h5-ui-a .note-txt,
 html.h5-ui-a .empty,
-html:not(.h5-ui-b) .empty,
 html.h5-ui-a .empty-txt,
-html:not(.h5-ui-b) .empty-txt,
 html.h5-ui-a .loading-hint,
-html:not(.h5-ui-b) .loading-hint,
+html.h5-ui-a .loading-tip,
+html.h5-ui-a .load-more,
 html.h5-ui-a .mock-desc,
-html:not(.h5-ui-b) .mock-desc,
 html.h5-ui-a .gate-tip,
-html:not(.h5-ui-b) .gate-tip,
 html.h5-ui-a .stat-label,
-html:not(.h5-ui-b) .stat-label,
 html.h5-ui-a .duo-label,
-html:not(.h5-ui-b) .duo-label,
 html.h5-ui-a .duo-hint,
-html:not(.h5-ui-b) .duo-hint,
 html.h5-ui-a .quota-bar-cap,
-html:not(.h5-ui-b) .quota-bar-cap,
 html.h5-ui-a .card-label,
-html:not(.h5-ui-b) .card-label,
 html.h5-ui-a .card-sub,
-html:not(.h5-ui-b) .card-sub,
 html.h5-ui-a .field-hint,
-html:not(.h5-ui-b) .field-hint,
 html.h5-ui-a .f-label,
-html:not(.h5-ui-b) .f-label,
 html.h5-ui-a .f-hint,
-html:not(.h5-ui-b) .f-hint,
 html.h5-ui-a .desc,
-html:not(.h5-ui-b) .desc,
 html.h5-ui-a .prestore-sub,
-html:not(.h5-ui-b) .prestore-sub,
 html.h5-ui-a .prestore-pkg-text,
-html:not(.h5-ui-b) .prestore-pkg-text,
 html.h5-ui-a .prestore-arrow,
-html:not(.h5-ui-b) .prestore-arrow,
 html.h5-ui-a .silver-trade-title,
-html:not(.h5-ui-b) .silver-trade-title,
-html.h5-ui-a .rules-item,
-html:not(.h5-ui-b) .rules-item {
+html.h5-ui-a .rules-item {
 	/* 次要文字提高亮度，避免紫底上看不清 */
 	color: #cbd5e1 !important;
 }
 
 html.h5-ui-a .v,
-html:not(.h5-ui-b) .v,
 html.h5-ui-a .stat-value,
-html:not(.h5-ui-b) .stat-value,
 html.h5-ui-a .accent-mint,
-html:not(.h5-ui-b) .accent-mint,
 html.h5-ui-a .hero-val,
-html:not(.h5-ui-b) .hero-val,
-html.h5-ui-a .amt-val,
-html:not(.h5-ui-b) .amt-val {
+html.h5-ui-a .amt-val {
 	color: #a7f3d0 !important;
 }
 
 html.h5-ui-a .accent-gold,
-html:not(.h5-ui-b) .accent-gold,
 html.h5-ui-a .card-points,
-html:not(.h5-ui-b) .card-points,
-html.h5-ui-a .metric-gold,
-html:not(.h5-ui-b) .metric-gold {
+html.h5-ui-a .metric-gold {
 	color: #fde68a !important;
 }
 
-html.h5-ui-a .top-refresh-btn,
-html:not(.h5-ui-b) .top-refresh-btn {
+html.h5-ui-a .top-refresh-btn {
 	color: #c7d2fe !important;
 	background: rgba(15, 23, 42, 0.45) !important;
 	border: 1px solid rgba(165, 180, 252, 0.35) !important;
@@ -185,63 +132,189 @@ html:not(.h5-ui-b) .top-refresh-btn {
 	-webkit-backdrop-filter: blur(10px) !important;
 }
 
-html.h5-ui-a .menu-icon,
-html:not(.h5-ui-b) .menu-icon {
+html.h5-ui-a .menu-icon {
 	border-color: rgba(255, 255, 255, 0.14) !important;
 	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
 }
 
 html.h5-ui-a .detail-divider,
-html:not(.h5-ui-b) .detail-divider,
 html.h5-ui-a .detail-row,
-html:not(.h5-ui-b) .detail-row,
 html.h5-ui-a .menu-item,
-html:not(.h5-ui-b) .menu-item,
-html.h5-ui-a .acct-item,
-html:not(.h5-ui-b) .acct-item {
+html.h5-ui-a .acct-item {
 	border-color: rgba(255, 255, 255, 0.08) !important;
 }
 
 html.h5-ui-a .row-amt.plus,
-html:not(.h5-ui-b) .row-amt.plus,
-html.h5-ui-a .row-amt,
-html:not(.h5-ui-b) .row-amt {
+html.h5-ui-a .row-amt {
 	color: #fde68a !important;
 }
 
-html.h5-ui-a .loading-card,
-html:not(.h5-ui-b) .loading-card {
+html.h5-ui-a .progress-bg {
+	background: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.h5-ui-a .row-foot,
+html.h5-ui-a .row-amt {
+	border-top-color: rgba(255, 255, 255, 0.12) !important;
+}
+
+html.h5-ui-a .row-status {
+	background: rgba(255, 255, 255, 0.1) !important;
+	border-color: rgba(255, 255, 255, 0.14) !important;
+}
+
+html.h5-ui-a .row-status.st-ok {
+	color: #a7f3d0 !important;
+	background: rgba(16, 185, 129, 0.18) !important;
+	border-color: rgba(52, 211, 153, 0.35) !important;
+}
+
+html.h5-ui-a .row-status.st-bad {
+	color: #fca5a5 !important;
+	background: rgba(248, 113, 113, 0.14) !important;
+}
+
+html.h5-ui-a .row-status.st-warn {
+	color: #fde68a !important;
+	background: rgba(250, 204, 21, 0.14) !important;
+}
+
+html.h5-ui-a .t-withdraw {
+	color: #a7f3d0 !important;
+	background: rgba(16, 185, 129, 0.22) !important;
+}
+
+html.h5-ui-a .metric {
+	color: #e2e8f0 !important;
+}
+
+html.h5-ui-a .loading-card {
 	background: rgba(15, 23, 42, 0.92) !important;
 	border-color: rgba(255, 255, 255, 0.12) !important;
 }
 
-html.h5-ui-a .loading-text,
-html:not(.h5-ui-b) .loading-text {
+html.h5-ui-a .loading-text {
 	color: rgba(226, 232, 240, 0.9) !important;
 }
 
-html.h5-ui-a .loading-spinner,
-html:not(.h5-ui-b) .loading-spinner {
+html.h5-ui-a .loading-spinner {
 	border-color: rgba(148, 163, 184, 0.35) !important;
 	border-top-color: #a5b4fc !important;
 }
 
 html.h5-ui-a .safe-input-wrap,
-html:not(.h5-ui-b) .safe-input-wrap,
 html.h5-ui-a .composer-input,
-html:not(.h5-ui-b) .composer-input,
 html.h5-ui-a .picker-val,
-html:not(.h5-ui-b) .picker-val,
-html.h5-ui-a .input,
-html:not(.h5-ui-b) .input {
+html.h5-ui-a .input {
 	background: rgba(15, 23, 42, 0.45) !important;
 	border-color: rgba(255, 255, 255, 0.12) !important;
 	color: #f1f5f9 !important;
 }
 
-html.h5-ui-a .agreement-sheet--dark,
-html:not(.h5-ui-b) .agreement-sheet--dark {
+html.h5-ui-a .agreement-sheet--dark {
 	background: linear-gradient(180deg, #0f172a 0%, #111827 100%) !important;
 	border-color: rgba(255, 255, 255, 0.12) !important;
 	color: #e5e7eb !important;
+}
+
+/* 额度包页：恢复原紫色 UI（深色套餐卡 + 白色说明块 + 红色价格） */
+html.h5-ui-a .pkg {
+	background: rgba(15, 23, 42, 0.42) !important;
+	border: 1px solid rgba(255, 255, 255, 0.14) !important;
+	box-shadow: none !important;
+	backdrop-filter: blur(16px) !important;
+	-webkit-backdrop-filter: blur(16px) !important;
+}
+
+html.h5-ui-a .pkg-active {
+	border-color: rgba(129, 140, 248, 0.55) !important;
+	background: rgba(49, 46, 129, 0.35) !important;
+	box-shadow: 0 0 0 1px rgba(99, 102, 241, 0.22) !important;
+}
+
+html.h5-ui-a .pkg-title {
+	color: #f8fafc !important;
+}
+
+html.h5-ui-a .pkg-member {
+	color: #c4b5fd !important;
+}
+
+html.h5-ui-a .pkg-price {
+	color: #ef4444 !important;
+}
+
+html.h5-ui-a .pkg-check {
+	background: rgba(15, 23, 42, 0.55) !important;
+	border-color: rgba(255, 255, 255, 0.28) !important;
+	color: transparent !important;
+	box-shadow: none !important;
+}
+
+html.h5-ui-a .pkg-check--on {
+	color: #fff !important;
+	border-color: #3b82f6 !important;
+	background: #2563eb !important;
+	box-shadow: 0 0 10px rgba(37, 99, 235, 0.35) !important;
+}
+
+html.h5-ui-a .pkg-desc,
+html.h5-ui-a .pkg-desc--gold,
+html.h5-ui-a .pkg-desc--white-gold,
+html.h5-ui-a .pkg-desc--platinum,
+html.h5-ui-a .pkg-desc--diamond,
+html.h5-ui-a .pkg-desc--default {
+	background: #ffffff !important;
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18) !important;
+}
+
+html.h5-ui-a .pkg-desc--gold {
+	border: 1px solid #fde68a !important;
+	border-left: 4px solid #f59e0b !important;
+}
+
+html.h5-ui-a .pkg-desc--white-gold {
+	border: 1px solid #e2e8f0 !important;
+	border-left: 4px solid #94a3b8 !important;
+}
+
+html.h5-ui-a .pkg-desc--platinum {
+	border: 1px solid #e9d5ff !important;
+	border-left: 4px solid #a855f7 !important;
+}
+
+html.h5-ui-a .pkg-desc--diamond,
+html.h5-ui-a .pkg-desc--default {
+	border: 1px solid #bfdbfe !important;
+	border-left: 4px solid #3b82f6 !important;
+}
+
+html.h5-ui-a .pkg-desc-body {
+	color: #1e293b !important;
+	font-weight: 600 !important;
+}
+
+html.h5-ui-a .pkg-upgrade {
+	color: #93c5fd !important;
+	background: rgba(37, 99, 235, 0.16) !important;
+	border-color: rgba(59, 130, 246, 0.35) !important;
+}
+
+html.h5-ui-a .gift-title {
+	color: #f8fafc !important;
+}
+
+html.h5-ui-a .gift-hint,
+html.h5-ui-a .gift-label {
+	color: #cbd5e1 !important;
+}
+
+html.h5-ui-a .gift-row {
+	border-color: rgba(255, 255, 255, 0.12) !important;
+	background: rgba(15, 23, 42, 0.35) !important;
+}
+
+html.h5-ui-a .gift-row--on {
+	border-color: rgba(96, 165, 250, 0.55) !important;
+	background: rgba(37, 99, 235, 0.18) !important;
 }

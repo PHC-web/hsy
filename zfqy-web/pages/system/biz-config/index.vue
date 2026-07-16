@@ -99,16 +99,20 @@
 				<text class="card-tip">
 					按会员分档限制「自然日 / 自然周（周一至周日，北京时间）」累计提现积分（含审核中、待打款、已到账；不含已拒绝/已退回）。填写 0 表示该分档不限额。测试商户白名单不受此限制。
 				</text>
+				<text class="card-tip" :style="{ color: cfBuildOk ? '#67c23a' : '#e6a23c' }">
+					云函数版本：{{ cfBuild || '未识别（可能未部署最新 merchant）' }}
+				</text>
+				<text class="card-tip">限额独立表：hsy-biz-period-limits（请先上传该表 schema）</text>
 				<view class="period-block">
 					<text class="period-title">兑换券铂金会员（兑换码/兑换券开通的非付费会员）</text>
 					<view class="form-grid">
 						<view class="field">
 							<text class="label">每日上限(积分)</text>
-							<uni-easyinput v-model="form.withdrawPeriodLimits.exchangeCoupon.dayMax" type="number" placeholder="200" />
+							<uni-easyinput v-model="periodExchangeDay" type="number" placeholder="200" />
 						</view>
 						<view class="field">
 							<text class="label">每周上限(积分)</text>
-							<uni-easyinput v-model="form.withdrawPeriodLimits.exchangeCoupon.weekMax" type="number" placeholder="300" />
+							<uni-easyinput v-model="periodExchangeWeek" type="number" placeholder="300" />
 						</view>
 					</view>
 				</view>
@@ -117,11 +121,11 @@
 					<view class="form-grid">
 						<view class="field">
 							<text class="label">每日上限(积分)</text>
-							<uni-easyinput v-model="form.withdrawPeriodLimits.paidGoldPlatinum.dayMax" type="number" placeholder="200" />
+							<uni-easyinput v-model="periodGoldDay" type="number" placeholder="200" />
 						</view>
 						<view class="field">
 							<text class="label">每周上限(积分)</text>
-							<uni-easyinput v-model="form.withdrawPeriodLimits.paidGoldPlatinum.weekMax" type="number" placeholder="500" />
+							<uni-easyinput v-model="periodGoldWeek" type="number" placeholder="500" />
 						</view>
 					</view>
 				</view>
@@ -130,11 +134,11 @@
 					<view class="form-grid">
 						<view class="field">
 							<text class="label">每日上限(积分)</text>
-							<uni-easyinput v-model="form.withdrawPeriodLimits.paidDiamond.dayMax" type="number" placeholder="200" />
+							<uni-easyinput v-model="periodDiamondDay" type="number" placeholder="200" />
 						</view>
 						<view class="field">
 							<text class="label">每周上限(积分)</text>
-							<uni-easyinput v-model="form.withdrawPeriodLimits.paidDiamond.weekMax" type="number" placeholder="500" />
+							<uni-easyinput v-model="periodDiamondWeek" type="number" placeholder="500" />
 						</view>
 					</view>
 				</view>
@@ -329,6 +333,14 @@ export default {
 			loading: false,
 			saving: false,
 			form: defaultForm(),
+			// 日/周限额用顶层字段绑定，避免深层对象 v-model 写不进去
+			periodExchangeDay: 200,
+			periodExchangeWeek: 300,
+			periodGoldDay: 200,
+			periodGoldWeek: 500,
+			periodDiamondDay: 200,
+			periodDiamondWeek: 500,
+			cfBuild: '',
 			egressIp: '',
 			wxPayMchOptions: [
 				{ mchId: '1111130439', label: '帆帆电子' },
@@ -337,6 +349,9 @@ export default {
 		};
 	},
 	computed: {
+		cfBuildOk() {
+			return String(this.cfBuild || '').indexOf('PERIOD_V4') === 0;
+		},
 		wxPayMchRows() {
 			return [
 				{
@@ -369,6 +384,87 @@ export default {
 			if (!this.form.wxPayMch) this.form.wxPayMch = defaultWxPayMch();
 			this.form.wxPayMch[scene] = mchId;
 		},
+		numOr(v, fallback) {
+			const n = Number(v);
+			return Number.isFinite(n) && n >= 0 ? n : fallback;
+		},
+		syncPeriodFieldsFrom(limits) {
+			const p = this.applyPeriodLimitsFrom({ withdrawPeriodLimits: limits || {} });
+			this.periodExchangeDay = p.exchangeCoupon.dayMax;
+			this.periodExchangeWeek = p.exchangeCoupon.weekMax;
+			this.periodGoldDay = p.paidGoldPlatinum.dayMax;
+			this.periodGoldWeek = p.paidGoldPlatinum.weekMax;
+			this.periodDiamondDay = p.paidDiamond.dayMax;
+			this.periodDiamondWeek = p.paidDiamond.weekMax;
+		},
+		buildPeriodLimitsFromFields() {
+			return {
+				exchangeCoupon: {
+					dayMax: this.numOr(this.periodExchangeDay, 200),
+					weekMax: this.numOr(this.periodExchangeWeek, 300)
+				},
+				paidGoldPlatinum: {
+					dayMax: this.numOr(this.periodGoldDay, 200),
+					weekMax: this.numOr(this.periodGoldWeek, 500)
+				},
+				paidDiamond: {
+					dayMax: this.numOr(this.periodDiamondDay, 200),
+					weekMax: this.numOr(this.periodDiamondWeek, 500)
+				}
+			};
+		},
+		async loadPeriodLimitsFromClientDb() {
+			try {
+				const db = uniCloud.database();
+				const r = await db.collection('hsy-biz-period-limits').where({ key: 'default' }).limit(1).get();
+				const rows = (r && r.result && r.result.data) || (r && r.data) || [];
+				if (!rows.length) return null;
+				const d = rows[0];
+				return {
+					exchangeCoupon: d.exchangeCoupon || { dayMax: 200, weekMax: 300 },
+					paidGoldPlatinum: d.paidGoldPlatinum || { dayMax: 200, weekMax: 500 },
+					paidDiamond: d.paidDiamond || { dayMax: 200, weekMax: 500 }
+				};
+			} catch (e) {
+				console.error('loadPeriodLimitsFromClientDb failed', e);
+				return null;
+			}
+		},
+		async savePeriodLimitsToClientDb(limits) {
+			const db = uniCloud.database();
+			const payload = {
+				key: 'default',
+				exchangeCoupon: limits.exchangeCoupon,
+				paidGoldPlatinum: limits.paidGoldPlatinum,
+				paidDiamond: limits.paidDiamond,
+				update_time: Date.now()
+			};
+			const r = await db.collection('hsy-biz-period-limits').where({ key: 'default' }).limit(1).get();
+			const rows = (r && r.result && r.result.data) || (r && r.data) || [];
+			if (rows.length) {
+				await db.collection('hsy-biz-period-limits').doc(rows[0]._id).update(payload);
+			} else {
+				await db.collection('hsy-biz-period-limits').add(payload);
+			}
+			return payload;
+		},
+		applyPeriodLimitsFrom(data) {
+			const base = {
+				exchangeCoupon: { dayMax: 200, weekMax: 300 },
+				paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
+				paidDiamond: { dayMax: 200, weekMax: 500 }
+			};
+			const src = (data && data.withdrawPeriodLimits) || {};
+			const out = Object.assign({}, base, src);
+			['exchangeCoupon', 'paidGoldPlatinum', 'paidDiamond'].forEach((k) => {
+				const g = out[k] || {};
+				out[k] = {
+					dayMax: Number.isFinite(Number(g.dayMax)) ? Number(g.dayMax) : base[k].dayMax,
+					weekMax: Number.isFinite(Number(g.weekMax)) ? Number(g.weekMax) : base[k].weekMax
+				};
+			});
+			return out;
+		},
 		async load() {
 			this.loading = true;
 			try {
@@ -380,20 +476,14 @@ export default {
 				if (wm.member6To10 == null && wm.member4To6 != null) wm.member6To10 = wm.member4To6;
 				if (wm.member11Plus == null && wm.member7Plus != null) wm.member11Plus = wm.member7Plus;
 				merged.withdrawMinByCount = wm;
-				merged.withdrawPeriodLimits = Object.assign(
-					{
-						exchangeCoupon: { dayMax: 200, weekMax: 300 },
-						paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
-						paidDiamond: { dayMax: 200, weekMax: 500 }
-					},
-					merged.withdrawPeriodLimits || {}
-				);
-				['exchangeCoupon', 'paidGoldPlatinum', 'paidDiamond'].forEach((k) => {
-					merged.withdrawPeriodLimits[k] = Object.assign(
-						{ dayMax: 0, weekMax: 0 },
-						merged.withdrawPeriodLimits[k] || {}
-					);
-				});
+				merged.withdrawPeriodLimits = this.applyPeriodLimitsFrom(merged);
+				// 独立表覆盖：不依赖云函数是否已更新
+				const fromDb = await this.loadPeriodLimitsFromClientDb();
+				if (fromDb) {
+					merged.withdrawPeriodLimits = this.applyPeriodLimitsFrom({ withdrawPeriodLimits: fromDb });
+				}
+				this.syncPeriodFieldsFrom(merged.withdrawPeriodLimits);
+				this.cfBuild = String((res.data && res.data.cfBuild) || '');
 				if (Array.isArray(res.data?.wxPayMchOptions) && res.data.wxPayMchOptions.length) {
 					this.wxPayMchOptions = res.data.wxPayMchOptions;
 				}
@@ -407,6 +497,9 @@ export default {
 				delete merged.wxPayMchOptions;
 				delete merged.wxPayMchDefaults;
 				delete merged.wxPayMchEffective;
+				delete merged._savedWithdrawPeriodLimits;
+				delete merged.cfBuild;
+				delete merged._debugPeriod;
 				this.form = merged;
 			} finally {
 				this.loading = false;
@@ -418,7 +511,34 @@ export default {
 		async save() {
 			this.saving = true;
 			try {
+				const periodLimits = this.buildPeriodLimitsFromFields();
+				const sentDiamondWeek = Number(periodLimits.paidDiamond.weekMax);
+
+				// 1）先写独立表（不依赖 merchant 云函数版本）
+				let clientSavedWeek = NaN;
+				try {
+					const saved = await this.savePeriodLimitsToClientDb(periodLimits);
+					clientSavedWeek = Number(saved.paidDiamond && saved.paidDiamond.weekMax);
+					this.syncPeriodFieldsFrom(periodLimits);
+				} catch (e) {
+					uni.showModal({
+						title: '限额表写入失败',
+						content:
+							'请先在 uniCloud 控制台上传数据库 schema：hsy-biz-period-limits，再重试。\n' +
+							String((e && (e.message || e.errMsg)) || e),
+						showCancel: false
+					});
+					return;
+				}
+
 				const payload = JSON.parse(JSON.stringify(this.form));
+				payload.withdrawPeriodLimits = periodLimits;
+				payload.periodExchangeDay = periodLimits.exchangeCoupon.dayMax;
+				payload.periodExchangeWeek = periodLimits.exchangeCoupon.weekMax;
+				payload.periodGoldDay = periodLimits.paidGoldPlatinum.dayMax;
+				payload.periodGoldWeek = periodLimits.paidGoldPlatinum.weekMax;
+				payload.periodDiamondDay = periodLimits.paidDiamond.dayMax;
+				payload.periodDiamondWeek = periodLimits.paidDiamond.weekMax;
 				payload.testMerchantIds = Array.from(
 					new Set(
 						String(payload.testMerchantIdsText || '')
@@ -433,10 +553,33 @@ export default {
 					.map((x) => String(x || '').trim())
 					.filter(Boolean);
 				delete payload.refundRuleLinesText;
+
+				// 2）再走云函数保存其它参数（兼容旧版）
 				const res = await this.$request('bizConfigSave', payload, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '保存失败', icon: 'none' });
-				uni.showToast({ title: '保存成功', icon: 'success' });
-				this.load();
+				this.cfBuild = String((res.data && res.data.cfBuild) || this.cfBuild || '');
+
+				await this.load();
+				const loadedWeek = Number(this.periodDiamondWeek);
+				if (loadedWeek === sentDiamondWeek || clientSavedWeek === sentDiamondWeek) {
+					uni.showToast({
+						title: `钻石周上限已保存为 ${sentDiamondWeek}`,
+						icon: 'none',
+						duration: 2500
+					});
+				} else {
+					uni.showModal({
+						title: '日周限额未落库',
+						content: [
+							`提交 ${sentDiamondWeek}，刷新后 ${loadedWeek}`,
+							`clientDb=${clientSavedWeek}`,
+							`cfBuild=${this.cfBuild || '无'}`,
+							`msg=${res.message || ''}`,
+							'请上传：1) hsy-biz-period-limits schema  2) 最新 merchant 云函数'
+						].join('\n'),
+						showCancel: false
+					});
+				}
 			} finally {
 				this.saving = false;
 			}

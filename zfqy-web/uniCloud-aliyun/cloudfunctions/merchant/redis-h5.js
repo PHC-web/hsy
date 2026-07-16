@@ -45,17 +45,30 @@ async function h5RedisGetJson(key) {
 
 async function h5RedisSetJson(key, obj, exSec) {
 	const r = getRedis();
-	if (!r || !key) return;
+	if (!r || !key) return false;
 	try {
 		const str = JSON.stringify(obj);
 		const n = Math.max(0, Number(exSec) || 0);
 		if (n > 0) {
-			await r.set(key, str, 'EX', n);
+			// 兼容不同 Redis 客户端签名
+			try {
+				await r.set(key, str, 'EX', n);
+			} catch (e1) {
+				try {
+					await r.setex(key, n, str);
+				} catch (e2) {
+					await r.set(key, str);
+					try {
+						await r.expire(key, n);
+					} catch (e3) {}
+				}
+			}
 		} else {
 			await r.set(key, str);
 		}
+		return true;
 	} catch (e) {
-		// ignore
+		return false;
 	}
 }
 

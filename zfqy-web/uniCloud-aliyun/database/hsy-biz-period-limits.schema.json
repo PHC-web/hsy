@@ -1,0 +1,40 @@
+{
+	"bsonType": "object",
+	"required": ["key"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": true,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "ID" },
+		"key": { "bsonType": "string", "description": "固定 default", "default": "default" },
+		"exchangeCoupon": {
+			"bsonType": "object",
+			"description": "兑换券会员日周上限",
+			"properties": {
+				"dayMax": { "bsonType": "number" },
+				"weekMax": { "bsonType": "number" }
+			}
+		},
+		"paidGoldPlatinum": {
+			"bsonType": "object",
+			"description": "黄金/白金日周上限",
+			"properties": {
+				"dayMax": { "bsonType": "number" },
+				"weekMax": { "bsonType": "number" }
+			}
+		},
+		"paidDiamond": {
+			"bsonType": "object",
+			"description": "钻石日周上限",
+			"properties": {
+				"dayMax": { "bsonType": "number" },
+				"weekMax": { "bsonType": "number" }
+			}
+		},
+		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
+		"update_user": { "bsonType": "string", "description": "更新人" }
+	}
+}
