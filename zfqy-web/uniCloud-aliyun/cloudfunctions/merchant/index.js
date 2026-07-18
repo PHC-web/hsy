@@ -3988,7 +3988,7 @@ function arrivalStatusText(s) {
 		pending: '未到账',
 		received: '已到账',
 		returned: '已退回',
-		expired: '已过期'
+		expired: '已失效'
 	};
 	return m[s] || s || '-';
 }
@@ -4000,6 +4000,11 @@ function mapWithdrawItem(item) {
 	const auditMap = { pending: '待审核', approved: '已同意', rejected: '已拒绝', failed: '审核失败', none: '-' };
 	let auditStatusText = auditMap[auditStatus] || auditStatus || '-';
 	if (needReaudit) auditStatusText = '待重新审核';
+	const arrivalStatus = item.arrival_status || 'pending';
+	let isPaidText = '未打款';
+	if (item.is_paid) isPaidText = '已打款';
+	else if (arrivalStatus === 'expired') isPaidText = '已失效';
+	else if (arrivalStatus === 'returned') isPaidText = '已退回';
 	return {
 		id: item._id,
 		withdrawNo: item.withdraw_no || '',
@@ -4015,7 +4020,7 @@ function mapWithdrawItem(item) {
 		payable: Number(item.payable || 0),
 		payableText: Number(item.payable || 0).toFixed(4),
 		isPaid: !!item.is_paid,
-		isPaidText: item.is_paid ? '已打款' : '未打款',
+		isPaidText,
 		wxTradeNo: item.wx_trade_no || '',
 		transferState,
 		transferError: safeText(item.transfer_error || '', 200),
@@ -4024,7 +4029,7 @@ function mapWithdrawItem(item) {
 		auditStatusText,
 		needReaudit,
 		payTime: formatTime(item.pay_time),
-		arrivalStatus: item.arrival_status || 'pending',
+		arrivalStatus,
 		arrivalStatusText: arrivalStatusText(item.arrival_status),
 		arrivalTime: formatTime(item.arrival_time),
 		createTime: formatTime(item.create_time)
@@ -4447,6 +4452,165 @@ async function withdrawSyncProcessing(data = {}) {
 	}
 }
 
+/** 可安全自动失效的微信转账状态（处理中/待确认收款不可动） */
+const WITHDRAW_SAFE_AUTO_EXPIRE_STATES = [
+	'',
+	'PENDING_AUDIT',
+	'RETRYABLE_FAIL',
+	'FAIL',
+	'FAILED',
+	'CANCELLED',
+	'UNKNOWN',
+	'REJECTED'
+];
+
+/**
+ * 撤回未打款提现：返还积分与提现额度，扣回 pending_withdraw / 机具 pending_amount。
+ * 与管理员「不同意提现」同一套返还口径（按 amount 全额积分返还）。
+ */
+async function restoreUnpaidWithdrawBalances(row) {
+	const merchantUserId = safeText(row.merchant_user_id, 80);
+	const settleAmt = Number(row.payable != null ? row.payable : row.amount || 0);
+	const amountPoints = Number(row.amount || 0);
+	const now = nowTs();
+	const merchantRes = merchantUserId
+		? await merchantCollection.where({ user_id: merchantUserId }).limit(1).get()
+		: { data: [] };
+	const merchant = merchantRes.data && merchantRes.data[0];
+	if (!merchant) return { ok: false, message: '商户不存在' };
+	const machineRes = row.device_id
+		? await machineCollection.where({ device_id: row.device_id, is_deleted: false }).limit(1).get()
+		: { data: [] };
+	const machine = machineRes.data && machineRes.data[0];
+	await merchantCollection.doc(merchant._id).update({
+		available_reward: Number((rawWithdrawQuotaBalance(merchant) + amountPoints).toFixed(4)),
+		withdraw_quota_balance: Number((rawWithdrawQuotaBalance(merchant) + amountPoints).toFixed(4)),
+		account_points: Number((rawPendingBalance(merchant) + amountPoints).toFixed(4)),
+		withdraw_pending_balance: Number((rawPendingBalance(merchant) + amountPoints).toFixed(4)),
+		pending_withdraw: Number(Math.max(0, Number(merchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
+		update_time: now
+	});
+	if (machine) {
+		await machineCollection.doc(machine._id).update({
+			pending_amount: Number(Math.max(0, Number(machine.pending_amount || 0) - settleAmt).toFixed(4))
+		});
+	}
+	return { ok: true, amountPoints, settleAmt, merchantId: merchant._id };
+}
+
+/**
+ * 每天零点（北京时间）由定时任务调用：将「未打款」且非微信处理中的提现自动置为已失效并返还积分/额度。
+ */
+async function withdrawAutoExpireUnpaid(data = {}) {
+	try {
+		const _ = db.command;
+		const limit = Math.min(200, Math.max(1, parseInt(String(data?.limit || 100), 10) || 100));
+		const reason = safeText(data?.reason || '系统每天 00:00 自动撤回未打款提现', 180);
+		const res = await withdrawCollection
+			.where(
+				_.and([
+					{ is_deleted: _.neq(true) },
+					{ is_paid: false },
+					{ arrival_status: _.nin(['received', 'returned', 'expired']) }
+				])
+			)
+			.orderBy('create_time', 'asc')
+			.limit(limit)
+			.get();
+		const rows = res.data || [];
+		let expired = 0;
+		let skipped = 0;
+		let failed = 0;
+		const errors = [];
+		const skipReasons = {};
+		const expiredSamples = [];
+		const bumpSkip = (reason) => {
+			skipped += 1;
+			const k = String(reason || 'other');
+			skipReasons[k] = (skipReasons[k] || 0) + 1;
+		};
+		for (const row of rows) {
+			const id = String(row._id || '');
+			const stateNow = normalizeTransferState(row.transfer_state || '');
+			if (!WITHDRAW_SAFE_AUTO_EXPIRE_STATES.includes(stateNow)) {
+				bumpSkip(`transfer:${stateNow || 'EMPTY'}`);
+				continue;
+			}
+			const arrival = safeText(row.arrival_status, 20) || 'pending';
+			if (arrival === 'received' || arrival === 'returned' || arrival === 'expired') {
+				bumpSkip(`arrival:${arrival}`);
+				continue;
+			}
+			if (safeText(row.audit_status, 24) === 'rejected') {
+				bumpSkip('audit:rejected');
+				continue;
+			}
+			try {
+				const restored = await restoreUnpaidWithdrawBalances(row);
+				if (!restored.ok) {
+					failed += 1;
+					errors.push({ id, message: restored.message || '返还失败' });
+					continue;
+				}
+				const auditPrev = safeText(row.audit_status, 24);
+				await withdrawCollection.doc(id).update({
+					arrival_status: 'expired',
+					audit_status: auditPrev === 'pending' || auditPrev === 'approved' ? 'rejected' : auditPrev || 'rejected',
+					transfer_state: 'EXPIRED',
+					transfer_error: reason,
+					update_time: nowTs()
+				});
+				await writeTransferLog({
+					stage: 'withdraw_auto_expire',
+					withdrawId: id,
+					withdrawNo: safeText(row.withdraw_no, 80),
+					merchantUserId: safeText(row.merchant_user_id, 80),
+					deviceId: row.device_id,
+					outBillNo: row.withdraw_no,
+					transferState: 'EXPIRED',
+					message: reason,
+					payload: {
+						withdrawId: id,
+						amountPoints: restored.amountPoints,
+						settleAmt: restored.settleAmt,
+						merchantId: restored.merchantId
+					}
+				});
+				expired += 1;
+				if (expiredSamples.length < 10) {
+					expiredSamples.push({
+						id,
+						withdrawNo: safeText(row.withdraw_no, 80),
+						merchantUserId: safeText(row.merchant_user_id, 80),
+						amountPoints: restored.amountPoints,
+						settleAmt: restored.settleAmt
+					});
+				}
+			} catch (e) {
+				failed += 1;
+				errors.push({ id, message: safeText(e?.message || '失效失败', 160) });
+			}
+		}
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				scanned: rows.length,
+				expired,
+				skipped,
+				failed,
+				skipReasons,
+				expiredSamples,
+				errors: errors.slice(0, 20),
+				hasMore: rows.length >= limit
+			}
+		};
+	} catch (e) {
+		console.error('withdrawAutoExpireUnpaid failed:', e);
+		return { code: 500, message: safeText(e?.message || '自动失效失败', 160) };
+	}
+}
+
 async function withdrawApprove(data) {
 	try {
 		const id = safeText(data?.id, 80);
@@ -4712,22 +4876,11 @@ async function withdrawApprove(data) {
 			if (!row.audit_required) return { code: 400, message: '该记录无需审核' };
 			if (safeText(row.audit_status, 20) !== 'pending') return { code: 400, message: '该记录不是待审核状态' };
 			const stateNow = normalizeTransferState(row.transfer_state || '');
-			if (!['', 'PENDING_AUDIT', 'RETRYABLE_FAIL', 'FAIL', 'FAILED', 'CANCELLED', 'UNKNOWN'].includes(stateNow)) {
+			if (!WITHDRAW_SAFE_AUTO_EXPIRE_STATES.includes(stateNow)) {
 				return { code: 400, message: '当前微信提现处理中或已成功，暂不可不同意提现' };
 			}
-			const merchantUserId = safeText(row.merchant_user_id, 80);
-			const settleAmt = Number(row.payable != null ? row.payable : row.amount || 0);
-			const amountPoints = Number(row.amount || 0);
-			const merchantRes = merchantUserId
-				? await merchantCollection.where({ user_id: merchantUserId }).limit(1).get()
-				: { data: [] };
-			const merchant = merchantRes.data && merchantRes.data[0];
-			if (!merchant) return { code: 404, message: '商户不存在' };
-			const machineRes = row.device_id
-				? await machineCollection.where({ device_id: row.device_id, is_deleted: false }).limit(1).get()
-				: { data: [] };
-			const machine = machineRes.data && machineRes.data[0];
-
+			const restored = await restoreUnpaidWithdrawBalances(row);
+			if (!restored.ok) return { code: 404, message: restored.message || '商户不存在' };
 			await withdrawCollection.doc(id).update({
 				audit_status: 'rejected',
 				arrival_status: 'returned',
@@ -4735,19 +4888,6 @@ async function withdrawApprove(data) {
 				transfer_error: safeText(data?.reason || '管理员不同意提现', 180),
 				update_time: now
 			});
-			await merchantCollection.doc(merchant._id).update({
-				available_reward: Number((rawWithdrawQuotaBalance(merchant) + amountPoints).toFixed(4)),
-				withdraw_quota_balance: Number((rawWithdrawQuotaBalance(merchant) + amountPoints).toFixed(4)),
-				account_points: Number((rawPendingBalance(merchant) + amountPoints).toFixed(4)),
-				withdraw_pending_balance: Number((rawPendingBalance(merchant) + amountPoints).toFixed(4)),
-				pending_withdraw: Number(Math.max(0, Number(merchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
-				update_time: now
-			});
-			if (machine) {
-				await machineCollection.doc(machine._id).update({
-					pending_amount: Number(Math.max(0, Number(machine.pending_amount || 0) - settleAmt).toFixed(4))
-				});
-			}
 			return { code: 0, message: '已不同意提现并退回冻结金额' };
 		}
 
@@ -6685,6 +6825,7 @@ async function h5FinanceRecords(data) {
 				if (row.is_paid) st = '已打款';
 				else if (row.arrival_status === 'received') st = '已到账';
 				else if (row.arrival_status === 'returned') st = '已退回';
+				else if (row.arrival_status === 'expired') st = '已失效';
 				if (transferState === 'WAIT_USER_CONFIRM') st = '待确认收款';
 				merged.push({
 					recordType: 'withdraw',
@@ -7973,7 +8114,7 @@ function buildWithdrawCreatedInRange(merchantUserId, timeStart, timeEnd) {
 		{ merchant_user_id: String(merchantUserId) },
 		{ create_time: _.gte(Number(timeStart)) },
 		{ create_time: _.lte(Number(timeEnd)) },
-		{ arrival_status: _.neq('returned') },
+		{ arrival_status: _.nin(['returned', 'expired']) },
 		{ audit_status: _.neq('rejected') }
 	]);
 }
@@ -13704,7 +13845,7 @@ function normalizeSilverWithdrawQuotaBreakdown(raw) {
 
 /**
  * 批量统计白银商户仍占用的提现积分：已打款 + 未打款 + 审核中（互斥分档，合计为 total）。
- * 排除 arrival_status=returned、audit_status=rejected（已退回额度）。
+ * 排除 arrival_status=returned/expired、audit_status=rejected（已退回/已失效额度）。
  */
 async function batchSumSilverWithdrawQuotaBreakdown(merchantUserIds) {
 	const map = new Map();
@@ -13716,7 +13857,7 @@ async function batchSumSilverWithdrawQuotaBreakdown(merchantUserIds) {
 			.where({
 				merchant_user_id: _.in(ids),
 				is_deleted: _.neq(true),
-				arrival_status: _.neq('returned'),
+				arrival_status: _.nin(['returned', 'expired']),
 				audit_status: _.neq('rejected')
 			})
 			.field({
@@ -15698,6 +15839,8 @@ exports.main = async (event, context) => {
 			return await getWithdrawList(actualData);
 		case 'withdrawSyncProcessing':
 			return await withdrawSyncProcessing(actualData);
+		case 'withdrawAutoExpireUnpaid':
+			return await withdrawAutoExpireUnpaid(actualData);
 		case 'refundTransferList':
 			return await getRefundTransferList(actualData);
 		case 'refundTransferSyncProcessing':

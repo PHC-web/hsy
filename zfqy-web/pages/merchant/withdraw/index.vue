@@ -79,7 +79,15 @@
 							<uni-td align="right" class="cell-money">{{ item.payableText }}</uni-td>
 							<uni-td align="center" class="cell-time">{{ item.payTime || '-' }}</uni-td>
 							<uni-td align="center">
-								<text :class="item.isPaid ? 'tag-paid' : 'tag-unpaid'">{{ item.isPaidText }}</text>
+								<text
+									:class="
+										item.isPaid
+											? 'tag-paid'
+											: item.arrivalStatus === 'expired' || item.arrivalStatus === 'returned'
+												? 'tag-bad'
+												: 'tag-unpaid'
+									"
+								>{{ item.isPaidText }}</text>
 							</uni-td>
 							<uni-td align="center" class="cell-time">{{ item.arrivalTime || '-' }}</uni-td>
 							<uni-td align="center">
@@ -168,7 +176,7 @@ export default {
 				{ text: '未到账', value: 'pending', checked: false },
 				{ text: '已到账', value: 'received', checked: false },
 				{ text: '已退回', value: 'returned', checked: false },
-				{ text: '已过期', value: 'expired', checked: false }
+				{ text: '已失效', value: 'expired', checked: false }
 			],
 			list: [],
 			loading: false,

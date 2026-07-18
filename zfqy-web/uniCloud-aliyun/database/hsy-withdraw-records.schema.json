@@ -16,7 +16,7 @@
 		"payable": { "bsonType": "number", "description": "应付金额(元)", "default": 0 },
 		"is_paid": { "bsonType": "bool", "description": "是否已打款", "default": false },
 		"pay_time": { "bsonType": "timestamp", "description": "打款时间" },
-		"arrival_status": { "bsonType": "string", "description": "到账状态：pending=未到账，received=已到账，returned=已退回，expired=已过期", "default": "pending" },
+		"arrival_status": { "bsonType": "string", "description": "到账状态：pending=未到账，received=已到账，returned=已退回，expired=已失效", "default": "pending" },
 		"arrival_time": { "bsonType": "timestamp", "description": "到账时间" },
 		"create_time": { "bsonType": "timestamp", "description": "创建时间" },
 		"update_time": { "bsonType": "timestamp", "description": "更新时间" },
