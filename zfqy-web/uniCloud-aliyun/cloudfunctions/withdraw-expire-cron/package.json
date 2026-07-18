@@ -1,12 +1,12 @@
 {
 	"name": "withdraw-expire-cron",
 	"version": "1.0.0",
-	"description": "每天 00:00 自动失效未打款提现并返还积分/额度；定时触发器请在 uniCloud 控制台添加",
+	"description": "每天 00:00：未打款提现自动失效；微信处理中先撤销，确认 CANCELLED 后再返还积分",
 	"main": "index.js",
 	"dependencies": {},
 	"cloudfunction-config": {
 		"concurrency": 1,
-		"memorySize": 256,
+		"memorySize": 512,
 		"timeout": 300
 	}
 }

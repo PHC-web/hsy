@@ -4357,6 +4357,7 @@ async function withdrawSyncProcessing(data = {}) {
 				audit_required: true,
 				audit_status: 'approved',
 				is_paid: false,
+				arrival_status: db.command.nin(['received', 'returned', 'expired']),
 				transfer_state: db.command.in(['FAIL', 'FAILED', 'CANCELLED', 'RETRYABLE_FAIL'])
 			})
 			.orderBy('update_time', 'asc')
@@ -4377,6 +4378,7 @@ async function withdrawSyncProcessing(data = {}) {
 				audit_required: true,
 				audit_status: db.command.in(['pending', 'approved']),
 				is_paid: false,
+				arrival_status: db.command.nin(['received', 'returned', 'expired']),
 				transfer_state: db.command.in(processingStates)
 			})
 			.orderBy('update_time', 'asc')
@@ -4452,7 +4454,7 @@ async function withdrawSyncProcessing(data = {}) {
 	}
 }
 
-/** 可安全自动失效的微信转账状态（处理中/待确认收款不可动） */
+/** 无微信单时，可直接失效并返还（无需撤销） */
 const WITHDRAW_SAFE_AUTO_EXPIRE_STATES = [
 	'',
 	'PENDING_AUDIT',
@@ -4461,8 +4463,12 @@ const WITHDRAW_SAFE_AUTO_EXPIRE_STATES = [
 	'FAILED',
 	'CANCELLED',
 	'UNKNOWN',
-	'REJECTED'
+	'REJECTED',
+	'EXPIRED'
 ];
+
+/** 用户确认收款前，可调微信撤销接口的状态 */
+const WITHDRAW_WX_CANCELABLE_STATES = ['ACCEPTED', 'PROCESSING', 'WAIT_USER_CONFIRM', 'CREATED'];
 
 /**
  * 撤回未打款提现：返还积分与提现额度，扣回 pending_withdraw / 机具 pending_amount。
@@ -4473,10 +4479,15 @@ async function restoreUnpaidWithdrawBalances(row) {
 	const settleAmt = Number(row.payable != null ? row.payable : row.amount || 0);
 	const amountPoints = Number(row.amount || 0);
 	const now = nowTs();
-	const merchantRes = merchantUserId
-		? await merchantCollection.where({ user_id: merchantUserId }).limit(1).get()
-		: { data: [] };
-	const merchant = merchantRes.data && merchantRes.data[0];
+	let merchant = null;
+	if (merchantUserId) {
+		const byUid = await merchantCollection.where({ user_id: merchantUserId }).limit(1).get();
+		merchant = byUid.data && byUid.data[0];
+		if (!merchant) {
+			const byId = await merchantCollection.doc(merchantUserId).get();
+			merchant = byId.data && byId.data[0];
+		}
+	}
 	if (!merchant) return { ok: false, message: '商户不存在' };
 	const machineRes = row.device_id
 		? await machineCollection.where({ device_id: row.device_id, is_deleted: false }).limit(1).get()
@@ -4498,8 +4509,262 @@ async function restoreUnpaidWithdrawBalances(row) {
 	return { ok: true, amountPoints, settleAmt, merchantId: merchant._id };
 }
 
+/** 确认微信侧已撤销/失败后：标记已失效并返还积分 */
+async function finalizeWithdrawExpiredAndRestore(row, reason, extra = {}) {
+	const id = String(row._id || '');
+	if (!id) return { ok: false, message: '缺少记录ID' };
+	const arrival = safeText(row.arrival_status, 20) || 'pending';
+	if (arrival === 'expired' || arrival === 'returned' || arrival === 'received') {
+		return { ok: false, skip: true, message: `已是终态:${arrival}` };
+	}
+	if (row.is_paid) return { ok: false, skip: true, message: '已打款不可失效返还' };
+	const restored = await restoreUnpaidWithdrawBalances(row);
+	if (!restored.ok) return { ok: false, message: restored.message || '返还失败' };
+	const auditPrev = safeText(row.audit_status, 24);
+	await withdrawCollection.doc(id).update({
+		arrival_status: 'expired',
+		audit_status: auditPrev === 'pending' || auditPrev === 'approved' || !auditPrev ? 'rejected' : auditPrev,
+		transfer_state: 'EXPIRED',
+		transfer_error: safeText(reason, 180),
+		update_time: nowTs(),
+		...(extra.wxTradeNo ? { wx_trade_no: safeText(extra.wxTradeNo, 80) } : {})
+	});
+	await writeTransferLog({
+		stage: 'withdraw_auto_expire',
+		withdrawId: id,
+		withdrawNo: safeText(row.withdraw_no, 80),
+		merchantUserId: safeText(row.merchant_user_id, 80),
+		deviceId: row.device_id,
+		outBillNo: row.withdraw_no,
+		transferState: 'EXPIRED',
+		message: safeText(reason, 180),
+		payload: {
+			withdrawId: id,
+			amountPoints: restored.amountPoints,
+			settleAmt: restored.settleAmt,
+			merchantId: restored.merchantId,
+			wxState: extra.wxState || '',
+			...(extra.payload || {})
+		}
+	});
+	return {
+		ok: true,
+		amountPoints: restored.amountPoints,
+		settleAmt: restored.settleAmt,
+		merchantId: restored.merchantId
+	};
+}
+
 /**
- * 每天零点（北京时间）由定时任务调用：将「未打款」且非微信处理中的提现自动置为已失效并返还积分/额度。
+ * 处理中单据：查微信 → 可撤销则撤销 → 仅当终态 CANCELLED/FAIL 后返还；SUCCESS 则按到账结算。
+ */
+async function cancelOrResolveWxWithdrawForExpire(row, reason) {
+	const outBillNo = safeText(row.withdraw_no, 64);
+	if (!outBillNo) return { action: 'error', message: '缺少提现单号' };
+	const cfg = ensureWxWithdrawPayConfig();
+	if (!cfg.ok) return { action: 'error', message: cfg.message };
+	const wc = cfg.creds;
+	let state = normalizeTransferState(row.transfer_state || '');
+	let billNo = safeText(row.wx_trade_no || '', 80);
+	let lastQuery = null;
+
+	const applyLocalState = async (nextState, q) => {
+		state = normalizeTransferState(nextState || state);
+		billNo = safeText(q?.transfer_bill_no || billNo, 80);
+		const polledPkg = pickTransferPackageInfo(q);
+		await withdrawCollection.doc(row._id).update({
+			transfer_state: state,
+			...(billNo ? { wx_trade_no: billNo } : {}),
+			...(polledPkg ? { package_info: safeText(polledPkg, 1200) } : {}),
+			update_time: nowTs()
+		});
+		row.transfer_state = state;
+		if (billNo) row.wx_trade_no = billNo;
+	};
+
+	const queryOnce = async (stage) => {
+		const q = await wxPayQueryMerchantTransfer(wc, outBillNo);
+		lastQuery = q;
+		const st = normalizeTransferState(q?.state || q?.status || state || 'UNKNOWN');
+		await writeTransferLog({
+			stage,
+			withdrawId: row._id,
+			withdrawNo: row.withdraw_no,
+			merchantUserId: row.merchant_user_id,
+			deviceId: row.device_id,
+			outBillNo,
+			transferState: st,
+			message: '自动失效前查询微信转账状态',
+			payload: q || {}
+		});
+		await applyLocalState(st, q);
+		return st;
+	};
+
+	try {
+		state = await queryOnce('withdraw_expire_query');
+	} catch (e) {
+		return {
+			action: 'error',
+			message: safeText(e?.message || '查单失败', 160),
+			wxState: state
+		};
+	}
+
+	if (state === 'SUCCESS') {
+		await settleWithdrawSuccess(row, billNo, state);
+		return { action: 'settled', wxState: state, billNo };
+	}
+
+	if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
+		const fin = await finalizeWithdrawExpiredAndRestore(row, reason, {
+			wxTradeNo: billNo,
+			wxState: state,
+			payload: lastQuery || {}
+		});
+		if (fin.skip) return { action: 'skip', message: fin.message, wxState: state };
+		if (!fin.ok) return { action: 'error', message: fin.message, wxState: state };
+		return {
+			action: 'expired',
+			wxState: state,
+			amountPoints: fin.amountPoints,
+			settleAmt: fin.settleAmt,
+			merchantId: fin.merchantId
+		};
+	}
+
+	if (state === 'CANCELING') {
+		// 已受理撤销：短轮询等待 CANCELLED
+		for (let i = 0; i < 3; i += 1) {
+			await sleepMs(1500);
+			try {
+				state = await queryOnce('withdraw_expire_cancel_poll');
+			} catch (e) {
+				break;
+			}
+			if (state === 'SUCCESS') {
+				await settleWithdrawSuccess(row, billNo, state);
+				return { action: 'settled', wxState: state, billNo };
+			}
+			if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
+				const fin = await finalizeWithdrawExpiredAndRestore(row, reason, {
+					wxTradeNo: billNo,
+					wxState: state
+				});
+				if (fin.ok) {
+					return {
+						action: 'expired',
+						wxState: state,
+						amountPoints: fin.amountPoints,
+						settleAmt: fin.settleAmt,
+						merchantId: fin.merchantId
+					};
+				}
+				if (fin.skip) return { action: 'skip', message: fin.message, wxState: state };
+				return { action: 'error', message: fin.message, wxState: state };
+			}
+			if (state !== 'CANCELING' && !WITHDRAW_WX_CANCELABLE_STATES.includes(state)) break;
+		}
+		return { action: 'cancel_pending', wxState: state || 'CANCELING' };
+	}
+
+	if (!WITHDRAW_WX_CANCELABLE_STATES.includes(state)) {
+		return { action: 'skip', message: `不可撤销状态:${state}`, wxState: state };
+	}
+
+	try {
+		const cancelRes = await wxPayCancelMerchantTransfer(wc, outBillNo);
+		const cancelState = normalizeTransferState(cancelRes?.state || 'CANCELING');
+		await writeTransferLog({
+			stage: 'withdraw_expire_cancel',
+			withdrawId: row._id,
+			withdrawNo: row.withdraw_no,
+			merchantUserId: row.merchant_user_id,
+			deviceId: row.device_id,
+			outBillNo,
+			transferState: cancelState,
+			message: '自动失效：已请求微信撤销转账',
+			payload: cancelRes || {}
+		});
+		await applyLocalState(cancelState || 'CANCELING', cancelRes);
+	} catch (e) {
+		const msg = safeText(e?.message || '撤销失败', 160);
+		await writeTransferLog({
+			stage: 'withdraw_expire_cancel_error',
+			level: 'error',
+			withdrawId: row._id,
+			withdrawNo: row.withdraw_no,
+			merchantUserId: row.merchant_user_id,
+			deviceId: row.device_id,
+			outBillNo,
+			message: msg,
+			payload: e && e.name === 'WxPayRequestError' ? e.wxBody || {} : {}
+		});
+		// 撤销失败时再查一次，可能已终态
+		try {
+			state = await queryOnce('withdraw_expire_query_after_cancel_fail');
+			if (state === 'SUCCESS') {
+				await settleWithdrawSuccess(row, billNo, state);
+				return { action: 'settled', wxState: state, billNo };
+			}
+			if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
+				const fin = await finalizeWithdrawExpiredAndRestore(row, reason, {
+					wxTradeNo: billNo,
+					wxState: state
+				});
+				if (fin.ok) {
+					return {
+						action: 'expired',
+						wxState: state,
+						amountPoints: fin.amountPoints,
+						settleAmt: fin.settleAmt,
+						merchantId: fin.merchantId
+					};
+				}
+			}
+		} catch (e2) {}
+		return { action: 'error', message: msg, wxState: state };
+	}
+
+	for (let i = 0; i < 4; i += 1) {
+		await sleepMs(1500);
+		try {
+			state = await queryOnce('withdraw_expire_cancel_poll');
+		} catch (e) {
+			return { action: 'cancel_pending', wxState: 'CANCELING', message: safeText(e?.message || '', 120) };
+		}
+		if (state === 'SUCCESS') {
+			await settleWithdrawSuccess(row, billNo, state);
+			return { action: 'settled', wxState: state, billNo };
+		}
+		if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
+			const fin = await finalizeWithdrawExpiredAndRestore(row, reason, {
+				wxTradeNo: billNo,
+				wxState: state
+			});
+			if (fin.ok) {
+				return {
+					action: 'expired',
+					wxState: state,
+					amountPoints: fin.amountPoints,
+					settleAmt: fin.settleAmt,
+					merchantId: fin.merchantId
+				};
+			}
+			if (fin.skip) return { action: 'skip', message: fin.message, wxState: state };
+			return { action: 'error', message: fin.message, wxState: state };
+		}
+		if (state !== 'CANCELING' && !WITHDRAW_WX_CANCELABLE_STATES.includes(state)) {
+			return { action: 'cancel_pending', wxState: state };
+		}
+	}
+	return { action: 'cancel_pending', wxState: state || 'CANCELING' };
+}
+
+/**
+ * 每天零点（北京时间）由定时任务调用：
+ * 1）无微信处理中的未打款：直接已失效并返还积分
+ * 2）微信处理中：先撤销 → 查单确认 CANCELLED/FAIL 后再返还；若已 SUCCESS 则按到账结算
  */
 async function withdrawAutoExpireUnpaid(data = {}) {
 	try {
@@ -4521,69 +4786,97 @@ async function withdrawAutoExpireUnpaid(data = {}) {
 		let expired = 0;
 		let skipped = 0;
 		let failed = 0;
+		let cancelRequested = 0;
+		let cancelPending = 0;
+		let settled = 0;
 		const errors = [];
 		const skipReasons = {};
 		const expiredSamples = [];
-		const bumpSkip = (reason) => {
+		const bumpSkip = (why) => {
 			skipped += 1;
-			const k = String(reason || 'other');
+			const k = String(why || 'other');
 			skipReasons[k] = (skipReasons[k] || 0) + 1;
 		};
+
 		for (const row of rows) {
 			const id = String(row._id || '');
-			const stateNow = normalizeTransferState(row.transfer_state || '');
-			if (!WITHDRAW_SAFE_AUTO_EXPIRE_STATES.includes(stateNow)) {
-				bumpSkip(`transfer:${stateNow || 'EMPTY'}`);
-				continue;
-			}
 			const arrival = safeText(row.arrival_status, 20) || 'pending';
 			if (arrival === 'received' || arrival === 'returned' || arrival === 'expired') {
 				bumpSkip(`arrival:${arrival}`);
 				continue;
 			}
-			if (safeText(row.audit_status, 24) === 'rejected') {
+			if (safeText(row.audit_status, 24) === 'rejected' && arrival !== 'pending') {
 				bumpSkip('audit:rejected');
 				continue;
 			}
+
+			let stateNow = normalizeTransferState(row.transfer_state || '');
+			// 空串 normalize 后是 UNKNOWN，按安全失效处理；若实际可能有微信单，走查撤流程
+			const needsWxCancelFlow =
+				WITHDRAW_WX_CANCELABLE_STATES.includes(stateNow) ||
+				stateNow === 'CANCELING' ||
+				(stateNow === 'UNKNOWN' && !!safeText(row.wx_trade_no, 80)) ||
+				(stateNow === 'UNKNOWN' && !!row.audit_required && safeText(row.audit_status, 24) === 'approved');
+
 			try {
-				const restored = await restoreUnpaidWithdrawBalances(row);
-				if (!restored.ok) {
+				if (needsWxCancelFlow) {
+					const r = await cancelOrResolveWxWithdrawForExpire(row, reason);
+					if (r.action === 'expired') {
+						expired += 1;
+						if (expiredSamples.length < 10) {
+							expiredSamples.push({
+								id,
+								withdrawNo: safeText(row.withdraw_no, 80),
+								merchantUserId: safeText(row.merchant_user_id, 80),
+								amountPoints: r.amountPoints,
+								settleAmt: r.settleAmt,
+								via: 'wx_cancel'
+							});
+						}
+						continue;
+					}
+					if (r.action === 'settled') {
+						settled += 1;
+						continue;
+					}
+					if (r.action === 'cancel_pending') {
+						cancelPending += 1;
+						cancelRequested += 1;
+						continue;
+					}
+					if (r.action === 'skip') {
+						bumpSkip(r.message || `wx:${r.wxState || stateNow}`);
+						continue;
+					}
 					failed += 1;
-					errors.push({ id, message: restored.message || '返还失败' });
+					errors.push({ id, message: r.message || '微信撤销处理失败', wxState: r.wxState || '' });
 					continue;
 				}
-				const auditPrev = safeText(row.audit_status, 24);
-				await withdrawCollection.doc(id).update({
-					arrival_status: 'expired',
-					audit_status: auditPrev === 'pending' || auditPrev === 'approved' ? 'rejected' : auditPrev || 'rejected',
-					transfer_state: 'EXPIRED',
-					transfer_error: reason,
-					update_time: nowTs()
-				});
-				await writeTransferLog({
-					stage: 'withdraw_auto_expire',
-					withdrawId: id,
-					withdrawNo: safeText(row.withdraw_no, 80),
-					merchantUserId: safeText(row.merchant_user_id, 80),
-					deviceId: row.device_id,
-					outBillNo: row.withdraw_no,
-					transferState: 'EXPIRED',
-					message: reason,
-					payload: {
-						withdrawId: id,
-						amountPoints: restored.amountPoints,
-						settleAmt: restored.settleAmt,
-						merchantId: restored.merchantId
-					}
-				});
+
+				if (!WITHDRAW_SAFE_AUTO_EXPIRE_STATES.includes(stateNow) && stateNow !== 'UNKNOWN') {
+					bumpSkip(`transfer:${stateNow || 'EMPTY'}`);
+					continue;
+				}
+
+				const fin = await finalizeWithdrawExpiredAndRestore(row, reason, { wxState: stateNow });
+				if (fin.skip) {
+					bumpSkip(fin.message || 'skip');
+					continue;
+				}
+				if (!fin.ok) {
+					failed += 1;
+					errors.push({ id, message: fin.message || '返还失败' });
+					continue;
+				}
 				expired += 1;
 				if (expiredSamples.length < 10) {
 					expiredSamples.push({
 						id,
 						withdrawNo: safeText(row.withdraw_no, 80),
 						merchantUserId: safeText(row.merchant_user_id, 80),
-						amountPoints: restored.amountPoints,
-						settleAmt: restored.settleAmt
+						amountPoints: fin.amountPoints,
+						settleAmt: fin.settleAmt,
+						via: 'direct'
 					});
 				}
 			} catch (e) {
@@ -4591,6 +4884,7 @@ async function withdrawAutoExpireUnpaid(data = {}) {
 				errors.push({ id, message: safeText(e?.message || '失效失败', 160) });
 			}
 		}
+
 		return {
 			code: 0,
 			message: 'ok',
@@ -4599,6 +4893,9 @@ async function withdrawAutoExpireUnpaid(data = {}) {
 				expired,
 				skipped,
 				failed,
+				cancelRequested,
+				cancelPending,
+				settled,
 				skipReasons,
 				expiredSamples,
 				errors: errors.slice(0, 20),
@@ -5513,6 +5810,17 @@ async function wxPayMerchantTransferToOpenid(creds, { appid, openid, amountFen, 
 async function wxPayQueryMerchantTransfer(creds, outBillNo) {
 	const path = `/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/${encodeURIComponent(safeText(outBillNo, 64))}`;
 	return wxPayRequestFor(creds, 'GET', path, null, { useEipProxy: true });
+}
+
+/** 撤销商家转账（用户确认收款前）；返回成功仅表示受理，终态以查单为准 */
+async function wxPayCancelMerchantTransfer(creds, outBillNo) {
+	const path = `/v3/fund-app/mch-transfer/transfer-bills/out-bill-no/${encodeURIComponent(safeText(outBillNo, 64))}/cancel`;
+	return wxPayRequestFor(creds, 'POST', path, {}, { useEipProxy: true });
+}
+
+function sleepMs(ms) {
+	const n = Math.max(0, Number(ms) || 0);
+	return new Promise((resolve) => setTimeout(resolve, n));
 }
 
 /** 商家转账「用户确认收款」拉起参数；发起/查单多为 snake_case，个别网关可能驼峰 */

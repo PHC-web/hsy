@@ -1,12 +1,15 @@
 'use strict';
 
 /**
- * 每天北京时间 00:00 自动撤回「未打款」提现：标记为已失效，并返还积分与提现额度。
- * 调用 merchant.withdrawAutoExpireUnpaid（与管理员拒绝返还同一口径）。
+ * 每天北京时间 00:00 自动撤回「未打款」提现：
+ * - 无微信处理中：直接已失效并返还积分
+ * - 微信处理中（ACCEPTED/PROCESSING/WAIT_USER_CONFIRM）：先调撤销 → 查单确认 CANCELLED/FAIL 后再返还
+ * - 若查单已 SUCCESS：按到账结算（不返还）
  *
- * 不在 package.json 写 triggers，避免上传报错；部署后请在 uniCloud 控制台添加定时触发器：
- * 类型：定时触发器，Cron：0 0 0 * * *（每天 00:00:00，服务端按时区为北京时间）
- * 超时建议：120s～300s；若未打款单很多，可依赖 hasMore 多轮（也可把 Cron 设为 0 0/5 0 * * * 仅在 0 点附近多扫几次）。
+ * 调用 merchant.withdrawAutoExpireUnpaid
+ *
+ * 不在 package.json 写 triggers；部署后请在控制台添加定时触发器 Cron：0 0 0 * * *
+ * 建议超时 300s；0 点后若仍有 cancelPending，可加 0 5 0 * * * / 0 10 0 * * * 再扫两轮。
  */
 
 async function callMerchant(action, data = {}) {
@@ -31,13 +34,16 @@ exports.main = async (event) => {
 		expired: 0,
 		skipped: 0,
 		failed: 0,
+		cancelRequested: 0,
+		cancelPending: 0,
+		settled: 0,
 		errors: []
 	};
 
 	try {
-		// 多轮处理，避免单次 limit 扫不完
-		for (let round = 0; round < 20; round += 1) {
-			const ret = await callMerchant('withdrawAutoExpireUnpaid', { limit: 100 });
+		// 单轮 limit 不宜过大：含微信撤销短轮询，避免云函数超时
+		for (let round = 0; round < 30; round += 1) {
+			const ret = await callMerchant('withdrawAutoExpireUnpaid', { limit: 20 });
 			if (ret.code !== 0) {
 				console.error('[withdraw-expire-cron] merchant error', ret);
 				return { ok: false, message: ret.message || '自动失效失败', result: ret, summary };
@@ -48,15 +54,20 @@ exports.main = async (event) => {
 			summary.expired += Number(d.expired || 0);
 			summary.skipped += Number(d.skipped || 0);
 			summary.failed += Number(d.failed || 0);
+			summary.cancelRequested += Number(d.cancelRequested || 0);
+			summary.cancelPending += Number(d.cancelPending || 0);
+			summary.settled += Number(d.settled || 0);
 			if (Array.isArray(d.errors) && d.errors.length) {
 				summary.errors.push(...d.errors.slice(0, 5));
 			}
 			console.log('[withdraw-expire-cron] round', round + 1, d);
-			if (!d.hasMore || Number(d.expired || 0) + Number(d.skipped || 0) + Number(d.failed || 0) === 0) {
-				break;
-			}
-			// 本轮全是 skip（微信处理中）且 hasMore，继续扫下一批
-			if (Number(d.expired || 0) === 0 && Number(d.scanned || 0) < 100) {
+			if (!d.hasMore) break;
+			if (
+				Number(d.expired || 0) === 0 &&
+				Number(d.cancelPending || 0) === 0 &&
+				Number(d.settled || 0) === 0 &&
+				Number(d.failed || 0) === 0
+			) {
 				break;
 			}
 		}
