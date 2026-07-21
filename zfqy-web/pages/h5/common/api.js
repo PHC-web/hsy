@@ -154,6 +154,23 @@ export function h5WithdrawConfirmPackage(withdrawNo) {
 	return merchantCall('h5WithdrawConfirmPackage', merchantIdentity({ withdrawNo }));
 }
 
+/** 二次确认收款后短轮询微信 SUCCESS 并即时本地到账 */
+export function h5WithdrawSyncAfterConfirm(withdrawNo, opts = {}) {
+	return merchantCall(
+		'h5WithdrawSyncAfterConfirm',
+		merchantIdentity({
+			withdrawNo,
+			rounds: opts.rounds,
+			intervalMs: opts.intervalMs
+		})
+	);
+}
+
+/** 财务管理页：同步本商户处理中提现 */
+export function h5WithdrawSyncMine(opts = {}) {
+	return merchantCall('h5WithdrawSyncMine', merchantIdentity({ limit: opts.limit }));
+}
+
 export function h5HomeDashboard() {
 	return merchantCall('h5HomeDashboard', Object.assign(merchantIdentity(), { cmp: 1 }));
 }

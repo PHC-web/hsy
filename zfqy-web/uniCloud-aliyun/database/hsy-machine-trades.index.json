@@ -1,0 +1,47 @@
+[
+	{
+		"IndexName": "trade_no_unique",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "trade_no",
+					"Direction": "1"
+				}
+			],
+			"MgoIsUnique": true
+		}
+	},
+	{
+		"IndexName": "device_id_trade_no",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "device_id",
+					"Direction": "1"
+				},
+				{
+					"Name": "trade_no",
+					"Direction": "1"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "user_id_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "user_id",
+					"Direction": "1"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	}
+]

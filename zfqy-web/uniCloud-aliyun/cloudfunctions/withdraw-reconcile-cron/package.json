@@ -1,0 +1,12 @@
+{
+	"name": "withdraw-reconcile-cron",
+	"version": "1.0.0",
+	"description": "每天 00:00：复核近 30 天内微信已 SUCCESS 但本地未到账的提现并同步",
+	"main": "index.js",
+	"dependencies": {},
+	"cloudfunction-config": {
+		"concurrency": 1,
+		"memorySize": 512,
+		"timeout": 180
+	}
+}

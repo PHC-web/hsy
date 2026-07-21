@@ -61,7 +61,7 @@
 </template>
 
 <script>
-import { h5FinanceRecords, h5WithdrawConfirmPackage } from '@/pages/h5/common/api';
+import { h5FinanceRecords, h5WithdrawConfirmPackage, h5WithdrawSyncAfterConfirm, h5WithdrawSyncMine } from '@/pages/h5/common/api';
 
 function todayStr() {
 	const d = new Date();
@@ -161,6 +161,7 @@ export default {
 				return;
 			}
 			uni.showLoading({ title: '拉起中...', mask: true });
+			let invokeOk = false;
 			try {
 				const res = await h5WithdrawConfirmPackage(withdrawNo);
 				if (res.code !== 0) {
@@ -179,7 +180,7 @@ export default {
 						(r) => {
 							const msg = String((r && r.err_msg) || '');
 							if (msg.indexOf('ok') >= 0) {
-								uni.showToast({ title: '已拉起确认，请在微信完成收款', icon: 'none' });
+								invokeOk = true;
 							} else if (msg.indexOf('cancel') >= 0) {
 								uni.showToast({ title: '你已取消确认收款', icon: 'none' });
 							} else {
@@ -189,7 +190,18 @@ export default {
 						}
 					);
 				});
-				await this.query();
+				if (invokeOk) {
+					uni.showLoading({ title: '同步到账中…', mask: true });
+					const sync = await h5WithdrawSyncAfterConfirm(withdrawNo, { rounds: 8, intervalMs: 1200 });
+					if (sync.code === 0 && sync.data && sync.data.arrived) {
+						uni.showToast({ title: '已到账', icon: 'success' });
+					} else if (sync.code === 0) {
+						uni.showToast({ title: sync.message || '确认已提交，请稍后刷新', icon: 'none' });
+					} else {
+						uni.showToast({ title: sync.message || '同步失败，请稍后刷新', icon: 'none' });
+					}
+				}
+				await this.query({ silent: true });
 			} finally {
 				uni.hideLoading();
 			}
@@ -198,6 +210,10 @@ export default {
 			const silent = !!opts.silent;
 			this.page = 1;
 			this.list = [];
+			// 打开/刷新时先同步本商户处理中单据，避免 SUCCESS 拖到零点才更新
+			try {
+				await h5WithdrawSyncMine({ limit: 8 });
+			} catch (e) {}
 			await this.fetch(true, { silent });
 		},
 		async loadMore() {

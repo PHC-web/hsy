@@ -5,6 +5,7 @@
  * - 无微信处理中：直接已失效并返还积分
  * - 微信处理中（ACCEPTED/PROCESSING/WAIT_USER_CONFIRM）：先调撤销 → 查单确认 CANCELLED/FAIL 后再返还
  * - 若查单已 SUCCESS：按到账结算（不返还）
+ * - 待审核（pending / PENDING_AUDIT）不失效，保持待审核
  *
  * 调用 merchant.withdrawAutoExpireUnpaid
  *

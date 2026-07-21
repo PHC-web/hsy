@@ -136,6 +136,48 @@
 				/>
 			</view>
 		</view>
+
+		<view v-if="failDetailVisible" class="fail-detail-mask" @click="closeFailDetail">
+			<view class="fail-detail-panel" @click.stop>
+				<view class="fail-detail-hd">
+					<text class="fail-detail-title">失败原因详情</text>
+					<text class="fail-detail-close" @click="closeFailDetail">关闭</text>
+				</view>
+				<scroll-view scroll-y class="fail-detail-bd" :show-scrollbar="true">
+					<view v-if="failDetailLoading" class="fail-detail-loading">加载中…</view>
+					<template v-else>
+						<view class="fail-detail-row">
+							<text class="fail-detail-label">提现单号</text>
+							<text class="fail-detail-val">{{ failDetail.withdrawNo || '-' }}</text>
+						</view>
+						<view class="fail-detail-row">
+							<text class="fail-detail-label">失败原因</text>
+							<text class="fail-detail-val">{{ failDetail.reason || '-' }}</text>
+						</view>
+						<view class="fail-detail-row">
+							<text class="fail-detail-label">回款到商户号时间</text>
+							<text class="fail-detail-val">{{ failDetail.balanceRestoreTime || '（暂无记录，可能尚未退回或为历史单）' }}</text>
+						</view>
+						<view class="fail-detail-row">
+							<text class="fail-detail-label">微信状态</text>
+							<text class="fail-detail-val">{{ failDetailTransferStateText }}</text>
+						</view>
+						<view class="fail-detail-row">
+							<text class="fail-detail-label">数据来源</text>
+							<text class="fail-detail-val">{{ failDetail.dataSource || '-' }}</text>
+						</view>
+						<view class="fail-detail-row block">
+							<text class="fail-detail-label">{{ failDetailWxRawLabel }}</text>
+							<text class="fail-detail-raw">{{ failDetail.wxRawText || '（暂无）' }}</text>
+						</view>
+					</template>
+				</scroll-view>
+				<view class="fail-detail-ft">
+					<button size="mini" type="primary" @click="closeFailDetail">确定</button>
+				</view>
+			</view>
+		</view>
+
 		<!-- #ifndef H5 -->
 		<fix-window />
 		<!-- #endif -->
@@ -198,6 +240,16 @@ export default {
 			pollTimer: null,
 			pollBusy: false,
 			showExportMenu: false,
+			failDetailVisible: false,
+			failDetailLoading: false,
+			failDetail: {
+				withdrawNo: '',
+				reason: '',
+				balanceRestoreTime: '',
+				transferState: '',
+				dataSource: '',
+				wxRawText: ''
+			},
 			exportTypeOptions: [
 				{ text: 'JSON', value: 'json' },
 				{ text: 'XML', value: 'xml' },
@@ -216,6 +268,104 @@ export default {
 				totalFeeTax: Number(s.totalFeeTax || 0).toFixed(4),
 				totalPayable: Number(s.totalPayable || 0).toFixed(4)
 			};
+		},
+		failDetailTransferStateText() {
+			const s = String(this.failDetail.transferState || '').trim().toUpperCase();
+			if (!s) return '-';
+			if (s === 'EXPIRED') return 'EXPIRED/已失效';
+			return this.failDetail.transferState || s;
+		},
+		failDetailWxRawParsed() {
+			const rawText = String(this.failDetail.wxRawText || '').trim();
+			if (!rawText) return null;
+			try {
+				return JSON.parse(rawText);
+			} catch (e) {
+				return null;
+			}
+		},
+		failDetailWxRawState() {
+			const obj = this.failDetailWxRawParsed;
+			if (obj) {
+				// 微信查单：state；本地失效日志：wxState
+				const st = String(obj.state || obj.status || obj.wxState || '').trim().toUpperCase();
+				if (st) return st;
+			}
+			const rawText = String(this.failDetail.wxRawText || '').trim();
+			const m =
+				rawText.match(/"state"\s*:\s*"([A-Za-z_]+)"/i) ||
+				rawText.match(/"wxState"\s*:\s*"([A-Za-z_]+)"/i);
+			if (m && m[1]) return String(m[1]).toUpperCase();
+			const local = String(this.failDetail.transferState || '').trim().toUpperCase();
+			if (local && local !== 'EXPIRED') return local;
+			return '';
+		},
+		failDetailWxFailReason() {
+			const obj = this.failDetailWxRawParsed;
+			if (obj) {
+				const r = String(obj.fail_reason || obj.failReason || obj.close_reason || '').trim().toUpperCase();
+				if (r) return r;
+			}
+			const rawText = String(this.failDetail.wxRawText || '').trim();
+			const m = rawText.match(/"fail_reason"\s*:\s*"([A-Za-z0-9_]+)"/i);
+			return m && m[1] ? String(m[1]).toUpperCase() : '';
+		},
+		failDetailIsLocalExpirePayload() {
+			const obj = this.failDetailWxRawParsed;
+			if (!obj || typeof obj !== 'object') return false;
+			// 本地失效/返还日志：有 amountPoints + merchantId / wxState，无微信 transfer_bill_no
+			const hasLocal =
+				(obj.amountPoints != null || obj.settleAmt != null || obj.wxState != null) &&
+				(obj.merchantId != null || obj.withdrawId != null);
+			const hasWxBill = !!(obj.transfer_bill_no || obj.transferBillNo || obj.mch_id || obj.openid);
+			return hasLocal && !hasWxBill;
+		},
+		failDetailWxRawLabel() {
+			const st = this.failDetailWxRawState;
+			const failReason = this.failDetailWxFailReason;
+			const isLocal = this.failDetailIsLocalExpirePayload;
+			const refundedToMchReasons = [
+				'OVERDUE_CLOSE',
+				'OVERDUE',
+				'TIMEOUT_CLOSE',
+				'CLOSED',
+				'REVOKED',
+				'CANCELLED',
+				'CANCELED'
+			];
+			let meaning = '';
+			if (isLocal && st === 'PENDING_AUDIT') {
+				meaning = '待审核未打款(已退回商户积分,未占商户号资金)';
+			} else if (isLocal && (st === 'EXPIRED' || st === '' || !st)) {
+				meaning = '本地失效返还记录';
+			} else if (isLocal && (st === 'UNKNOWN' || st === 'REJECTED' || st === 'RETRYABLE_FAIL')) {
+				meaning = `本地失效返还(原状态:${st})`;
+			} else if ((st === 'FAIL' || st === 'FAILED') && refundedToMchReasons.includes(failReason)) {
+				meaning = '已退回到商户号';
+			} else if (st === 'CANCELLED' || st === 'CANCELED') {
+				meaning = '撤销成功(已退回到商户号)';
+			} else if (st === 'CANCELING') {
+				meaning = '撤销处理中';
+			} else if (st === 'SUCCESS') {
+				meaning = '用户已确认收款(钱已到零钱)';
+			} else if (st === 'FAIL' || st === 'FAILED') {
+				meaning = failReason ? `转账失败(${failReason})` : '转账失败';
+			} else if (st === 'WAIT_USER_CONFIRM') {
+				meaning = '待用户确认收款';
+			} else if (st === 'PENDING_AUDIT') {
+				meaning = '待审核未打款';
+			} else if (st === 'ACCEPTED') {
+				meaning = '已受理';
+			} else if (st === 'PROCESSING') {
+				meaning = '处理中';
+			} else if (st === 'NOT_FOUND') {
+				meaning = '微信无此单';
+			} else if (isLocal) {
+				meaning = st ? `本地失效记录(${st})` : '本地失效返还记录';
+			} else {
+				meaning = st || '未知';
+			}
+			return `微信商户号原始应答(${meaning})`;
 		}
 	},
 	mounted() {
@@ -599,14 +749,49 @@ export default {
 				uni.hideLoading();
 			}
 		},
-		showFailReason(item) {
+		async showFailReason(item) {
 			const reason = String(item?.transferError || '').trim();
-			if (!reason) return;
-			uni.showModal({
-				title: '失败原因',
-				content: reason,
-				showCancel: false
-			});
+			if (!reason && !item?.id && !item?.withdrawNo) return;
+			this.failDetailVisible = true;
+			this.failDetailLoading = true;
+			this.failDetail = {
+				withdrawNo: item.withdrawNo || '',
+				reason: reason || item.transferError || '-',
+				balanceRestoreTime: item.balanceRestoreTime || '',
+				transferState: item.transferState || '',
+				dataSource: '',
+				wxRawText: item.wxExpireResponse || ''
+			};
+			try {
+				const res = await this.$request(
+					'withdrawFailDetail',
+					{
+						id: item.id || '',
+						withdrawNo: item.withdrawNo || ''
+					},
+					{ functionName: 'merchant' }
+				);
+				if (res.code === 0 && res.data) {
+					const d = res.data;
+					this.failDetail = {
+						withdrawNo: d.withdrawNo || item.withdrawNo || '',
+						reason: d.reason || reason || '-',
+						balanceRestoreTime: d.balanceRestoreTime || item.balanceRestoreTime || '',
+						transferState: d.transferState || item.transferState || '',
+						dataSource: d.dataSource || '',
+						wxRawText: d.wxRawText || item.wxExpireResponse || '（暂无）'
+					};
+				} else if (!this.failDetail.wxRawText) {
+					this.failDetail.wxRawText = res.message || '获取详情失败';
+				}
+			} catch (e) {
+				if (!this.failDetail.wxRawText) this.failDetail.wxRawText = '获取详情失败';
+			} finally {
+				this.failDetailLoading = false;
+			}
+		},
+		closeFailDetail() {
+			this.failDetailVisible = false;
 		},
 
 		onPageChanged(page) {
@@ -865,6 +1050,98 @@ export default {
 	line-height: 26px;
 	padding: 0 8px;
 	border-radius: 13px;
+}
+
+.fail-detail-mask {
+	position: fixed;
+	left: 0;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 1000;
+	background: rgba(0, 0, 0, 0.45);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	box-sizing: border-box;
+}
+.fail-detail-panel {
+	width: min(720px, 96vw);
+	max-height: min(80vh, 640px);
+	background: #fff;
+	border-radius: 10px;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.fail-detail-hd {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 14px 16px;
+	border-bottom: 1px solid #ebeef5;
+}
+.fail-detail-title {
+	font-size: 16px;
+	font-weight: 700;
+	color: #303133;
+}
+.fail-detail-close {
+	color: #409eff;
+	font-size: 13px;
+	cursor: pointer;
+}
+.fail-detail-bd {
+	flex: 1;
+	min-height: 200px;
+	max-height: 520px;
+	padding: 12px 16px;
+	box-sizing: border-box;
+}
+.fail-detail-loading {
+	color: #909399;
+	padding: 24px 0;
+	text-align: center;
+}
+.fail-detail-row {
+	margin-bottom: 12px;
+}
+.fail-detail-row.block .fail-detail-raw {
+	margin-top: 6px;
+}
+.fail-detail-label {
+	display: block;
+	font-size: 12px;
+	color: #909399;
+	margin-bottom: 4px;
+}
+.fail-detail-val {
+	display: block;
+	font-size: 13px;
+	color: #303133;
+	line-height: 1.5;
+	word-break: break-all;
+}
+.fail-detail-raw {
+	display: block;
+	font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+	font-size: 12px;
+	line-height: 1.45;
+	color: #606266;
+	background: #f5f7fa;
+	border: 1px solid #ebeef5;
+	border-radius: 6px;
+	padding: 10px;
+	white-space: pre-wrap;
+	word-break: break-all;
+}
+.fail-detail-ft {
+	padding: 10px 16px 14px;
+	border-top: 1px solid #ebeef5;
+	display: flex;
+	justify-content: flex-end;
 }
 
 </style>

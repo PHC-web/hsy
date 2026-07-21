@@ -506,7 +506,8 @@ async function virtualSwipe(data, event) {
 		}
 
 		const cashback = Number((swipeAmount * 0.0038).toFixed(4));
-		const installments = swipeAmount > 300 ? 5 : 1;
+		// 与参数配置一致：阈值上下默认均为 5 期；每期最低 0.01 → 最低可积分流水 ≈ 13.16
+		const installments = 5;
 		const releaseAmount = Number((cashback / installments).toFixed(4));
 		const newTotal = Number((Number(machine.total_transaction || 0) + swipeAmount).toFixed(2));
 		const now = Date.now();
@@ -534,31 +535,39 @@ async function virtualSwipe(data, event) {
 		const act = await tryActivateMachineByTotal(machine, newTotal, now);
 
 		const tradeNo = generateTradeNo();
-		await tradeCollection.add({
-			device_id: deviceId,
-			trade_no: tradeNo,
-			user_id: machine.bind_user_id,
-			user_name: machine.bind_user_name || '',
-			user_mobile: '',
-			trade_type: 'virtual',
-			paychannel: '',
-			paychannel_text: '虚拟',
-			is_risk_trade: false,
-			risk_audit_status: 'none',
-			stats_eligible: true,
-			trade_member_bucket: tradeMemberBucket,
-			amount: swipeAmount,
-			is_activated: !!act.activated,
-			total_transaction: newTotal,
-			cashback: cashback,
-			cashback_time: cashback > 0 ? now : null,
-			release_amount: releaseAmount,
-			release_ratio: Number((100 / installments).toFixed(2)),
-			is_deleted: false,
-			company: machine.merchant || '管理员',
-			risk_control_status: 'no',
-			create_time: now
-		});
+		try {
+			await tradeCollection.add({
+				device_id: deviceId,
+				trade_no: tradeNo,
+				user_id: machine.bind_user_id,
+				user_name: machine.bind_user_name || '',
+				user_mobile: '',
+				trade_type: 'virtual',
+				paychannel: '',
+				paychannel_text: '虚拟',
+				is_risk_trade: false,
+				risk_audit_status: 'none',
+				stats_eligible: true,
+				trade_member_bucket: tradeMemberBucket,
+				amount: swipeAmount,
+				is_activated: !!act.activated,
+				total_transaction: newTotal,
+				cashback: cashback,
+				cashback_time: cashback > 0 ? now : null,
+				release_amount: releaseAmount,
+				release_ratio: Number((100 / installments).toFixed(2)),
+				is_deleted: false,
+				company: machine.merchant || '管理员',
+				risk_control_status: 'no',
+				create_time: now
+			});
+		} catch (e) {
+			const msg = String(e && (e.message || e.errMsg || e) || '');
+			if (/duplicate|E11000|唯一|unique/i.test(msg)) {
+				return { code: 409, message: '交易单号冲突，请重试' };
+			}
+			throw e;
+		}
 
 		await recordOperationLog(event, 'virtualSwipe', deviceId, deviceId, `虚拟刷卡: ${deviceId} 金额￥${swipeAmount}`);
 
@@ -1230,6 +1239,129 @@ async function getCardRecordList(data) {
 	} catch (error) {
 		console.error('刷卡记录列表失败:', error);
 		return { code: 500, message: '获取失败' };
+	}
+}
+
+/**
+ * 清理重复交易单号：同一 trade_no 保留 create_time 最早的一条，其余软删。
+ * 默认 dryRun；传 apply:true 才真正删除。建唯一索引前必须先跑通。
+ */
+async function dedupeCardTradesByTradeNo(data = {}, event) {
+	try {
+		const _ = db.command;
+		const $ = db.command.aggregate;
+		const apply =
+			data?.apply === true || data?.apply === 1 || String(data?.apply || '').toLowerCase() === 'true';
+		const dryRun = !apply;
+		const groupLimit = Math.min(200, Math.max(1, parseInt(String(data?.limit || 50), 10) || 50));
+		const agg = await tradeCollection
+			.aggregate()
+			.match({
+				is_deleted: _.neq(true),
+				trade_no: _.and([_.exists(true), _.neq('')])
+			})
+			.group({
+				_id: '$trade_no',
+				cnt: $.sum(1)
+			})
+			.match({ cnt: $.gt(1) })
+			.limit(groupLimit)
+			.end();
+		const groups = agg.data || [];
+		const samples = [];
+		let softDeleted = 0;
+		let cashbackReversed = 0;
+		const now = Date.now();
+
+		for (const g of groups) {
+			const tradeNo = String(g._id || '').trim();
+			if (!tradeNo) continue;
+			const listRes = await tradeCollection
+				.where({ trade_no: tradeNo, is_deleted: _.neq(true) })
+				.orderBy('create_time', 'asc')
+				.limit(50)
+				.get();
+			const rows = listRes.data || [];
+			if (rows.length < 2) continue;
+			const keep = rows[0];
+			const drop = rows.slice(1);
+			samples.push({
+				tradeNo,
+				keepId: keep._id,
+				dropIds: drop.map((x) => x._id),
+				dropCashback: drop.reduce((s, x) => s + Number(x.cashback || 0), 0)
+			});
+			if (dryRun) continue;
+
+			for (const row of drop) {
+				await tradeCollection.doc(row._id).update({
+					is_deleted: true,
+					stats_eligible: false,
+					delete_time: now,
+					delete_user: 'dedupeCardTradesByTradeNo',
+					update_time: now
+				});
+				softDeleted += 1;
+				const cb = Number(row.cashback || 0);
+				if (cb > 0 && row.device_id) {
+					try {
+						const mRes = await machineCollection
+							.where({ device_id: String(row.device_id), is_deleted: false })
+							.limit(1)
+							.get();
+						const machine = mRes.data && mRes.data[0];
+						if (machine) {
+							await machineCollection.doc(machine._id).update({
+								frozen_amount: Number(Math.max(0, Number(machine.frozen_amount || 0) - cb).toFixed(4))
+							});
+							cashbackReversed += cb;
+							const uid = String(machine.bind_user_id || row.user_id || '').trim();
+							if (uid) {
+								const merRes = await merchantCollection
+									.where(_.or([{ user_id: uid }, { _id: uid }]))
+									.limit(1)
+									.get();
+								const mer = merRes.data && merRes.data[0];
+								if (mer) {
+									await merchantCollection.doc(mer._id).update({
+										frozen_amount: Number(Math.max(0, Number(mer.frozen_amount || 0) - cb).toFixed(4)),
+										update_time: now
+									});
+								}
+							}
+						}
+					} catch (e) {
+						console.error('dedupe reverse cashback failed', tradeNo, e);
+					}
+				}
+			}
+		}
+
+		try {
+			await recordOperationLog(
+				event,
+				'dedupeCardTradesByTradeNo',
+				'dedupe',
+				'dedupe',
+				`重复交易单号清理 dryRun=${dryRun} groups=${groups.length} softDeleted=${softDeleted}`
+			);
+		} catch (e) {}
+
+		return {
+			code: 0,
+			message: dryRun ? '预览完成（未改库，传 apply:true 执行）' : '清理完成',
+			data: {
+				dryRun,
+				duplicateGroups: groups.length,
+				softDeleted,
+				cashbackReversed: Number(cashbackReversed.toFixed(4)),
+				samples: samples.slice(0, 20),
+				hasMore: groups.length >= groupLimit
+			}
+		};
+	} catch (e) {
+		console.error('dedupeCardTradesByTradeNo failed', e);
+		return { code: 500, message: e?.message || '去重失败' };
 	}
 }
 
@@ -1963,6 +2095,8 @@ exports.main = async (event, context) => {
 			return await getFreezeBillList(actualData);
 		case 'cardRecordList':
 			return await getCardRecordList(actualData);
+		case 'dedupeCardTradesByTradeNo':
+			return await dedupeCardTradesByTradeNo(actualData, event);
 		case 'riskList':
 			return await getRiskList(actualData);
 		case 'riskAuditTrade':

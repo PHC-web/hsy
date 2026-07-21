@@ -23,7 +23,8 @@ function formatTimeMs(timestamp) {
 		}).formatToParts(new Date(ts));
 		const pick = (type) => (parts.find((x) => x.type === type) || {}).value || '';
 		if (!pick('year')) return '';
-		return `${pick('year')}-${pick('month')}-${pick('day')} ${pick('hour')}:${pick('minute')}:${pick('second')}`;
+		const hour = pick('hour') === '24' ? '00' : pick('hour');
+		return `${pick('year')}-${pick('month')}-${pick('day')} ${hour}:${pick('minute')}:${pick('second')}`;
 	} catch (e) {
 		const date = new Date(ts + 8 * 60 * 60 * 1000);
 		return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(

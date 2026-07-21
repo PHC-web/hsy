@@ -6,12 +6,38 @@ const POINTS_PER_BLOCK = 38;
 const POINTS_PER_MONTH = 7.6;
 /** 待领取奖励默认有效期（天），可被业务参数 incomePacketClaimValidDays 覆盖 */
 const DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS = 7;
+const CASHBACK_RATE = 0.0038;
+const DEFAULT_INSTALLMENTS = 5;
 const MIN_PACKET_AMOUNT = 0.01;
+/** 两位小数向上取整（例：13.1501 → 13.16） */
+function ceilYuan2(raw) {
+	const n = Number(raw || 0);
+	if (!Number.isFinite(n) || n <= 0) return 0;
+	return Math.ceil(n * 100 - 1e-9) / 100;
+}
+/** 每期最低 0.01 × 期数 / 0.0038，向上取整到分；默认 5 期 → 13.16 */
+const MIN_SUBSIDY_TRADE_YUAN = ceilYuan2((MIN_PACKET_AMOUNT * DEFAULT_INSTALLMENTS) / CASHBACK_RATE);
 /** 权益气泡金额：统一四舍五入到 2 位小数，展示与合计口径一致 */
 function roundPacketAmountYuan(raw) {
 	const n = Number(raw || 0);
 	if (!Number.isFinite(n)) return 0;
 	return Math.max(0, Math.round(n * 100) / 100);
+}
+
+function resolveInstallmentCount(amount, releaseRatio) {
+	const rr = Number(releaseRatio);
+	if (Number.isFinite(rr) && rr >= 99) return 1;
+	return DEFAULT_INSTALLMENTS;
+}
+
+function resolveFirstReleaseYuan(amount, releaseAmount, releaseRatio) {
+	const amt = Number(amount || 0);
+	if (!(amt >= MIN_SUBSIDY_TRADE_YUAN)) return 0;
+	if (releaseAmount !== undefined && releaseAmount !== null && releaseAmount !== '') {
+		return Number(releaseAmount || 0);
+	}
+	const installments = resolveInstallmentCount(amt, releaseRatio);
+	return Number(((amt * CASHBACK_RATE) / installments).toFixed(4));
 }
 /** uniCloud 单次 get 上限 1000，须分页拉全量 */
 const DB_PAGE_SIZE = 1000;
@@ -124,13 +150,14 @@ async function sumEligibleReleasePoints(db, merchantUserId, start, end) {
 		(rows) => {
 			for (const row of rows) {
 				const amount = Number(row.amount || 0);
+				if (!(amount >= MIN_SUBSIDY_TRADE_YUAN)) continue;
 				const hasRelease = row.release_amount !== undefined && row.release_amount !== null;
 				let release = hasRelease
 					? Number(row.release_amount || 0)
-					: Number((amount * 0.0038 / (amount > 300 ? 5 : 1)).toFixed(4));
+					: resolveFirstReleaseYuan(amount, null, row.release_ratio);
 				const rr = Number(row.release_ratio);
 				if (!hasRelease && Number.isFinite(rr) && rr >= 99) {
-					release = Number((amount * 0.0038).toFixed(4));
+					release = Number((amount * CASHBACK_RATE).toFixed(4));
 				}
 				if (Number.isFinite(release) && release > 0) total += release;
 			}
@@ -178,9 +205,11 @@ function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
 		const slices = [];
 		for (const t of rows) {
 			const amount = Number(t.amount || 0);
-			if (!(amount > 0)) continue;
-			const total = Number((amount * 0.0038).toFixed(4));
-			const first = Number(t.release_amount != null ? t.release_amount : total);
+			if (!(amount >= MIN_SUBSIDY_TRADE_YUAN)) continue;
+			const total = Number((amount * CASHBACK_RATE).toFixed(4));
+			const first = Number(
+				t.release_amount != null ? t.release_amount : resolveFirstReleaseYuan(amount, null, t.release_ratio)
+			);
 			// 后续4个月“每个月”的应到期积分，而非4个月总和
 			const monthlyDeferred = Number(((total - first) / 4).toFixed(6));
 			let remainAmt = amount;
@@ -231,10 +260,20 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 	const merchantUserId = merchant.user_id || merchant._id;
 	const dedupSet = await existingDedupKeys(db, merchantUserId);
 	const tradeWhere = buildEligibleSubsidyTradeWhere(db, merchantUserId);
-	const trades = await fetchAllQueryPages(db, 'hsy-machine-trades', tradeWhere, {
+	const tradesRaw = await fetchAllQueryPages(db, 'hsy-machine-trades', tradeWhere, {
 		field: { _id: true, trade_no: true, amount: true, release_amount: true, release_ratio: true, create_time: true },
 		orderBy: { field: 'create_time', direction: 'asc' }
 	});
+	// 同一 trade_no 只保留最早一条，杜绝重复流水导致月流水/延期积分翻倍
+	const seenTradeNo = new Set();
+	const trades = [];
+	for (const t of tradesRaw || []) {
+		const tn = String(t.trade_no || '').trim();
+		const key = tn || `id:${t._id}`;
+		if (seenTradeNo.has(key)) continue;
+		seenTradeNo.add(key);
+		trades.push(t);
+	}
 	if (!trades.length) return;
 
 	const monthFlowMap = {};
@@ -254,10 +293,11 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		}
 	});
 
-	// 1) 首期（第一个月）按每笔流水生成气泡
+	// 1) 首期（第一个月）按每笔流水生成气泡（低于最低可积分流水不生成）
 	for (const t of trades) {
-		const total = Number((Number(t.amount || 0) * 0.0038).toFixed(4));
-		const firstRelease = Number(t.release_amount != null ? t.release_amount : total);
+		const amount = Number(t.amount || 0);
+		if (!(amount >= MIN_SUBSIDY_TRADE_YUAN)) continue;
+		const firstRelease = resolveFirstReleaseYuan(amount, t.release_amount, t.release_ratio);
 		if (!(firstRelease > 0)) continue;
 		const ym = monthNoFromTs(t.create_time || nowTs);
 		const tradeNo = String(t.trade_no || t._id || '');
@@ -359,9 +399,16 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 module.exports = {
 	POINTS_PER_BLOCK,
 	POINTS_PER_MONTH,
+	CASHBACK_RATE,
+	DEFAULT_INSTALLMENTS,
+	MIN_PACKET_AMOUNT,
+	MIN_SUBSIDY_TRADE_YUAN,
 	DB_PAGE_SIZE,
 	DB_MAX_ROWS,
 	roundPacketAmountYuan,
+	ceilYuan2,
+	resolveInstallmentCount,
+	resolveFirstReleaseYuan,
 	resolveIncomePacketClaimValidMs,
 	buildIncomePacketClaimWindow,
 	DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS,

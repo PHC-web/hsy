@@ -41,6 +41,8 @@ const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
 const REDIS_KEY_QUOTA_PKGS = 'hsy:h5:quota:pkgs';
 const REDIS_KEY_PRODUCTS = 'hsy:products:list';
 const REDIS_KEY_BIZ = 'hsy:biz:settings';
+/** 参数配置最近一次写入 Redis 的时间（无 TTL，供后台展示） */
+const REDIS_KEY_BIZ_META = 'hsy:biz:settings:meta';
 const REDIS_KEY_AGR = 'hsy:h5:agreement:current';
 const REDIS_EX_QUOTA_SEC = 90;
 const REDIS_EX_PRODUCTS_SEC = 90;
@@ -52,7 +54,7 @@ const REDIS_EX_H5_SILVER_TRADE_SEC = 45;
 const REDIS_EX_H5_RECHARGE_HINT_SEC = 25;
 /** 管理端交易账单列表缓存（秒），减轻重复筛选下的云函数+DB 压力 */
 const REDIS_EX_TRADE_BILL_SEC = 22;
-const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v2';
+const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v4';
 const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
 const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 55;
 const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 180;
@@ -3439,7 +3441,7 @@ async function adminCountMembershipTierCountsCached(forceRefresh = false) {
 	return counts;
 }
 
-/** 控制台首页粉卡：已提现(到账)/已绑定商户机具刷卡额/累计充值/累计退款 — 总刷卡与 cloudfunctions/machine#getCardRecordList 默认列表求和口径一致 */
+/** 控制台首页粉卡：已提现(已打款)/待打款/已绑定商户机具刷卡额/累计充值/累计退款 */
 async function adminHomeSummary(data = {}) {
 	try {
 		const forceRefresh = !!(data && data.refresh);
@@ -3458,8 +3460,27 @@ async function adminHomeSummary(data = {}) {
 
 		const _ = db.command;
 		const $ = db.command.aggregate;
-		const wdMatch = _.and([{ is_deleted: _.neq(true) }, { is_paid: true }, { arrival_status: 'received' }]);
+		// 已提现/到账/提现率：只统计「已打款且已到账」(is_paid + arrival_status=received)
+		const wdPaidMatch = _.and([
+			{ is_deleted: _.neq(true) },
+			{ is_paid: true },
+			{ arrival_status: 'received' }
+		]);
+		// 待打款：未打款且未失效/退回
+		const wdPendingMatch = _.and([
+			{ is_deleted: _.neq(true) },
+			{ is_paid: false },
+			{ arrival_status: _.nin(['returned', 'expired']) }
+		]);
 		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
+
+		// 轻量回填缺失分桶，避免「已提现 ≠ 会员+非会员」
+		try {
+			await backfillWithdrawMemberBucketChunk(200);
+			await backfillTradeMemberBucketChunk(200);
+		} catch (eBf) {
+			console.error('adminHomeSummary backfill', eBf);
+		}
 
 		const rechargeMatch = _.and([
 			{ type: 'h5_quota_recharge' },
@@ -3480,7 +3501,7 @@ async function adminHomeSummary(data = {}) {
 
 		const wdTotalPromise = withdrawCollection
 			.aggregate()
-			.match(wdMatch)
+			.match(wdPaidMatch)
 			.group({ _id: null, total: $.sum('$payable') })
 			.end()
 			.catch((e) => {
@@ -3490,11 +3511,21 @@ async function adminHomeSummary(data = {}) {
 
 		const wdSplitPromise = withdrawCollection
 			.aggregate()
-			.match(wdMatch)
+			.match(wdPaidMatch)
 			.group({ _id: '$withdraw_member_bucket', total: $.sum('$payable') })
 			.end()
 			.catch((e) => {
 				console.error('adminHomeSummary wdSplit', e);
+				return { data: [] };
+			});
+
+		const wdPendingSplitPromise = withdrawCollection
+			.aggregate()
+			.match(wdPendingMatch)
+			.group({ _id: '$withdraw_member_bucket', total: $.sum('$payable') })
+			.end()
+			.catch((e) => {
+				console.error('adminHomeSummary wdPendingSplit', e);
 				return { data: [] };
 			});
 
@@ -3546,32 +3577,72 @@ async function adminHomeSummary(data = {}) {
 				return { data: [] };
 			});
 
-		const [membershipCounts, wdAgg, splitAgg, tradeAgg, tradeSplitAgg, rechargeAgg, refundAgg] = await Promise.all([
-			membershipPromise.catch((e) => {
-				console.error('adminCountMembershipTierCountsCached', e);
-				return { normal: 0, silver: 0, gold: 0, white_gold: 0, diamond: 0, other: 0, _error: safeText(e?.message, 200) };
-			}),
-			wdTotalPromise,
-			wdSplitPromise,
-			tradeTotalPromise,
-			tradeSplitPromise,
-			rechargePromise,
-			refundPromise
-		]);
+		const [membershipCounts, wdAgg, splitAgg, pendingSplitAgg, tradeAgg, tradeSplitAgg, rechargeAgg, refundAgg] =
+			await Promise.all([
+				membershipPromise.catch((e) => {
+					console.error('adminCountMembershipTierCountsCached', e);
+					return {
+						normal: 0,
+						silver: 0,
+						gold: 0,
+						white_gold: 0,
+						diamond: 0,
+						other: 0,
+						_error: safeText(e?.message, 200)
+					};
+				}),
+				wdTotalPromise,
+				wdSplitPromise,
+				wdPendingSplitPromise,
+				tradeTotalPromise,
+				tradeSplitPromise,
+				rechargePromise,
+				refundPromise
+			]);
 
 		let arrivedWithdrawAmount = Number(Number((((wdAgg.data || [])[0] || {}).total || 0)).toFixed(2));
 		let arrivedWithdrawAmountMember = 0;
 		let arrivedWithdrawAmountNonMember = 0;
+		let arrivedWithdrawAmountUnbucketed = 0;
 		for (const row of splitAgg.data || []) {
 			const key = row._id;
 			const t = Number(Number((row.total || 0)).toFixed(2));
 			if (key === 'member') arrivedWithdrawAmountMember = t;
 			else if (key === 'non_member') arrivedWithdrawAmountNonMember = t;
+			else arrivedWithdrawAmountUnbucketed = Number((arrivedWithdrawAmountUnbucketed + t).toFixed(2));
+		}
+		// 未分桶金额并入非会员，保证 会员+非会员 = 已提现
+		if (arrivedWithdrawAmountUnbucketed > 0) {
+			arrivedWithdrawAmountNonMember = Number(
+				(arrivedWithdrawAmountNonMember + arrivedWithdrawAmountUnbucketed).toFixed(2)
+			);
+		}
+		// 以分桶合计为准（与总聚合在四舍五入后对齐）
+		const arrivedSplitSum = Number(
+			(arrivedWithdrawAmountMember + arrivedWithdrawAmountNonMember).toFixed(2)
+		);
+		if (arrivedSplitSum > 0) arrivedWithdrawAmount = arrivedSplitSum;
+
+		let pendingWithdrawAmountMember = 0;
+		let pendingWithdrawAmountNonMember = 0;
+		let pendingUnbucketed = 0;
+		for (const row of pendingSplitAgg.data || []) {
+			const key = row._id;
+			const t = Number(Number((row.total || 0)).toFixed(2));
+			if (key === 'member') pendingWithdrawAmountMember = t;
+			else if (key === 'non_member') pendingWithdrawAmountNonMember = t;
+			else pendingUnbucketed = Number((pendingUnbucketed + t).toFixed(2));
+		}
+		if (pendingUnbucketed > 0) {
+			pendingWithdrawAmountNonMember = Number(
+				(pendingWithdrawAmountNonMember + pendingUnbucketed).toFixed(2)
+			);
 		}
 
 		let boundMerchantTradeAmount = 0;
 		let boundMerchantTradeAmountMember = 0;
 		let boundMerchantTradeAmountNonMember = 0;
+		let tradeUnbucketed = 0;
 		if (cardBase.ok) {
 			boundMerchantTradeAmount = Number(Number((((tradeAgg.data || [])[0] || {}).total || 0)).toFixed(2));
 			for (const row of tradeSplitAgg.data || []) {
@@ -3579,7 +3650,17 @@ async function adminHomeSummary(data = {}) {
 				const t = Number(Number((row.total || 0)).toFixed(2));
 				if (key === 'member') boundMerchantTradeAmountMember = t;
 				else if (key === 'non_member') boundMerchantTradeAmountNonMember = t;
+				else tradeUnbucketed = Number((tradeUnbucketed + t).toFixed(2));
 			}
+			if (tradeUnbucketed > 0) {
+				boundMerchantTradeAmountNonMember = Number(
+					(boundMerchantTradeAmountNonMember + tradeUnbucketed).toFixed(2)
+				);
+			}
+			const tradeSplitSum = Number(
+				(boundMerchantTradeAmountMember + boundMerchantTradeAmountNonMember).toFixed(2)
+			);
+			if (tradeSplitSum > 0) boundMerchantTradeAmount = tradeSplitSum;
 		}
 
 		const totalRechargeAmount = Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
@@ -3590,11 +3671,19 @@ async function adminHomeSummary(data = {}) {
 			arrivedWithdrawAmount,
 			arrivedWithdrawAmountMember,
 			arrivedWithdrawAmountNonMember,
+			pendingWithdrawAmountMember,
+			pendingWithdrawAmountNonMember,
 			boundMerchantTradeAmount,
 			boundMerchantTradeAmountMember,
 			boundMerchantTradeAmountNonMember,
 			totalRechargeAmount,
-			totalRefundAmount
+			totalRefundAmount,
+			_paidMatch: 'is_paid+arrival_received',
+			_unbucketedFolded: {
+				arrived: arrivedWithdrawAmountUnbucketed,
+				pending: pendingUnbucketed,
+				trade: tradeUnbucketed
+			}
 		};
 		adminHomeSummaryCache = { at: now, data: payload };
 		await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_HOME_SUMMARY, payload, REDIS_EX_ADMIN_HOME_SUMMARY_SEC);
@@ -4005,6 +4094,14 @@ function mapWithdrawItem(item) {
 	if (item.is_paid) isPaidText = '已打款';
 	else if (arrivalStatus === 'expired') isPaidText = '已失效';
 	else if (arrivalStatus === 'returned') isPaidText = '已退回';
+	// 竞态残留：已打款却仍标失效/退回 → 列表侧按到账展示，避免两页互相矛盾
+	let displayArrival = arrivalStatus;
+	let arrivalText = arrivalStatusText(arrivalStatus);
+	if (item.is_paid && (arrivalStatus === 'expired' || arrivalStatus === 'returned')) {
+		displayArrival = 'received';
+		arrivalText = '已到账';
+		isPaidText = '已打款';
+	}
 	return {
 		id: item._id,
 		withdrawNo: item.withdraw_no || '',
@@ -4024,13 +4121,25 @@ function mapWithdrawItem(item) {
 		wxTradeNo: item.wx_trade_no || '',
 		transferState,
 		transferError: safeText(item.transfer_error || '', 200),
+		balanceRestored: !!item.balance_restored,
+		balanceRestoreTime: formatTime(item.balance_restore_time),
+		wxExpireResponse: (() => {
+			const raw = item.wx_expire_response;
+			if (raw == null || raw === '') return '';
+			if (typeof raw === 'string') return safeText(raw, 2000);
+			try {
+				return safeText(JSON.stringify(raw), 2000);
+			} catch (e) {
+				return '';
+			}
+		})(),
 		auditRequired: !!item.audit_required,
 		auditStatus,
 		auditStatusText,
 		needReaudit,
 		payTime: formatTime(item.pay_time),
-		arrivalStatus,
-		arrivalStatusText: arrivalStatusText(item.arrival_status),
+		arrivalStatus: displayArrival,
+		arrivalStatusText: arrivalText,
 		arrivalTime: formatTime(item.arrival_time),
 		createTime: formatTime(item.create_time)
 	};
@@ -4288,56 +4397,132 @@ async function markWithdrawFailNeedsReaudit(row, state, reason, options = {}) {
 	return true;
 }
 
-async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState = 'SUCCESS') {
-	if (!withdrawRow) return;
-	if (withdrawRow.is_paid || safeText(withdrawRow.arrival_status, 20) === 'received') return;
-	const settleAmt = Number(withdrawRow.payable != null ? withdrawRow.payable : withdrawRow.amount || 0);
-	const amountPoints = Number(withdrawRow.amount || 0);
-	const merchantUserId = safeText(withdrawRow.merchant_user_id, 80);
+/**
+ * 微信侧已 SUCCESS：同步本地到账。
+ * 若本地已「已失效/已退回」并返还过积分，则先扣回积分再记已到账（避免零点失效与成功回调竞态导致「钱到微信 + 积分退回」）。
+ * @param {object} [opts]
+ * @param {number} [opts.arrivalTime] 优先用微信 success_time，避免零点补记造成「都在 00:00 到账」的假象
+ */
+async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState = 'SUCCESS', opts = {}) {
+	if (!withdrawRow || !withdrawRow._id) return { ok: false, reason: 'missing' };
+	const freshRes = await withdrawCollection.doc(withdrawRow._id).get();
+	const row = (freshRes.data && freshRes.data[0]) || withdrawRow;
+	const arrival = safeText(row.arrival_status, 20) || 'pending';
+	if (row.is_paid || arrival === 'received') return { ok: false, reason: 'already_received' };
+
+	const settleAmt = Number(row.payable != null ? row.payable : row.amount || 0);
+	const amountPoints = Number(row.amount || 0);
+	const merchantUserId = safeText(row.merchant_user_id, 80);
+	const wasRestored = arrival === 'expired' || arrival === 'returned';
 	const merchantRes = merchantUserId
 		? await merchantCollection.where({ user_id: merchantUserId }).limit(1).get()
 		: { data: [] };
 	const merchant = merchantRes.data && merchantRes.data[0];
-	const machineRes = withdrawRow.device_id
-		? await machineCollection.where({ device_id: withdrawRow.device_id, is_deleted: false }).limit(1).get()
+	const machineRes = row.device_id
+		? await machineCollection.where({ device_id: row.device_id, is_deleted: false }).limit(1).get()
 		: { data: [] };
 	const machine = machineRes.data && machineRes.data[0];
-	await withdrawCollection.doc(withdrawRow._id).update({
-		audit_status: 'approved',
-		audit_time: Number(withdrawRow.audit_time || nowTs()),
-		is_paid: true,
-		arrival_status: 'received',
-		pay_time: Number(withdrawRow.pay_time || nowTs()),
-		arrival_time: nowTs(),
-		wx_trade_no: safeText(wxTradeNo || withdrawRow.wx_trade_no || '', 80),
-		transfer_state: safeText(transferState || 'SUCCESS', 40),
-		update_time: nowTs()
-	});
+	const now = nowTs();
+	const wxArrival = Number(opts?.arrivalTime || 0);
+	const arrivalAt = wxArrival > 0 ? wxArrival : now;
+
+	// 条件写：防止与零点失效并发互相覆盖
+	const _ = db.command;
+	const claim = await withdrawCollection
+		.where({
+			_id: row._id,
+			is_paid: _.neq(true),
+			arrival_status: _.neq('received')
+		})
+		.update({
+			audit_status: 'approved',
+			audit_time: Number(row.audit_time || now),
+			is_paid: true,
+			arrival_status: 'received',
+			pay_time: Number(row.pay_time || arrivalAt),
+			arrival_time: arrivalAt,
+			wx_trade_no: safeText(wxTradeNo || row.wx_trade_no || '', 80),
+			transfer_state: safeText(transferState || 'SUCCESS', 40),
+			transfer_error: '',
+			balance_restored: false,
+			update_time: now
+		});
+	if (!claim.updated) return { ok: false, reason: 'claim_failed' };
+
 	if (merchant) {
-		const merchantUpdate = {
-			pending_withdraw: Number(Math.max(0, Number(merchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
-			withdrawn: Number((Number(merchant.withdrawn || 0) + settleAmt).toFixed(4)),
-			update_time: nowTs()
-		};
-		await merchantCollection.doc(merchant._id).update(merchantUpdate);
+		if (wasRestored) {
+			// 积分曾退回：扣回积分，只增加已提现（pending 在失效时已扣过）
+			await merchantCollection.doc(merchant._id).update({
+				available_reward: Number(Math.max(0, rawWithdrawQuotaBalance(merchant) - amountPoints).toFixed(4)),
+				withdraw_quota_balance: Number(Math.max(0, rawWithdrawQuotaBalance(merchant) - amountPoints).toFixed(4)),
+				account_points: Number(Math.max(0, rawPendingBalance(merchant) - amountPoints).toFixed(4)),
+				withdraw_pending_balance: Number(Math.max(0, rawPendingBalance(merchant) - amountPoints).toFixed(4)),
+				withdrawn: Number((Number(merchant.withdrawn || 0) + settleAmt).toFixed(4)),
+				update_time: now
+			});
+		} else {
+			await merchantCollection.doc(merchant._id).update({
+				pending_withdraw: Number(Math.max(0, Number(merchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
+				withdrawn: Number((Number(merchant.withdrawn || 0) + settleAmt).toFixed(4)),
+				update_time: now
+			});
+		}
 	}
 	if (machine) {
-		await machineCollection.doc(machine._id).update({
-			pending_amount: Number(Math.max(0, Number(machine.pending_amount || 0) - settleAmt).toFixed(4)),
-			withdrawn_amount: Number((Number(machine.withdrawn_amount || 0) + settleAmt).toFixed(4))
-		});
+		if (wasRestored) {
+			await machineCollection.doc(machine._id).update({
+				withdrawn_amount: Number((Number(machine.withdrawn_amount || 0) + settleAmt).toFixed(4))
+			});
+		} else {
+			await machineCollection.doc(machine._id).update({
+				pending_amount: Number(Math.max(0, Number(machine.pending_amount || 0) - settleAmt).toFixed(4)),
+				withdrawn_amount: Number((Number(machine.withdrawn_amount || 0) + settleAmt).toFixed(4))
+			});
+		}
 	}
 	await writeTransferLog({
 		scene: 'withdraw',
 		stage: 'withdraw_arrival_settled',
-		withdrawId: withdrawRow._id,
-		withdrawNo: safeText(withdrawRow.withdraw_no, 64),
+		withdrawId: row._id,
+		withdrawNo: safeText(row.withdraw_no, 64),
 		merchantUserId,
-		outBillNo: safeText(withdrawRow.withdraw_no, 64),
+		outBillNo: safeText(row.withdraw_no, 64),
 		transferState: safeText(transferState || 'SUCCESS', 40),
-		message: '提现到账：已同步本地到账状态及商户/机具账务',
-		payload: { wxTradeNo: safeText(wxTradeNo || withdrawRow.wx_trade_no || '', 80), settleAmt }
+		message: wasRestored
+			? '提现到账：本地曾失效/退回，已扣回积分并改为已到账'
+			: '提现到账：已同步本地到账状态及商户/机具账务',
+		payload: {
+			wxTradeNo: safeText(wxTradeNo || row.wx_trade_no || '', 80),
+			settleAmt,
+			amountPoints,
+			wasRestored,
+			arrivalAt,
+			wxSuccessTime: wxArrival || null
+		}
 	});
+	if (wasRestored) {
+		await sendWecomRobotText(
+			`提现竞态修复：单号 ${safeText(row.withdraw_no, 64)} 微信已成功但本地曾失效/退回，已扣回积分并记已到账`
+		);
+	}
+	return { ok: true, wasRestored, arrivalAt };
+}
+
+/** 解析微信商家转账 success_time（优先用于本地到账时间） */
+function parseWxTransferSuccessTs(q) {
+	if (!q || typeof q !== 'object') return 0;
+	const raw = q.success_time ?? q.successTime ?? q.transfer_time ?? q.transferTime ?? '';
+	if (raw == null || raw === '') return 0;
+	if (typeof raw === 'number' && Number.isFinite(raw)) {
+		return raw > 1e12 ? Math.floor(raw) : Math.floor(raw * 1000);
+	}
+	const s = String(raw).trim();
+	if (/^\d{10,13}$/.test(s)) {
+		const n = Number(s);
+		return n > 1e12 ? n : n * 1000;
+	}
+	const t = Date.parse(s);
+	return Number.isFinite(t) ? t : 0;
 }
 
 async function withdrawSyncProcessing(data = {}) {
@@ -4372,11 +4557,10 @@ async function withdrawSyncProcessing(data = {}) {
 			if (ok) reconciled += 1;
 		}
 
+		// 含「无需审核」自动打款：此前只扫 audit_required=true，导致确认收款后 SUCCESS 拖到零点才补记
 		const res = await withdrawCollection
 			.where({
 				is_deleted: false,
-				audit_required: true,
-				audit_status: db.command.in(['pending', 'approved']),
 				is_paid: false,
 				arrival_status: db.command.nin(['received', 'returned', 'expired']),
 				transfer_state: db.command.in(processingStates)
@@ -4407,16 +4591,40 @@ async function withdrawSyncProcessing(data = {}) {
 					payload: q || {}
 				});
 				if (state === 'SUCCESS') {
-					await settleWithdrawSuccess(row, billNo, state);
+					await settleWithdrawSuccess(row, billNo, state, {
+						arrivalTime: parseWxTransferSuccessTs(q) || nowTs()
+					});
 					success += 1;
 					continue;
 				}
 				if (isWithdrawTerminalFailState(state)) {
-					await markWithdrawFailNeedsReaudit(
-						row,
-						state,
-						safeText(q?.fail_reason || q?.message || state, 180)
-					);
+					if (row.audit_required) {
+						await markWithdrawFailNeedsReaudit(
+							row,
+							state,
+							safeText(q?.fail_reason || q?.message || state, 180)
+						);
+					} else if (safeText(row.arrival_status, 20) !== 'returned') {
+						const restored = await restoreUnpaidWithdrawBalances(row);
+						await withdrawCollection.doc(row._id).update({
+							arrival_status: 'returned',
+							transfer_state: state,
+							transfer_error: safeText(q?.fail_reason || q?.message || `微信提现失败：${state}`, 180),
+							wx_trade_no: billNo || row.wx_trade_no || '',
+							update_time: nowTs()
+						});
+						await writeTransferLog({
+							stage: 'auto_poll_auto_withdraw_fail_restore',
+							level: 'warn',
+							withdrawId: row._id,
+							withdrawNo: row.withdraw_no,
+							merchantUserId: row.merchant_user_id,
+							outBillNo,
+							transferState: state,
+							message: '自动提现终态失败，已退回积分',
+							payload: { restored: !!restored?.ok }
+						});
+					}
 					if (billNo) {
 						await withdrawCollection.doc(row._id).update({
 							wx_trade_no: billNo,
@@ -4509,33 +4717,107 @@ async function restoreUnpaidWithdrawBalances(row) {
 	return { ok: true, amountPoints, settleAmt, merchantId: merchant._id };
 }
 
-/** 确认微信侧已撤销/失败后：标记已失效并返还积分 */
+/** 确认微信侧已撤销/失败后：先条件抢占「已失效」，再返还积分（避免与到账结算互相覆盖） */
 async function finalizeWithdrawExpiredAndRestore(row, reason, extra = {}) {
 	const id = String(row._id || '');
 	if (!id) return { ok: false, message: '缺少记录ID' };
-	const arrival = safeText(row.arrival_status, 20) || 'pending';
-	if (arrival === 'expired' || arrival === 'returned' || arrival === 'received') {
+	const freshRes = await withdrawCollection.doc(id).get();
+	const fresh = (freshRes.data && freshRes.data[0]) || row;
+	const arrival = safeText(fresh.arrival_status, 20) || 'pending';
+	if (arrival === 'received') {
 		return { ok: false, skip: true, message: `已是终态:${arrival}` };
 	}
-	if (row.is_paid) return { ok: false, skip: true, message: '已打款不可失效返还' };
-	const restored = await restoreUnpaidWithdrawBalances(row);
-	if (!restored.ok) return { ok: false, message: restored.message || '返还失败' };
-	const auditPrev = safeText(row.audit_status, 24);
+	if (fresh.is_paid) return { ok: false, skip: true, message: '已打款不可失效返还' };
+
+	// 已失效但未退回积分：只补返还（修复历史脏数据）
+	if (arrival === 'expired' || arrival === 'returned') {
+		if (fresh.balance_restored) {
+			return {
+				ok: true,
+				skip: true,
+				message: '已失效且已返还',
+				amountPoints: Number(fresh.amount || 0),
+				settleAmt: Number(fresh.payable != null ? fresh.payable : fresh.amount || 0),
+				merchantId: ''
+			};
+		}
+		const patched = await ensureExpiredBalanceRestored(fresh, { reason, wxState: extra.wxState || '' });
+		if (!patched.ok) return { ok: false, message: patched.message || '补返还失败' };
+		return {
+			ok: true,
+			amountPoints: patched.amountPoints,
+			settleAmt: patched.settleAmt,
+			merchantId: patched.merchantId,
+			repaired: !!patched.restoredNow
+		};
+	}
+
+	const auditPrev = safeText(fresh.audit_status, 24);
+	const prevArrival = arrival;
+	const prevTransferState = safeText(fresh.transfer_state, 40);
+	const prevTransferError = safeText(fresh.transfer_error, 180);
+	const _ = db.command;
+	const claim = await withdrawCollection
+		.where({
+			_id: id,
+			is_paid: _.neq(true),
+			arrival_status: _.nin(['received', 'returned', 'expired'])
+		})
+		.update({
+			arrival_status: 'expired',
+			audit_status: auditPrev === 'pending' || auditPrev === 'approved' || !auditPrev ? 'rejected' : auditPrev,
+			transfer_state: 'EXPIRED',
+			transfer_error: safeText(reason, 180),
+			balance_restored: false,
+			update_time: nowTs(),
+			...(extra.wxTradeNo ? { wx_trade_no: safeText(extra.wxTradeNo, 80) } : {})
+		});
+	if (!claim.updated) {
+		return { ok: false, skip: true, message: '并发终态跳过(未抢占失效)' };
+	}
+
+	const restored = await restoreUnpaidWithdrawBalances(fresh);
+	if (!restored.ok) {
+		// 返还失败：回滚失效标记，避免「已失效但钱没退回」
+		try {
+			await withdrawCollection.doc(id).update({
+				arrival_status: prevArrival || 'pending',
+				transfer_state: prevTransferState || fresh.transfer_state || '',
+				transfer_error: prevTransferError,
+				balance_restored: false,
+				update_time: nowTs()
+			});
+		} catch (eRoll) {}
+		await writeTransferLog({
+			stage: 'withdraw_auto_expire_restore_fail',
+			level: 'error',
+			withdrawId: id,
+			withdrawNo: safeText(fresh.withdraw_no, 80),
+			merchantUserId: safeText(fresh.merchant_user_id, 80),
+			deviceId: fresh.device_id,
+			outBillNo: fresh.withdraw_no,
+			transferState: 'EXPIRED',
+			message: restored.message || '返还失败',
+			payload: { wxState: extra.wxState || '', rolledBack: true }
+		});
+		await sendWecomRobotText(
+			`提现失效返还失败已回滚：单号 ${safeText(fresh.withdraw_no, 64)}，原因：${safeText(restored.message || '返还失败', 80)}`
+		);
+		return { ok: false, message: restored.message || '返还失败' };
+	}
 	await withdrawCollection.doc(id).update({
-		arrival_status: 'expired',
-		audit_status: auditPrev === 'pending' || auditPrev === 'approved' || !auditPrev ? 'rejected' : auditPrev,
-		transfer_state: 'EXPIRED',
-		transfer_error: safeText(reason, 180),
-		update_time: nowTs(),
-		...(extra.wxTradeNo ? { wx_trade_no: safeText(extra.wxTradeNo, 80) } : {})
+		balance_restored: true,
+		balance_restore_time: nowTs(),
+		wx_expire_response: safeJson(extra.payload || { wxState: extra.wxState || '' }, 4000),
+		update_time: nowTs()
 	});
 	await writeTransferLog({
 		stage: 'withdraw_auto_expire',
 		withdrawId: id,
-		withdrawNo: safeText(row.withdraw_no, 80),
-		merchantUserId: safeText(row.merchant_user_id, 80),
-		deviceId: row.device_id,
-		outBillNo: row.withdraw_no,
+		withdrawNo: safeText(fresh.withdraw_no, 80),
+		merchantUserId: safeText(fresh.merchant_user_id, 80),
+		deviceId: fresh.device_id,
+		outBillNo: fresh.withdraw_no,
 		transferState: 'EXPIRED',
 		message: safeText(reason, 180),
 		payload: {
@@ -4544,11 +4826,80 @@ async function finalizeWithdrawExpiredAndRestore(row, reason, extra = {}) {
 			settleAmt: restored.settleAmt,
 			merchantId: restored.merchantId,
 			wxState: extra.wxState || '',
+			balanceRestored: true,
+			balanceRestoreTime: nowTs(),
 			...(extra.payload || {})
 		}
 	});
 	return {
 		ok: true,
+		amountPoints: restored.amountPoints,
+		settleAmt: restored.settleAmt,
+		merchantId: restored.merchantId
+	};
+}
+
+/**
+ * 已失效记录补退积分（幂等）：已有成功返还日志或 balance_restored=true 则不重复加积分。
+ */
+async function ensureExpiredBalanceRestored(row, extra = {}) {
+	const id = String(row._id || '');
+	if (!id) return { ok: false, message: '缺少记录ID' };
+	if (row.balance_restored) {
+		return { ok: true, skipped: true, reason: 'flag', amountPoints: Number(row.amount || 0), settleAmt: Number(row.payable != null ? row.payable : row.amount || 0) };
+	}
+	const logsRes = await transferLogCollection
+		.where({
+			is_deleted: db.command.neq(true),
+			withdraw_no: safeText(row.withdraw_no, 80),
+			stage: db.command.in(['withdraw_auto_expire', 'withdraw_expire_repair_restore'])
+		})
+		.orderBy('create_time', 'desc')
+		.limit(10)
+		.get();
+	const okLogs = (logsRes.data || []).filter((x) => {
+		const p = typeof x.payload === 'string' ? (() => { try { return JSON.parse(x.payload); } catch (e) { return {}; } })() : (x.payload || {});
+		return Number(p.amountPoints || p.amount_points || 0) > 0 || p.balanceRestored === true || p.merchantId;
+	});
+	if (okLogs.length) {
+		await withdrawCollection.doc(id).update({ balance_restored: true, update_time: nowTs() });
+		return {
+			ok: true,
+			skipped: true,
+			reason: 'log',
+			amountPoints: Number(row.amount || 0),
+			settleAmt: Number(row.payable != null ? row.payable : row.amount || 0)
+		};
+	}
+	const restored = await restoreUnpaidWithdrawBalances(row);
+	if (!restored.ok) return { ok: false, message: restored.message || '返还失败' };
+	await withdrawCollection.doc(id).update({
+		balance_restored: true,
+		balance_restore_time: nowTs(),
+		transfer_error: safeText(extra.reason || row.transfer_error || '系统补退已失效提现积分', 180),
+		update_time: nowTs()
+	});
+	await writeTransferLog({
+		stage: 'withdraw_expire_repair_restore',
+		withdrawId: id,
+		withdrawNo: safeText(row.withdraw_no, 80),
+		merchantUserId: safeText(row.merchant_user_id, 80),
+		deviceId: row.device_id,
+		outBillNo: row.withdraw_no,
+		transferState: safeText(row.transfer_state, 40) || 'EXPIRED',
+		message: '补退已失效提现的积分/额度',
+		payload: {
+			amountPoints: restored.amountPoints,
+			settleAmt: restored.settleAmt,
+			merchantId: restored.merchantId,
+			wxState: extra.wxState || '',
+			balanceRestored: true,
+			balanceRestoreTime: nowTs()
+		}
+	});
+	return {
+		ok: true,
+		restoredNow: true,
 		amountPoints: restored.amountPoints,
 		settleAmt: restored.settleAmt,
 		merchantId: restored.merchantId
@@ -4604,15 +4955,36 @@ async function cancelOrResolveWxWithdrawForExpire(row, reason) {
 	try {
 		state = await queryOnce('withdraw_expire_query');
 	} catch (e) {
+		const wxCode = safeText(e?.wxBody?.code || e?.code || '', 40);
+		const msg = safeText(e?.message || '查单失败', 160);
+		// 微信无此单：可安全本地失效返还（从未占用商户号资金或已不存在）
+		if (wxCode === 'NOT_FOUND' || /NOT_FOUND/i.test(msg)) {
+			const fin = await finalizeWithdrawExpiredAndRestore(row, reason, {
+				wxTradeNo: billNo,
+				wxState: 'NOT_FOUND',
+				payload: e && e.name === 'WxPayRequestError' ? e.wxBody || {} : { error: msg }
+			});
+			if (fin.skip && !fin.ok) return { action: 'skip', message: fin.message, wxState: 'NOT_FOUND' };
+			if (!fin.ok) return { action: 'error', message: fin.message, wxState: 'NOT_FOUND' };
+			return {
+				action: 'expired',
+				wxState: 'NOT_FOUND',
+				amountPoints: fin.amountPoints,
+				settleAmt: fin.settleAmt,
+				merchantId: fin.merchantId
+			};
+		}
 		return {
 			action: 'error',
-			message: safeText(e?.message || '查单失败', 160),
+			message: msg,
 			wxState: state
 		};
 	}
 
 	if (state === 'SUCCESS') {
-		await settleWithdrawSuccess(row, billNo, state);
+		await settleWithdrawSuccess(row, billNo, state, {
+			arrivalTime: parseWxTransferSuccessTs(lastQuery) || nowTs()
+		});
 		return { action: 'settled', wxState: state, billNo };
 	}
 
@@ -4643,7 +5015,9 @@ async function cancelOrResolveWxWithdrawForExpire(row, reason) {
 				break;
 			}
 			if (state === 'SUCCESS') {
-				await settleWithdrawSuccess(row, billNo, state);
+				await settleWithdrawSuccess(row, billNo, state, {
+					arrivalTime: parseWxTransferSuccessTs(lastQuery) || nowTs()
+				});
 				return { action: 'settled', wxState: state, billNo };
 			}
 			if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
@@ -4704,7 +5078,9 @@ async function cancelOrResolveWxWithdrawForExpire(row, reason) {
 		try {
 			state = await queryOnce('withdraw_expire_query_after_cancel_fail');
 			if (state === 'SUCCESS') {
-				await settleWithdrawSuccess(row, billNo, state);
+				await settleWithdrawSuccess(row, billNo, state, {
+					arrivalTime: parseWxTransferSuccessTs(lastQuery) || nowTs()
+				});
 				return { action: 'settled', wxState: state, billNo };
 			}
 			if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
@@ -4734,7 +5110,9 @@ async function cancelOrResolveWxWithdrawForExpire(row, reason) {
 			return { action: 'cancel_pending', wxState: 'CANCELING', message: safeText(e?.message || '', 120) };
 		}
 		if (state === 'SUCCESS') {
-			await settleWithdrawSuccess(row, billNo, state);
+			await settleWithdrawSuccess(row, billNo, state, {
+				arrivalTime: parseWxTransferSuccessTs(lastQuery) || nowTs()
+			});
 			return { action: 'settled', wxState: state, billNo };
 		}
 		if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
@@ -4765,6 +5143,7 @@ async function cancelOrResolveWxWithdrawForExpire(row, reason) {
  * 每天零点（北京时间）由定时任务调用：
  * 1）无微信处理中的未打款：直接已失效并返还积分
  * 2）微信处理中：先撤销 → 查单确认 CANCELLED/FAIL 后再返还；若已 SUCCESS 则按到账结算
+ * 3）待审核（audit_status=pending / PENDING_AUDIT）不失效，保持待审核
  */
 async function withdrawAutoExpireUnpaid(data = {}) {
 	try {
@@ -4776,7 +5155,10 @@ async function withdrawAutoExpireUnpaid(data = {}) {
 				_.and([
 					{ is_deleted: _.neq(true) },
 					{ is_paid: false },
-					{ arrival_status: _.nin(['received', 'returned', 'expired']) }
+					{ arrival_status: _.nin(['received', 'returned', 'expired']) },
+					// 待审核不参与零点失效
+					{ audit_status: _.neq('pending') },
+					{ transfer_state: _.neq('PENDING_AUDIT') }
 				])
 			)
 			.orderBy('create_time', 'asc')
@@ -4805,14 +5187,24 @@ async function withdrawAutoExpireUnpaid(data = {}) {
 				bumpSkip(`arrival:${arrival}`);
 				continue;
 			}
+			// 双保险：待审核 / 待重新审核一律跳过
+			if (safeText(row.audit_status, 24) === 'pending') {
+				bumpSkip('audit:pending');
+				continue;
+			}
+			let stateNow = normalizeTransferState(row.transfer_state || '');
+			if (stateNow === 'PENDING_AUDIT') {
+				bumpSkip('transfer:PENDING_AUDIT');
+				continue;
+			}
 			if (safeText(row.audit_status, 24) === 'rejected' && arrival !== 'pending') {
 				bumpSkip('audit:rejected');
 				continue;
 			}
 
-			let stateNow = normalizeTransferState(row.transfer_state || '');
-			// 空串 normalize 后是 UNKNOWN，按安全失效处理；若实际可能有微信单，走查撤流程
+			// 凡有平台单号且可能已发微信：先查微信/撤销，禁止直接失效导致商户号资金未退回
 			const needsWxCancelFlow =
+				!!safeText(row.withdraw_no, 64) ||
 				WITHDRAW_WX_CANCELABLE_STATES.includes(stateNow) ||
 				stateNow === 'CANCELING' ||
 				(stateNow === 'UNKNOWN' && !!safeText(row.wx_trade_no, 80)) ||
@@ -4906,6 +5298,854 @@ async function withdrawAutoExpireUnpaid(data = {}) {
 		console.error('withdrawAutoExpireUnpaid failed:', e);
 		return { code: 500, message: safeText(e?.message || '自动失效失败', 160) };
 	}
+}
+
+/**
+ * 排查单笔提现：微信是否到账，还是已退回商户积分。
+ * 浏览器：uniCloud.callFunction({ name:'merchant', data:{ action:'withdrawDiagnose', params:{ withdrawNo:'平台单号' }}})
+ */
+async function withdrawDiagnose(data = {}) {
+	try {
+		const withdrawNo = safeText(data?.withdrawNo || data?.outBillNo || '', 64);
+		const id = safeText(data?.id || data?.withdrawId || '', 80);
+		if (!withdrawNo && !id) return { code: 400, message: '请传 withdrawNo 或 id' };
+		let row = null;
+		if (id) {
+			const r = await withdrawCollection.doc(id).get();
+			row = r.data && r.data[0];
+		}
+		if (!row && withdrawNo) {
+			const r = await withdrawCollection.where({ withdraw_no: withdrawNo, is_deleted: db.command.neq(true) }).limit(1).get();
+			row = r.data && r.data[0];
+		}
+		if (!row) return { code: 404, message: '提现记录不存在' };
+
+		const logsRes = await transferLogCollection
+			.where({
+				is_deleted: db.command.neq(true),
+				withdraw_no: safeText(row.withdraw_no, 80)
+			})
+			.orderBy('create_time', 'desc')
+			.limit(30)
+			.get();
+		const logs = (logsRes.data || []).map((x) => ({
+			stage: x.stage,
+			transferState: x.transfer_state,
+			message: x.message,
+			createTime: formatTime(x.create_time),
+			payload: x.payload
+		}));
+
+		const arrival = safeText(row.arrival_status, 20) || 'pending';
+		const transferState = normalizeTransferState(row.transfer_state || '');
+		const hasExpireLog = logs.some((x) => x.stage === 'withdraw_auto_expire');
+		const hasSettledLog = logs.some((x) => x.stage === 'withdraw_arrival_settled');
+		const inconsistent =
+			(row.is_paid && arrival === 'expired') ||
+			(row.is_paid && arrival === 'returned') ||
+			(!row.is_paid && arrival === 'received') ||
+			(hasExpireLog && hasSettledLog);
+
+		let verdict = 'pending';
+		let verdictText = '处理中/未终态';
+		if (arrival === 'received' && row.is_paid) {
+			verdict = 'paid_to_wechat';
+			verdictText = '已到微信零钱（本地已到账）；积分未退回商户';
+		} else if (arrival === 'expired') {
+			if (row.balance_restored || hasExpireLog) {
+				verdict = 'restored_to_merchant';
+				verdictText = '已失效：本地记录显示积分应已退回商户；请再核对微信商户号资金是否已因撤销退回';
+			} else {
+				verdict = 'expired_without_restore';
+				verdictText = '已失效但可能未退回积分（无 balance_restored / 无成功返还日志），请执行 withdrawRepairExpired';
+			}
+		} else if (arrival === 'returned') {
+			verdict = 'returned_to_merchant';
+			verdictText = '已退回：积分/额度已退回商户账户';
+		} else if (inconsistent) {
+			verdict = 'inconsistent';
+			verdictText = '本地状态矛盾，请结合转账日志与微信查单人工核对';
+		}
+
+		// 可选：实时查微信
+		let wxQuery = null;
+		let wxState = '';
+		if (data?.queryWx !== false && safeText(row.withdraw_no, 64)) {
+			try {
+				const cfg = ensureWxWithdrawPayConfig();
+				if (cfg.ok) {
+					wxQuery = await wxPayQueryMerchantTransfer(cfg.creds, safeText(row.withdraw_no, 64));
+					wxState = normalizeTransferState(wxQuery?.state || wxQuery?.status || '');
+				}
+			} catch (e) {
+				wxQuery = { error: safeText(e?.message || '查单失败', 160) };
+			}
+		}
+		if (wxState === 'SUCCESS') {
+			verdict = 'paid_to_wechat';
+			verdictText =
+				arrival === 'received'
+					? '微信 SUCCESS 且本地已到账：钱已到用户微信'
+					: `微信 SUCCESS 但本地为 ${arrival || 'pending'}：钱很可能已到微信，本地需对账修复`;
+		} else if (
+			['WAIT_USER_CONFIRM', 'ACCEPTED', 'PROCESSING', 'CANCELING', 'CREATED'].includes(wxState) &&
+			(arrival === 'expired' || arrival === 'returned')
+		) {
+			verdict = 'wx_still_holding';
+			verdictText = `本地已失效但微信仍为 ${wxState}：商户号资金可能仍被占用，请执行 withdrawRepairExpired 撤销并补退积分`;
+		} else if (wxState === 'CANCELLED' || wxState === 'FAIL' || wxState === 'FAILED') {
+			if (arrival === 'expired' || arrival === 'returned') {
+				if (!row.balance_restored && !hasExpireLog) {
+					verdict = 'expired_without_restore';
+					verdictText = `微信已 ${wxState}，但本地可能未退积分，请执行 withdrawRepairExpired`;
+				} else {
+					verdict = arrival === 'expired' ? 'restored_to_merchant' : 'returned_to_merchant';
+					verdictText = `微信 ${wxState} 且本地已${arrivalStatusText(arrival)}：钱应已退回商户号，积分应已退回商户`;
+				}
+			}
+		}
+
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				verdict,
+				verdictText,
+				inconsistent,
+				row: {
+					id: row._id,
+					withdrawNo: row.withdraw_no,
+					isPaid: !!row.is_paid,
+					isPaidText: row.is_paid
+						? '已打款'
+						: arrival === 'expired'
+							? '已失效'
+							: arrival === 'returned'
+								? '已退回'
+								: '未打款',
+					arrivalStatus: arrival,
+					arrivalStatusText: arrivalStatusText(arrival),
+					arrivalTime: formatTime(row.arrival_time),
+					payTime: formatTime(row.pay_time),
+					transferState,
+					transferError: safeText(row.transfer_error || '', 200),
+					wxTradeNo: safeText(row.wx_trade_no || '', 80),
+					amount: Number(row.amount || 0),
+					payable: Number(row.payable || 0),
+					merchantUserId: safeText(row.merchant_user_id, 80),
+					balanceRestored: !!row.balance_restored,
+					createTime: formatTime(row.create_time)
+				},
+				wxState,
+				wxQuery,
+				logs,
+				howToRead: {
+					deviceOrderCol: '支付状态 = isPaidText（已打款/已失效/未打款）',
+					withdrawCols: '是否打款=isPaidText；是否到账=arrivalStatusText',
+					repair: '已失效但资金未回：withdrawRepairExpired({ withdrawNo })'
+				}
+			}
+		};
+	} catch (e) {
+		console.error('withdrawDiagnose failed:', e);
+		return { code: 500, message: safeText(e?.message || '诊断失败', 160) };
+	}
+}
+
+/**
+ * 修复「已失效但微信未撤销 / 积分未退回」的脏数据。
+ * 例：uniCloud.callFunction({ name:'merchant', data:{ action:'withdrawRepairExpired', params:{ withdrawNo:'H51784540446700rjS5DBVe' }}})
+ */
+async function withdrawRepairExpired(data = {}) {
+	try {
+		const withdrawNo = safeText(data?.withdrawNo || data?.outBillNo || '', 64);
+		const id = safeText(data?.id || data?.withdrawId || '', 80);
+		if (!withdrawNo && !id) return { code: 400, message: '请传 withdrawNo 或 id' };
+		let row = null;
+		if (id) {
+			const r = await withdrawCollection.doc(id).get();
+			row = r.data && r.data[0];
+		}
+		if (!row && withdrawNo) {
+			const r = await withdrawCollection
+				.where({ withdraw_no: withdrawNo, is_deleted: db.command.neq(true) })
+				.limit(1)
+				.get();
+			row = r.data && r.data[0];
+		}
+		if (!row) return { code: 404, message: '提现记录不存在' };
+		const reason = safeText(data?.reason || '修复：已失效单撤销微信占用并补退积分', 180);
+		const result = await repairOneExpiredWithdraw(row, reason);
+		if (result.code != null) return result;
+		return { code: 0, message: result.message || 'ok', data: result };
+	} catch (e) {
+		console.error('withdrawRepairExpired failed:', e);
+		return { code: 500, message: safeText(e?.message || '修复失败', 160) };
+	}
+}
+
+/**
+ * 批量修复所有「已失效」提现：查微信撤销占用 + 幂等补退积分。
+ * 浏览器控制台可循环执行直到 hasMore=false：
+ * uniCloud.callFunction({ name:'merchant', data:{ action:'withdrawRepairExpiredBatch', params:{ limit:20 }}})
+ */
+async function withdrawRepairExpiredBatch(data = {}) {
+	try {
+		const limit = Math.min(50, Math.max(1, parseInt(String(data?.limit || 20), 10) || 20));
+		// onlyUnrestored=true 时只扫未标记 balance_restored 的；默认扫全部已失效（含需撤销微信占用）
+		const onlyUnrestored = data?.onlyUnrestored === true || data?.onlyNeedRestore === true;
+		const reason = safeText(data?.reason || '批量修复：已失效单撤销微信占用并补退积分', 180);
+		const _ = db.command;
+		const whereObj = {
+			is_deleted: _.neq(true),
+			is_paid: _.neq(true),
+			arrival_status: 'expired'
+		};
+		if (onlyUnrestored) {
+			whereObj.balance_restored = _.neq(true);
+		}
+		const res = await withdrawCollection
+			.where(whereObj)
+			.orderBy('create_time', 'asc')
+			.limit(limit)
+			.get();
+		const rows = res.data || [];
+		const summary = {
+			scanned: rows.length,
+			restored: 0,
+			alreadyRestored: 0,
+			expired: 0,
+			settled: 0,
+			cancelPending: 0,
+			skipped: 0,
+			failed: 0,
+			amountPointsRestored: 0,
+			samples: [],
+			errors: []
+		};
+		for (const row of rows) {
+			const withdrawNo = safeText(row.withdraw_no, 80);
+			try {
+				const r = await repairOneExpiredWithdraw(row, reason);
+				const action = r.action || '';
+				if (action === 'restored') {
+					summary.restored += 1;
+					summary.amountPointsRestored += Number(r.amountPoints || 0);
+				} else if (action === 'already_restored') {
+					summary.alreadyRestored += 1;
+				} else if (action === 'expired') {
+					summary.expired += 1;
+					summary.amountPointsRestored += Number(r.amountPoints || 0);
+				} else if (action === 'settled') {
+					summary.settled += 1;
+				} else if (action === 'cancel_pending') {
+					summary.cancelPending += 1;
+				} else if (action === 'need_manual' || action === 'skip') {
+					summary.skipped += 1;
+				} else if (r.ok === false || (r.code && r.code !== 0)) {
+					summary.failed += 1;
+					summary.errors.push({ withdrawNo, message: r.message || '失败' });
+				} else {
+					summary.skipped += 1;
+				}
+				if (summary.samples.length < 30) {
+					summary.samples.push({
+						withdrawNo,
+						merchantUserId: safeText(row.merchant_user_id, 80),
+						amount: Number(row.amount || 0),
+						action: action || r.message || '',
+						wxState: r.wxState || '',
+						amountPoints: r.amountPoints
+					});
+				}
+			} catch (e) {
+				summary.failed += 1;
+				summary.errors.push({ withdrawNo, message: safeText(e?.message || '异常', 120) });
+			}
+		}
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				...summary,
+				hasMore: rows.length >= limit,
+				hint: rows.length >= limit
+					? '还有未处理完，请用相同命令再执行一次'
+					: '本批已扫完；若 cancelPending>0，等几分钟后再跑一轮'
+			}
+		};
+	} catch (e) {
+		console.error('withdrawRepairExpiredBatch failed:', e);
+		return { code: 500, message: safeText(e?.message || '批量修复失败', 160) };
+	}
+}
+
+/**
+ * 复核本地「未打款/未到账」但微信已 SUCCESS 的提现，立即同步为已打款已到账。
+ * 自动扫描仅处理「最近 30 天」创建的未到账单（微信超期单无法查单）。
+ *
+ * 控制台指定单号（仍会查微信）：
+ * uniCloud.callFunction({ name:'merchant', data:{ action:'withdrawReconcileArrivalFromWx', params:{
+ *   withdrawNos:['H5178...']
+ * }}})
+ *
+ * 超期无法查单、确认已到账时强制落库：
+ * action: withdrawForceMarkReceived
+ */
+async function withdrawReconcileArrivalFromWx(data = {}) {
+	try {
+		const _ = db.command;
+		const limit = Math.min(50, Math.max(1, parseInt(String(data?.limit || 30), 10) || 30));
+		const days = Math.min(90, Math.max(1, parseInt(String(data?.withinDays || 30), 10) || 30));
+		const sinceTs = nowTs() - days * 24 * 60 * 60 * 1000;
+		let nos = [];
+		if (Array.isArray(data?.withdrawNos)) {
+			nos = data.withdrawNos.map((x) => safeText(x, 64)).filter(Boolean);
+		} else if (typeof data?.withdrawNos === 'string' && data.withdrawNos.trim()) {
+			nos = data.withdrawNos
+				.split(/[,，\s]+/)
+				.map((x) => safeText(x, 64))
+				.filter(Boolean);
+		} else if (data?.withdrawNo) {
+			nos = [safeText(data.withdrawNo, 64)].filter(Boolean);
+		}
+
+		let rows = [];
+		if (nos.length) {
+			const res = await withdrawCollection
+				.where({
+					is_deleted: _.neq(true),
+					withdraw_no: _.in(nos.slice(0, 50))
+				})
+				.limit(Math.min(50, nos.length))
+				.get();
+			rows = res.data || [];
+		} else {
+			// 扫描：仅最近 N 天内、本地未打款且未终态退回/失效
+			const res = await withdrawCollection
+				.where(
+					_.and([
+						{ is_deleted: _.neq(true) },
+						{ is_paid: _.neq(true) },
+						{ arrival_status: _.nin(['received', 'returned', 'expired']) },
+						{ withdraw_no: _.exists(true) },
+						{ withdraw_no: _.neq('') },
+						{ create_time: _.gte(sinceTs) }
+					])
+				)
+				.orderBy('create_time', 'asc')
+				.limit(limit)
+				.get();
+			rows = res.data || [];
+		}
+
+		const cfg = ensureWxWithdrawPayConfig();
+		if (!cfg.ok) return { code: 500, message: cfg.message };
+
+		const summary = {
+			scanned: rows.length,
+			settled: 0,
+			alreadyOk: 0,
+			stillPending: 0,
+			failedTerminal: 0,
+			notFound: 0,
+			errors: [],
+			samples: []
+		};
+
+		if (nos.length) {
+			const foundSet = new Set(rows.map((r) => safeText(r.withdraw_no, 64)));
+			for (const n of nos) {
+				if (!foundSet.has(n)) {
+					summary.notFound += 1;
+					summary.errors.push({ withdrawNo: n, message: '本地无此提现单' });
+				}
+			}
+		}
+
+		for (const row of rows) {
+			const withdrawNo = safeText(row.withdraw_no, 64);
+			const arrival = safeText(row.arrival_status, 20) || 'pending';
+			try {
+				if (row.is_paid && arrival === 'received') {
+					summary.alreadyOk += 1;
+					if (summary.samples.length < 40) {
+						summary.samples.push({ withdrawNo, action: 'already_ok', wxState: 'SUCCESS' });
+					}
+					continue;
+				}
+				if (!withdrawNo) {
+					summary.errors.push({ withdrawNo: '', id: row._id, message: '缺少提现单号' });
+					continue;
+				}
+
+				let q = null;
+				let state = '';
+				try {
+					q = await wxPayQueryMerchantTransfer(cfg.creds, withdrawNo);
+					state = normalizeTransferState(q?.state || q?.status || '');
+				} catch (e) {
+					const wxCode = safeText(e?.wxBody?.code || e?.code || '', 40);
+					const msg = safeText(e?.message || '查单失败', 160);
+					if (wxCode === 'NOT_FOUND' || /NOT_FOUND/i.test(msg)) {
+						summary.notFound += 1;
+						summary.errors.push({ withdrawNo, message: `微信无单:${msg}` });
+						if (summary.samples.length < 40) {
+							summary.samples.push({ withdrawNo, action: 'wx_not_found', message: msg });
+						}
+						continue;
+					}
+					summary.errors.push({ withdrawNo, message: msg });
+					if (summary.samples.length < 40) {
+						summary.samples.push({ withdrawNo, action: 'query_error', message: msg });
+					}
+					continue;
+				}
+
+				const billNo = safeText(q?.transfer_bill_no || row.wx_trade_no || '', 80);
+				await writeTransferLog({
+					stage: 'withdraw_reconcile_query',
+					withdrawId: row._id,
+					withdrawNo,
+					merchantUserId: row.merchant_user_id,
+					deviceId: row.device_id,
+					outBillNo: withdrawNo,
+					transferState: state,
+					message: '到账复核：查询微信转账状态',
+					payload: q || {}
+				});
+
+				if (state === 'SUCCESS') {
+					await settleWithdrawSuccess(row, billNo, state, {
+						arrivalTime: parseWxTransferSuccessTs(q) || nowTs()
+					});
+					summary.settled += 1;
+					if (summary.samples.length < 40) {
+						summary.samples.push({
+							withdrawNo,
+							action: 'settled',
+							wxState: state,
+							payable: Number(row.payable || 0),
+							arrivalTime: formatTime(parseWxTransferSuccessTs(q) || nowTs())
+						});
+					}
+					continue;
+				}
+
+				if (isWithdrawTerminalFailState(state) || state === 'CANCELLED') {
+					summary.failedTerminal += 1;
+					await withdrawCollection.doc(row._id).update({
+						transfer_state: state,
+						wx_trade_no: billNo || row.wx_trade_no || '',
+						transfer_error: safeText(q?.fail_reason || q?.message || state, 180),
+						update_time: nowTs()
+					});
+					if (summary.samples.length < 40) {
+						summary.samples.push({
+							withdrawNo,
+							action: 'terminal_fail',
+							wxState: state,
+							failReason: safeText(q?.fail_reason || '', 80)
+						});
+					}
+					continue;
+				}
+
+				// 仍处理中：只刷新本地微信状态
+				const polledPkg = pickTransferPackageInfo(q);
+				await withdrawCollection.doc(row._id).update({
+					transfer_state: state || row.transfer_state || 'PROCESSING',
+					wx_trade_no: billNo || row.wx_trade_no || '',
+					...(polledPkg ? { package_info: safeText(polledPkg, 1200) } : {}),
+					update_time: nowTs()
+				});
+				summary.stillPending += 1;
+				if (summary.samples.length < 40) {
+					summary.samples.push({ withdrawNo, action: 'still_pending', wxState: state });
+				}
+			} catch (e) {
+				summary.errors.push({ withdrawNo, message: safeText(e?.message || '复核异常', 120) });
+			}
+		}
+
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				...summary,
+				withinDays: nos.length ? null : days,
+				sinceTime: nos.length ? null : formatTime(sinceTs),
+				hasMore: !nos.length && rows.length >= limit,
+				hint: nos.length
+					? `指定 ${nos.length} 单：已同步 SUCCESS→已到账 ${summary.settled} 笔`
+					: summary.hasMore
+						? `还有未扫完（仅最近 ${days} 天），请再执行或等定时任务`
+						: `本批扫描完成（仅最近 ${days} 天）`
+			}
+		};
+	} catch (e) {
+		console.error('withdrawReconcileArrivalFromWx failed:', e);
+		return { code: 500, message: safeText(e?.message || '到账复核失败', 160) };
+	}
+}
+
+/**
+ * 超期无法查微信、但确认钱已到用户零钱：直接落库已打款+已到账（走 settle 账务）。
+ * uniCloud.callFunction({ name:'merchant', data:{ action:'withdrawForceMarkReceived', params:{
+ *   withdrawNos:['H5178...'], reason:'超期无法查单，人工确认已到账'
+ * }}})
+ */
+async function withdrawForceMarkReceived(data = {}) {
+	try {
+		const _ = db.command;
+		let nos = [];
+		if (Array.isArray(data?.withdrawNos)) {
+			nos = data.withdrawNos.map((x) => safeText(x, 64)).filter(Boolean);
+		} else if (typeof data?.withdrawNos === 'string' && data.withdrawNos.trim()) {
+			nos = data.withdrawNos
+				.split(/[,，\s]+/)
+				.map((x) => safeText(x, 64))
+				.filter(Boolean);
+		} else if (data?.withdrawNo) {
+			nos = [safeText(data.withdrawNo, 64)].filter(Boolean);
+		}
+		if (!nos.length) return { code: 400, message: '请传 withdrawNos' };
+		const reason = safeText(data?.reason || '超期无法查微信，人工确认已到账并强制落库', 180);
+
+		const res = await withdrawCollection
+			.where({
+				is_deleted: _.neq(true),
+				withdraw_no: _.in(nos.slice(0, 50))
+			})
+			.limit(Math.min(50, nos.length))
+			.get();
+		const rows = res.data || [];
+		const found = new Set(rows.map((r) => safeText(r.withdraw_no, 64)));
+		const summary = {
+			requested: nos.length,
+			settled: 0,
+			alreadyOk: 0,
+			notFound: 0,
+			skipped: 0,
+			errors: [],
+			samples: []
+		};
+		for (const n of nos) {
+			if (!found.has(n)) {
+				summary.notFound += 1;
+				summary.errors.push({ withdrawNo: n, message: '本地无此提现单' });
+			}
+		}
+
+		for (const row of rows) {
+			const withdrawNo = safeText(row.withdraw_no, 64);
+			const arrival = safeText(row.arrival_status, 20) || 'pending';
+			try {
+				if (row.is_paid && arrival === 'received') {
+					summary.alreadyOk += 1;
+					summary.samples.push({ withdrawNo, action: 'already_ok' });
+					continue;
+				}
+				if (arrival === 'expired' || arrival === 'returned') {
+					// 已失效/退回但仍确认微信到账：走 settle（含 clawback）
+				}
+				const arrivalAt =
+					Number(row.arrival_time || 0) ||
+					Number(row.pay_time || 0) ||
+					Number(row.update_time || 0) ||
+					Number(row.create_time || 0) ||
+					nowTs();
+				const ret = await settleWithdrawSuccess(
+					row,
+					safeText(row.wx_trade_no || '', 80),
+					'SUCCESS',
+					{ arrivalTime: arrivalAt }
+				);
+				if (ret && ret.ok === false && ret.reason === 'already_received') {
+					summary.alreadyOk += 1;
+					summary.samples.push({ withdrawNo, action: 'already_ok' });
+					continue;
+				}
+				if (ret && ret.ok === false && ret.reason === 'claim_failed') {
+					summary.skipped += 1;
+					summary.errors.push({ withdrawNo, message: '并发抢占失败，请重试' });
+					continue;
+				}
+				await withdrawCollection.doc(row._id).update({
+					transfer_state: 'SUCCESS',
+					transfer_error: reason,
+					update_time: nowTs()
+				});
+				await writeTransferLog({
+					stage: 'withdraw_force_mark_received',
+					withdrawId: row._id,
+					withdrawNo,
+					merchantUserId: row.merchant_user_id,
+					deviceId: row.device_id,
+					outBillNo: withdrawNo,
+					transferState: 'SUCCESS',
+					message: reason,
+					payload: {
+						payable: Number(row.payable || 0),
+						amount: Number(row.amount || 0),
+						arrivalAt,
+						force: true
+					}
+				});
+				summary.settled += 1;
+				summary.samples.push({
+					withdrawNo,
+					action: 'force_settled',
+					payable: Number(row.payable || 0),
+					arrivalTime: formatTime(arrivalAt)
+				});
+			} catch (e) {
+				summary.errors.push({ withdrawNo, message: safeText(e?.message || '强制落库失败', 120) });
+			}
+		}
+
+		return { code: 0, message: 'ok', data: summary };
+	} catch (e) {
+		console.error('withdrawForceMarkReceived failed:', e);
+		return { code: 500, message: safeText(e?.message || '强制落库失败', 160) };
+	}
+}
+
+/**
+ * 提现列表「失败原因-详情」：回款时间 + 微信原始应答（记录字段或转账日志回填）
+ */
+async function withdrawFailDetail(data = {}) {
+	try {
+		const withdrawNo = safeText(data?.withdrawNo || data?.outBillNo || '', 64);
+		const id = safeText(data?.id || data?.withdrawId || '', 80);
+		if (!withdrawNo && !id) return { code: 400, message: '请传 withdrawNo 或 id' };
+		let row = null;
+		if (id) {
+			const r = await withdrawCollection.doc(id).get();
+			row = r.data && r.data[0];
+		}
+		if (!row && withdrawNo) {
+			const r = await withdrawCollection
+				.where({ withdraw_no: withdrawNo, is_deleted: db.command.neq(true) })
+				.limit(1)
+				.get();
+			row = r.data && r.data[0];
+		}
+		if (!row) return { code: 404, message: '提现记录不存在' };
+
+		const parsePayload = (raw) => {
+			if (raw == null || raw === '') return null;
+			if (typeof raw === 'object') return raw;
+			if (typeof raw === 'string') {
+				try {
+					return JSON.parse(raw);
+				} catch (e) {
+					return { raw: safeText(raw, 2000) };
+				}
+			}
+			return null;
+		};
+		const pretty = (obj) => {
+			if (obj == null) return '';
+			if (typeof obj === 'string') return obj;
+			try {
+				return JSON.stringify(obj, null, 2);
+			} catch (e) {
+				return String(obj);
+			}
+		};
+
+		let restoreTimeTs = Number(row.balance_restore_time || 0) || 0;
+		let wxRaw = parsePayload(row.wx_expire_response);
+		let wxState = safeText(row.transfer_state, 40);
+		let source = 'record';
+
+		const logsRes = await transferLogCollection
+			.where({
+				is_deleted: db.command.neq(true),
+				withdraw_no: safeText(row.withdraw_no, 80)
+			})
+			.orderBy('create_time', 'desc')
+			.limit(40)
+			.get();
+		const logs = logsRes.data || [];
+
+		if (!restoreTimeTs) {
+			const restoreLog = logs.find((x) =>
+				['withdraw_auto_expire', 'withdraw_expire_repair_restore'].includes(String(x.stage || ''))
+			);
+			if (restoreLog) {
+				restoreTimeTs = Number(restoreLog.create_time || 0) || 0;
+				const p = parsePayload(restoreLog.payload);
+				if (p && Number(p.balanceRestoreTime || 0) > 0) restoreTimeTs = Number(p.balanceRestoreTime);
+				source = 'transfer_log';
+			}
+		}
+
+		if (!wxRaw || (typeof wxRaw === 'object' && !Object.keys(wxRaw).length)) {
+			const preferStages = [
+				'withdraw_expire_cancel',
+				'withdraw_expire_query',
+				'withdraw_expire_cancel_poll',
+				'withdraw_expire_query_after_cancel_fail',
+				'withdraw_auto_expire',
+				'auto_poll_query',
+				'h5_confirm_after_poll'
+			];
+			for (const st of preferStages) {
+				const hit = logs.find((x) => String(x.stage || '') === st);
+				if (!hit) continue;
+				const p = parsePayload(hit.payload);
+				if (p && typeof p === 'object' && Object.keys(p).length) {
+					wxRaw = p;
+					if (!wxState) wxState = safeText(hit.transfer_state, 40);
+					source = `transfer_log:${st}`;
+					break;
+				}
+			}
+		}
+
+		// 仍无原始应答时，实时查一次微信（只读）
+		let liveWx = null;
+		if ((!wxRaw || !Object.keys(wxRaw || {}).length) && data?.queryWx !== false && safeText(row.withdraw_no, 64)) {
+			try {
+				const cfg = ensureWxWithdrawPayConfig();
+				if (cfg.ok) {
+					liveWx = await wxPayQueryMerchantTransfer(cfg.creds, safeText(row.withdraw_no, 64));
+					wxRaw = liveWx;
+					wxState = normalizeTransferState(liveWx?.state || liveWx?.status || wxState);
+					source = 'live_query';
+				}
+			} catch (e) {
+				liveWx = {
+					error: safeText(e?.message || '查单失败', 160),
+					wxCode: safeText(e?.wxBody?.code || '', 40),
+					wxBody: e && e.name === 'WxPayRequestError' ? e.wxBody || {} : {}
+				};
+				if (!wxRaw) wxRaw = liveWx;
+				source = 'live_query_error';
+			}
+		}
+
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				withdrawNo: row.withdraw_no || '',
+				reason: safeText(row.transfer_error || '', 300),
+				arrivalStatus: safeText(row.arrival_status, 20),
+				transferState: wxState || safeText(row.transfer_state, 40),
+				balanceRestored: !!row.balance_restored,
+				balanceRestoreTime: restoreTimeTs ? formatTime(restoreTimeTs) : '',
+				balanceRestoreTimeTs: restoreTimeTs || null,
+				wxRawText: pretty(wxRaw) || '（暂无微信原始应答，可查看转账日志）',
+				wxRaw,
+				dataSource: source,
+				wxTradeNo: safeText(row.wx_trade_no || '', 80)
+			}
+		};
+	} catch (e) {
+		console.error('withdrawFailDetail failed:', e);
+		return { code: 500, message: safeText(e?.message || '获取失败详情失败', 160) };
+	}
+}
+
+/** @returns {Promise<object>} data 形态，或带 code 的错误 */
+async function repairOneExpiredWithdraw(row, reason) {
+	const arrival = safeText(row.arrival_status, 20) || 'pending';
+	if (row.is_paid || arrival === 'received') {
+		return { code: 400, message: '该单已到账，不能按失效修复', action: 'skip' };
+	}
+	const steps = [];
+	let wxState = normalizeTransferState(row.transfer_state || '');
+	let wxQuery = null;
+
+	const outBillNo = safeText(row.withdraw_no, 64);
+	if (outBillNo) {
+		const r = await cancelOrResolveWxWithdrawForExpire(row, reason);
+		steps.push({ step: 'cancelOrResolve', result: r });
+		if (r.action === 'settled') {
+			return {
+				ok: true,
+				action: 'settled',
+				message: '微信已 SUCCESS，已按到账结算（未退回商户）',
+				wxState: r.wxState,
+				steps
+			};
+		}
+		if (r.action === 'expired') {
+			return {
+				ok: true,
+				action: 'expired',
+				message: '已撤销/确认失败并完成失效返还',
+				wxState: r.wxState,
+				amountPoints: r.amountPoints,
+				settleAmt: r.settleAmt,
+				merchantId: r.merchantId,
+				steps
+			};
+		}
+		if (r.action === 'cancel_pending') {
+			return {
+				ok: true,
+				action: 'cancel_pending',
+				message: '已发起撤销，微信处理中',
+				wxState: r.wxState,
+				steps
+			};
+		}
+		wxState = r.wxState || wxState;
+	}
+
+	const freshRes = await withdrawCollection.doc(row._id).get();
+	const fresh = (freshRes.data && freshRes.data[0]) || row;
+	const arrival2 = safeText(fresh.arrival_status, 20) || 'pending';
+	if (arrival2 === 'expired' || arrival2 === 'returned') {
+		const patched = await ensureExpiredBalanceRestored(fresh, { reason, wxState });
+		steps.push({ step: 'ensureRestore', result: patched });
+		if (!patched.ok) {
+			return { code: 500, ok: false, message: patched.message || '补退失败', action: 'failed', steps, wxState };
+		}
+		return {
+			ok: true,
+			action: patched.restoredNow ? 'restored' : 'already_restored',
+			message: patched.restoredNow
+				? '已补退积分到商户账户'
+				: `无需重复退回（${patched.reason || '已返还'}）`,
+			amountPoints: patched.amountPoints,
+			settleAmt: patched.settleAmt,
+			merchantId: patched.merchantId,
+			wxState,
+			wxQuery,
+			steps
+		};
+	}
+
+	if (wxState === 'CANCELLED' || isWithdrawTerminalFailState(wxState) || wxState === 'NOT_FOUND' || wxState === 'EXPIRED') {
+		const fin = await finalizeWithdrawExpiredAndRestore(fresh, reason, { wxState });
+		steps.push({ step: 'finalize', result: fin });
+		if (!fin.ok && !fin.skip) {
+			return { code: 500, ok: false, message: fin.message || '失效返还失败', action: 'failed', steps, wxState };
+		}
+		return {
+			ok: true,
+			action: 'expired',
+			message: '已标记失效并返还',
+			amountPoints: fin.amountPoints,
+			settleAmt: fin.settleAmt,
+			merchantId: fin.merchantId,
+			wxState,
+			steps
+		};
+	}
+
+	return {
+		ok: false,
+		action: 'need_manual',
+		message: `当前无法自动修复（本地 ${arrival2}，微信 ${wxState || '未知'}）`,
+		wxState,
+		steps
+	};
 }
 
 async function withdrawApprove(data) {
@@ -7221,7 +8461,9 @@ async function h5WithdrawConfirmPackage(data) {
 			});
 		}
 		if (state === 'SUCCESS') {
-			await settleWithdrawSuccess(row, safeText(q?.transfer_bill_no || row.wx_trade_no || '', 80), state);
+			await settleWithdrawSuccess(row, safeText(q?.transfer_bill_no || row.wx_trade_no || '', 80), state, {
+				arrivalTime: parseWxTransferSuccessTs(q) || nowTs()
+			});
 			return { code: 400, message: '该笔提现已到账，无需确认收款' };
 		}
 		if (isWithdrawTerminalFailState(state)) {
@@ -7305,6 +8547,253 @@ async function h5WithdrawConfirmPackage(data) {
 	} catch (e) {
 		console.error('h5WithdrawConfirmPackage failed', e);
 		return { code: 500, message: '获取确认收款参数失败' };
+	}
+}
+
+/**
+ * 用户二次确认收款后：短轮询微信直到 SUCCESS 并立即本地到账（不再拖到零点补记）。
+ */
+async function h5WithdrawSyncAfterConfirm(data = {}) {
+	try {
+		await getBizSettings();
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		const withdrawNo = safeText(data?.withdrawNo, 64);
+		if (!withdrawNo) return { code: 400, message: '缺少提现单号' };
+
+		const rounds = Math.min(12, Math.max(1, parseInt(String(data?.rounds || 8), 10) || 8));
+		const intervalMs = Math.min(3000, Math.max(600, parseInt(String(data?.intervalMs || 1200), 10) || 1200));
+
+		const wr = await withdrawCollection
+			.where({ merchant_user_id: merchantUserId, withdraw_no: withdrawNo, is_deleted: false })
+			.limit(1)
+			.get();
+		let row = wr.data && wr.data[0];
+		if (!row) return { code: 404, message: '提现记录不存在' };
+
+		if (row.is_paid || safeText(row.arrival_status, 20) === 'received') {
+			return {
+				code: 0,
+				message: '已到账',
+				data: {
+					arrived: true,
+					state: 'SUCCESS',
+					arrivalTime: formatTime(row.arrival_time),
+					withdrawNo
+				}
+			};
+		}
+
+		const cfg = ensureWxWithdrawPayConfig();
+		if (!cfg.ok) return { code: 500, message: cfg.message };
+		const wc = cfg.creds;
+		let lastState = normalizeTransferState(row.transfer_state || '');
+		let lastQuery = null;
+
+		for (let i = 0; i < rounds; i += 1) {
+			if (i > 0) await sleepMs(intervalMs);
+			try {
+				const q = await wxPayQueryMerchantTransfer(wc, withdrawNo);
+				lastQuery = q;
+				lastState = normalizeTransferState(q?.state || q?.status || lastState);
+				const billNo = safeText(q?.transfer_bill_no || row.wx_trade_no || '', 80);
+				const polledPkg = pickTransferPackageInfo(q);
+				await withdrawCollection.doc(row._id).update({
+					transfer_state: lastState,
+					...(billNo ? { wx_trade_no: billNo } : {}),
+					...(polledPkg ? { package_info: safeText(polledPkg, 1200) } : {}),
+					update_time: nowTs()
+				});
+				await writeTransferLog({
+					stage: 'h5_confirm_after_poll',
+					withdrawId: row._id,
+					withdrawNo,
+					merchantUserId,
+					openid: safeText(merchant.wx_openid, 100),
+					outBillNo: withdrawNo,
+					transferState: lastState,
+					message: `确认收款后查单(${i + 1}/${rounds})`,
+					payload: q || {}
+				});
+				if (lastState === 'SUCCESS') {
+					await settleWithdrawSuccess(row, billNo, lastState, {
+						arrivalTime: parseWxTransferSuccessTs(q) || nowTs()
+					});
+					const fresh = await withdrawCollection.doc(row._id).get();
+					const fr = fresh.data && fresh.data[0];
+					return {
+						code: 0,
+						message: '已到账',
+						data: {
+							arrived: true,
+							state: 'SUCCESS',
+							arrivalTime: formatTime(fr?.arrival_time || parseWxTransferSuccessTs(q) || nowTs()),
+							withdrawNo,
+							roundsUsed: i + 1
+						}
+					};
+				}
+				if (isWithdrawTerminalFailState(lastState)) {
+					if (row.audit_required) {
+						await markWithdrawFailNeedsReaudit(
+							row,
+							lastState,
+							safeText(q?.fail_reason || q?.message || lastState, 180),
+							{ merchant }
+						);
+					} else if (safeText(row.arrival_status, 20) !== 'returned') {
+						await restoreUnpaidWithdrawBalances(row);
+						await withdrawCollection.doc(row._id).update({
+							arrival_status: 'returned',
+							transfer_state: lastState,
+							transfer_error: safeText(q?.fail_reason || q?.message || `微信提现失败：${lastState}`, 180),
+							update_time: nowTs()
+						});
+					}
+					return {
+						code: 400,
+						message: `打款未成功：${lastState}`,
+						data: { arrived: false, state: lastState, withdrawNo }
+					};
+				}
+			} catch (e) {
+				await writeTransferLog({
+					stage: 'h5_confirm_after_poll_error',
+					level: 'error',
+					withdrawId: row._id,
+					withdrawNo,
+					merchantUserId,
+					outBillNo: withdrawNo,
+					message: safeText(e?.message || '确认后查单失败', 180)
+				});
+			}
+			const freshRes = await withdrawCollection.doc(row._id).get();
+			row = (freshRes.data && freshRes.data[0]) || row;
+			if (row.is_paid || safeText(row.arrival_status, 20) === 'received') {
+				return {
+					code: 0,
+					message: '已到账',
+					data: {
+						arrived: true,
+						state: 'SUCCESS',
+						arrivalTime: formatTime(row.arrival_time),
+						withdrawNo
+					}
+				};
+			}
+		}
+
+		return {
+			code: 0,
+			message: '确认已提交，到账状态同步中，请稍后刷新',
+			data: {
+				arrived: false,
+				state: lastState || 'WAIT_USER_CONFIRM',
+				withdrawNo,
+				wxHint: lastQuery ? safeText(lastQuery.state || lastQuery.status || '', 40) : ''
+			}
+		};
+	} catch (e) {
+		console.error('h5WithdrawSyncAfterConfirm failed', e);
+		return { code: 500, message: '同步到账状态失败' };
+	}
+}
+
+/**
+ * H5 打开财务管理时：同步本商户处理中的提现（含待确认收款后已 SUCCESS 但未本地到账）。
+ */
+async function h5WithdrawSyncMine(data = {}) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserId = String(merchant.user_id || merchant._id || '');
+		const limit = Math.min(15, Math.max(1, parseInt(String(data?.limit || 8), 10) || 8));
+		const processingStates = ['PROCESSING', 'ACCEPTED', 'WAIT_USER_CONFIRM', 'UNKNOWN'];
+		const res = await withdrawCollection
+			.where({
+				merchant_user_id: merchantUserId,
+				is_deleted: false,
+				is_paid: false,
+				arrival_status: db.command.nin(['received', 'returned', 'expired']),
+				transfer_state: db.command.in(processingStates)
+			})
+			.orderBy('update_time', 'asc')
+			.limit(limit)
+			.get();
+		const rows = res.data || [];
+		if (!rows.length) {
+			return { code: 0, message: 'ok', data: { scanned: 0, success: 0, failed: 0 } };
+		}
+		const cfg = ensureWxWithdrawPayConfig();
+		if (!cfg.ok) return { code: 500, message: cfg.message };
+		const wc = cfg.creds;
+		let success = 0;
+		let failed = 0;
+		for (const row of rows) {
+			const outBillNo = safeText(row.withdraw_no, 64);
+			if (!outBillNo) continue;
+			try {
+				const q = await wxPayQueryMerchantTransfer(wc, outBillNo);
+				const state = normalizeTransferState(q?.state || q?.status || row.transfer_state || 'UNKNOWN');
+				const billNo = safeText(q?.transfer_bill_no || row.wx_trade_no || '', 80);
+				if (state === 'SUCCESS') {
+					await settleWithdrawSuccess(row, billNo, state, {
+						arrivalTime: parseWxTransferSuccessTs(q) || nowTs()
+					});
+					success += 1;
+					continue;
+				}
+				if (isWithdrawTerminalFailState(state)) {
+					if (row.audit_required) {
+						await markWithdrawFailNeedsReaudit(
+							row,
+							state,
+							safeText(q?.fail_reason || q?.message || state, 180),
+							{ merchant }
+						);
+					} else if (safeText(row.arrival_status, 20) !== 'returned') {
+						await restoreUnpaidWithdrawBalances(row);
+						await withdrawCollection.doc(row._id).update({
+							arrival_status: 'returned',
+							transfer_state: state,
+							transfer_error: safeText(q?.fail_reason || q?.message || `微信提现失败：${state}`, 180),
+							wx_trade_no: billNo,
+							update_time: nowTs()
+						});
+					}
+					failed += 1;
+					continue;
+				}
+				const polledPkg = pickTransferPackageInfo(q);
+				await withdrawCollection.doc(row._id).update({
+					transfer_state: state,
+					wx_trade_no: billNo,
+					...(polledPkg ? { package_info: safeText(polledPkg, 1200) } : {}),
+					update_time: nowTs()
+				});
+			} catch (e) {
+				await writeTransferLog({
+					stage: 'h5_sync_mine_error',
+					level: 'error',
+					withdrawId: row._id,
+					withdrawNo: row.withdraw_no,
+					merchantUserId,
+					outBillNo,
+					message: safeText(e?.message || '同步失败', 180)
+				});
+			}
+		}
+		return {
+			code: 0,
+			message: 'ok',
+			data: { scanned: rows.length, success, failed }
+		};
+	} catch (e) {
+		console.error('h5WithdrawSyncMine failed', e);
+		return { code: 500, message: '同步失败' };
 	}
 }
 
@@ -7538,7 +9027,7 @@ const DEFAULT_BIZ_SETTINGS = {
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
 	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
-	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
 	/** H5 权益页待领取奖励自流水/生成时刻起的有效天数，到期后不再展示 */
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -7774,7 +9263,7 @@ async function getBizSettings() {
 		if (!settings) {
 			settings = sanitizeBizSettings(DEFAULT_BIZ_SETTINGS);
 		}
-		await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, settings, REDIS_EX_BIZ_SEC);
+		await pushBizSettingsToRedis(settings, Date.now(), { touchMeta: false });
 	}
 	// 独立表覆盖日/周限额（不依赖旧版 system-settings.value 是否含新字段）
 	const periodOverride = await loadPeriodLimitsFromStore();
@@ -7784,6 +9273,35 @@ async function getBizSettings() {
 	bizSettingsCache = settings;
 	bizSettingsCacheAt = now;
 	return settings;
+}
+
+/**
+ * 将业务参数写入 Redis；保存配置时 touchMeta=true 同步更新时间戳。
+ * @returns {{ ok: boolean, updatedAt: number }}
+ */
+async function pushBizSettingsToRedis(settings, updatedAt, options = {}) {
+	const at = Number(updatedAt) || Date.now();
+	const touchMeta = options.touchMeta !== false;
+	const payload = Object.assign({}, settings || {}, { _redisUpdatedAt: at });
+	await redisH5.h5RedisDel(REDIS_KEY_BIZ);
+	const ok = await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, payload, REDIS_EX_BIZ_SEC);
+	if (touchMeta) {
+		await redisH5.h5RedisSetJson(REDIS_KEY_BIZ_META, { updatedAt: at }, 0);
+	}
+	return { ok: !!ok, updatedAt: at };
+}
+
+async function readBizRedisMeta() {
+	const meta = await redisH5.h5RedisGetJson(REDIS_KEY_BIZ_META);
+	const updatedAt = meta && Number(meta.updatedAt) > 0 ? Number(meta.updatedAt) : 0;
+	const live = await redisH5.h5RedisGetJson(REDIS_KEY_BIZ);
+	const liveAt =
+		live && Number(live._redisUpdatedAt) > 0 ? Number(live._redisUpdatedAt) : 0;
+	return {
+		updatedAt: updatedAt || liveAt || 0,
+		redisAlive: !!(live && live.rechargeRules && Array.isArray(live.rechargeRules)),
+		liveUpdatedAt: liveAt
+	};
 }
 
 function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES) {
@@ -8873,7 +10391,8 @@ async function h5WithdrawApply(data) {
 				await settleWithdrawSuccess(
 					freshRow || { _id: newWithdrawId, amount: points, payable, merchant_user_id: merchantUserId, device_id: safeText(machine?.device_id || merchant.device_id, 80) },
 					transferBillNo,
-					transferState
+					transferState,
+					{ arrivalTime: parseWxTransferSuccessTs(transferQueryAfter) || parseWxTransferSuccessTs(transferResp) || nowTs() }
 				);
 				return {
 					code: 0,
@@ -10431,7 +11950,12 @@ async function h5WxTransferNotify(data) {
 		});
 		if (outBillNo && state === 'SUCCESS') {
 			if (withdrawRowNotify) {
-				await settleWithdrawSuccess(withdrawRowNotify, safeText(plain.transfer_bill_no || '', 80), 'SUCCESS');
+				await settleWithdrawSuccess(
+					withdrawRowNotify,
+					safeText(plain.transfer_bill_no || '', 80),
+					'SUCCESS',
+					{ arrivalTime: parseWxTransferSuccessTs(plain) || nowTs() }
+				);
 			} else {
 				// H5 充值退款：按子单 out_bill_no 更新 transfer_items，全部子单成功后再 finalize（不涉及积分提现 withdraw 单）
 				const refundOrder = refundOrderNotify || (await findRefundTransferOrderByBillNo(outBillNo));
@@ -12331,10 +13855,10 @@ function computePendingReturnBucketsForTrades(tradeRows, nowTs) {
 		const r =
 			raRaw != null && raRaw !== '' && Number.isFinite(Number(raRaw))
 				? Number(raRaw)
-				: Number((cb / (amount > 300 ? 5 : 1)).toFixed(4));
+				: Number((cb / 5).toFixed(4));
 		if (!Number.isFinite(r) || r <= 0) continue;
 		const rr = Number(row.release_ratio);
-		const installments = Number.isFinite(rr) && rr >= 99 ? 1 : (amount > 300 ? 5 : 1);
+		const installments = Number.isFinite(rr) && rr >= 99 ? 1 : 5;
 		const ts = Number(row.create_time || 0);
 		const tradeYm = shanghaiYearMonthFromTs(ts);
 		for (let k = 0; k < installments; k += 1) {
@@ -12499,8 +14023,8 @@ async function recalcAndPersistFrozenAmountForMerchantById(merchantIdOrUserId) {
 
 /**
  * H5 待返积分汇总口径：
- * - 300元以下（含300）流水：首期返现100%，仅计入当月；
- * - 300元以上流水：按5期（每期约20%）计入交易当月及后续月份。
+ * - 流水按 5 期释放（每期约 20%），计入交易当月及后续月份；
+ * - 单笔低于约 13.16 元（5×0.01÷0.0038）不产生可领取积分。
  * 仅汇总当前月及之后月份（理论值，不含已过期月份）。
  */
 async function h5PendingReturnPoints(data) {
@@ -13595,32 +15119,62 @@ async function adminSilverMemberGiftRevert(data = {}) {
 	}
 }
 
-/** 仅恢复待提现双字段（与全站 rawPendingBalance 一致），不碰剩余额度。用于误跑旧版回滚后人工按真实金额写回。 */
-async function adminMerchantRecoverPendingBalance(data = {}) {
+/**
+ * 管理员直接改写「待提现」积分（与 H5 账号积分 / 列表待提现同口径）。
+ * 只写 account_points + withdraw_pending_balance，不改冻结金额、剩余额度、已提现。
+ */
+async function adminMerchantRecoverPendingBalance(data = {}, event = {}) {
 	try {
 		const key = data?.userId || data?.user_id || data?.merchantId || data?.merchantUserId;
 		const merchant = await getMerchantByIdOrUserId(key);
 		if (!merchant) return { code: 404, message: '商户不存在' };
-		const raw = data?.pendingYuan;
-		const pendingYuan = typeof raw === 'string' ? Number(String(raw).trim()) : Number(raw);
+		const raw = data?.pendingYuan != null && data?.pendingYuan !== '' ? data.pendingYuan : data?.pendingWithdraw;
+		const pendingYuan = typeof raw === 'string' ? Number(String(raw).trim().replace(/[￥,\s]/g, '')) : Number(raw);
 		if (!Number.isFinite(pendingYuan) || pendingYuan < 0) {
-			return { code: 400, message: 'pendingYuan 须为大于等于 0 的数字' };
+			return { code: 400, message: '待提现积分须为大于等于 0 的数字' };
 		}
 		const v = Number(pendingYuan.toFixed(4));
+		const before = Number(Number(rawPendingBalance(merchant) || 0).toFixed(4));
+		const reason = safeText(data?.reason || data?.remark || '管理员修改待提现积分', 200);
 		const now = nowTs();
 		await merchantCollection.doc(merchant._id).update({
 			account_points: v,
 			withdraw_pending_balance: v,
 			update_time: now
 		});
+		try {
+			await operationLogCollection.add({
+				user_id: merchant.user_id || merchant._id,
+				user_name: merchant.wx_nickname || merchant.mobile || '商户',
+				action: 'admin_set_pending_balance',
+				module: 'merchant',
+				target_id: merchant._id,
+				target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+				content: `${reason}：${before} -> ${v}`,
+				operator_source: 'admin',
+				operator: getOperator(event),
+				before_pending_balance: before,
+				after_pending_balance: v,
+				ip: event?.context?.CLIENTIP || '',
+				create_time: now
+			});
+		} catch (e) {
+			console.error('adminMerchantRecoverPendingBalance op log', e);
+		}
+		await invalidateH5MerchantCaches(merchant);
 		return {
 			code: 0,
-			message: 'ok',
-			data: { userId: merchant.user_id || '', pendingYuan: v }
+			message: '保存成功',
+			data: {
+				userId: merchant.user_id || '',
+				merchantId: merchant._id,
+				beforePendingYuan: before,
+				pendingYuan: v
+			}
 		};
 	} catch (e) {
 		console.error('adminMerchantRecoverPendingBalance failed', e);
-		return { code: 500, message: safeText(e?.message || '恢复待提现失败', 180) };
+		return { code: 500, message: safeText(e?.message || '修改待提现失败', 180) };
 	}
 }
 
@@ -15916,10 +17470,12 @@ async function bizConfigGet() {
 	try {
 		// 后台配置页必须直读数据库，避免 Redis/内存缓存导致「已保存又回弹默认值」
 		let raw = {};
+		let docRedisUpdatedAt = 0;
 		try {
 			const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(20).get();
 			const doc = pickBizSettingDoc(r.data || []);
 			raw = resolveBizRawFromDoc(doc);
+			docRedisUpdatedAt = Number(doc && (doc.redis_updated_at || doc.update_time)) || 0;
 		} catch (e) {
 			console.error('bizConfigGet db read failed, fallback getBizSettings', e);
 			raw = await getBizSettings();
@@ -15937,6 +17493,8 @@ async function bizConfigGet() {
 			refund: wxPayMch.refund === opt.mchId,
 			withdraw: wxPayMch.withdraw === opt.mchId
 		}));
+		const redisMeta = await readBizRedisMeta();
+		const redisUpdatedAt = Number(redisMeta.updatedAt || docRedisUpdatedAt) || 0;
 		return {
 			code: 0,
 			message: 'ok',
@@ -15946,7 +17504,10 @@ async function bizConfigGet() {
 				wxPayMch,
 				wxPayMchOptions: WX_PAY_MCH_OPTIONS,
 				wxPayMchDefaults: resolveDefaultWxPayMchIds(),
-				wxPayMchEffective
+				wxPayMchEffective,
+				redisUpdatedAt,
+				redisUpdatedAtText: redisUpdatedAt ? formatTime(redisUpdatedAt) : '',
+				redisAlive: !!redisMeta.redisAlive
 			}
 		};
 	} catch (error) {
@@ -15997,6 +17558,7 @@ async function bizConfigSave(data, event) {
 			value: _.set(val),
 			biz_period_limits: _.set(periodLimits),
 			update_time: now,
+			redis_updated_at: now,
 			update_user: operator
 		};
 
@@ -16017,6 +17579,7 @@ async function bizConfigSave(data, event) {
 				biz_period_limits: periodLimits,
 				create_time: now,
 				update_time: now,
+				redis_updated_at: now,
 				update_user: operator
 			});
 			updated = 1;
@@ -16044,6 +17607,7 @@ async function bizConfigSave(data, event) {
 					biz_period_limits: periodLimits,
 					create_time: now,
 					update_time: now,
+					redis_updated_at: now,
 					update_user: operator
 				});
 				const vr2 = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(1).get();
@@ -16057,8 +17621,7 @@ async function bizConfigSave(data, event) {
 
 		bizSettingsCache = finalVal;
 		bizSettingsCacheAt = Date.now();
-		await redisH5.h5RedisDel(REDIS_KEY_BIZ);
-		await redisH5.h5RedisSetJson(REDIS_KEY_BIZ, finalVal, REDIS_EX_BIZ_SEC);
+		const redisPush = await pushBizSettingsToRedis(finalVal, now, { touchMeta: true });
 		try {
 			h5HomeDashboardCache.clear();
 		} catch (e) {}
@@ -16073,17 +17636,21 @@ async function bizConfigSave(data, event) {
 			savedDiamondWeek: periodLimits.paidDiamond.weekMax,
 			dbDiamondWeek: finalVal.withdrawPeriodLimits.paidDiamond.weekMax,
 			updated,
-			docId: verifyDoc && verifyDoc._id
+			docId: verifyDoc && verifyDoc._id,
+			redisOk: redisPush.ok
 		};
 
 		return {
 			code: 0,
-			message: `保存成功（钻石周上限 ${Number(finalVal.withdrawPeriodLimits.paidDiamond.weekMax || 0)}）`,
+			message: '保存成功',
 			data: {
 				...finalVal,
 				cfBuild: MERCHANT_CF_BUILD,
 				_savedWithdrawPeriodLimits: finalVal.withdrawPeriodLimits,
-				_debugPeriod: debug
+				_debugPeriod: debug,
+				redisUpdatedAt: now,
+				redisUpdatedAtText: formatTime(now),
+				redisAlive: !!redisPush.ok
 			}
 		};
 	} catch (error) {
@@ -16149,6 +17716,18 @@ exports.main = async (event, context) => {
 			return await withdrawSyncProcessing(actualData);
 		case 'withdrawAutoExpireUnpaid':
 			return await withdrawAutoExpireUnpaid(actualData);
+		case 'withdrawDiagnose':
+			return await withdrawDiagnose(actualData);
+		case 'withdrawRepairExpired':
+			return await withdrawRepairExpired(actualData);
+		case 'withdrawRepairExpiredBatch':
+			return await withdrawRepairExpiredBatch(actualData);
+		case 'withdrawReconcileArrivalFromWx':
+			return await withdrawReconcileArrivalFromWx(actualData);
+		case 'withdrawForceMarkReceived':
+			return await withdrawForceMarkReceived(actualData);
+		case 'withdrawFailDetail':
+			return await withdrawFailDetail(actualData);
 		case 'refundTransferList':
 			return await getRefundTransferList(actualData);
 		case 'refundTransferSyncProcessing':
@@ -16196,7 +17775,7 @@ exports.main = async (event, context) => {
 		case 'adminSilverMemberGiftRevert':
 			return await adminSilverMemberGiftRevert(actualData);
 		case 'adminMerchantRecoverPendingBalance':
-			return await adminMerchantRecoverPendingBalance(actualData);
+			return await adminMerchantRecoverPendingBalance(actualData, event);
 		case 'adminRepairMerchantRefundState':
 			return await adminRepairMerchantRefundState(actualData, event);
 		case 'adminSetMerchantRechargeAmount':
@@ -16259,6 +17838,10 @@ exports.main = async (event, context) => {
 			return await h5WithdrawApply(actualData);
 		case 'h5WithdrawConfirmPackage':
 			return await h5WithdrawConfirmPackage(actualData);
+		case 'h5WithdrawSyncAfterConfirm':
+			return await h5WithdrawSyncAfterConfirm(actualData);
+		case 'h5WithdrawSyncMine':
+			return await h5WithdrawSyncMine(actualData);
 		case 'h5HomeDashboard':
 			return await applyH5GzipIfRequested(await h5HomeDashboard(actualData), actualData);
 		case 'h5SignAgreement':

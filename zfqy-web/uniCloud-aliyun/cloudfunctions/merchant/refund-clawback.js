@@ -3,7 +3,6 @@
 const { shanghaiYearMonthFromTs } = require('./format-time-cn.js');
 
 const CASHBACK_RATE = 0.0038;
-const THRESHOLD_YUAN = 300;
 const INSTALLMENTS_ABOVE = 5;
 
 function safeText(v, max = 200) {
@@ -37,15 +36,12 @@ function compareYm(a, b) {
 	return String(a || '').localeCompare(String(b || ''));
 }
 
-/** 原交易积分拆分：≤300 一期；>300 五期均分 */
+/** 原交易积分拆分：统一按 5 期均分（与参数配置「阈值以下也 5 期」一致） */
 function buildTradeSubsidyInstallments(tradeAmountYuan, sourceYm) {
 	const amount = Math.abs(Number(tradeAmountYuan || 0));
 	if (!(amount > 0)) return [];
 	const total = round4(amount * CASHBACK_RATE);
 	if (!(total > 0)) return [];
-	if (amount <= THRESHOLD_YUAN) {
-		return [{ installmentIndex: 1, targetYm: sourceYm, amount: round2(total) }];
-	}
 	const per = round2(total / INSTALLMENTS_ABOVE);
 	const items = [];
 	let sum = 0;

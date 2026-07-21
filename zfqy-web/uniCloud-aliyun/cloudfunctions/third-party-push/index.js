@@ -128,7 +128,7 @@ function normalizePaychannelCode(raw) {
 	return s.length === 1 ? `0${s}` : s;
 }
 
-const DEFAULT_OPTIMIZE_CONFIG = { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 };
+const DEFAULT_OPTIMIZE_CONFIG = { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 };
 const DEFAULT_RISK_RATES = { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 };
 let bizConfigCache = null;
 let bizConfigCacheAt = 0;
@@ -351,17 +351,22 @@ async function isMachineInSystem(termphyno) {
 }
 
 /**
- * 星驿流水写入刷卡记录表：仅机具在库时写入；同一 logno 不重复写入
+ * 星驿流水写入刷卡记录表：仅机具在库且已绑定时写入。
+ * 同一 trade_no（logno）全局只允许一条，防止并发推送重复落库导致积分重复计算。
  */
 async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const deviceId = normalizeEnumKey(termphyno);
 	if (!deviceId) return;
 
+	const tradeNo = String(d.logno || '').trim();
+	if (!tradeNo) return;
+
 	const refundFlag = normalizeEnumKey(d.refund) === '1';
 	const ologno = safeText(d.ologno || '', 64);
 
-	const dup = await machineTradesCol.where({ device_id: deviceId, trade_no: String(d.logno) }).count();
-	if (dup.total > 0) return;
+	// 全局按交易单号去重（含软删），避免并发下 count 竞态写出两条
+	const dupRes = await machineTradesCol.where({ trade_no: tradeNo }).limit(1).get();
+	if (dupRes.data && dupRes.data.length) return;
 
 	const mRes = await machineCol.where({ device_id: deviceId, is_deleted: false }).limit(1).get();
 	if (!mRes.data || !mRes.data.length) return;
@@ -385,10 +390,9 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const optimize = bizCfg.optimizeConfig || DEFAULT_OPTIMIZE_CONFIG;
 	const thresholdYuan = Math.max(0, Number(optimize.thresholdYuan || 300));
 	const aboveInstallments = Math.max(1, Number(optimize.aboveInstallments || 5));
-	const belowInstallments = Math.max(1, Number(optimize.belowInstallments || 1));
-	// 业务口径：
-	// - 300元以下（含300）：首期100%，不分5期
-	// - 300元以上：首期20%，按5期口径
+	const belowInstallments = Math.max(1, Number(optimize.belowInstallments || 5));
+	// 业务口径：阈值上下均可按配置分期（当前默认均为 5 期）；
+	// 每期最低 0.01 → 可产生积分的最低流水 ≈ 0.05/0.0038 ≈ 13.16 元
 	const installments = amount > thresholdYuan ? aboveInstallments : belowInstallments;
 	const releaseAmount = amount > 0 ? Number((cashback / installments).toFixed(4)) : 0;
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
@@ -407,35 +411,46 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		}
 	}
 
-	const addRes = await machineTradesCol.add({
-		device_id: deviceId,
-		trade_no: String(d.logno),
-		user_id: bound ? machine.bind_user_id : '',
-		user_name: bound ? (machine.bind_user_name || '') : '',
-		user_mobile: bound ? (machine.bind_user_mobile || '') : '',
-		trade_type: 'real',
-		trade_source: 'xingyi',
-		paychannel: pch || '',
-		paychannel_text: pchText,
-		is_risk_trade: !!risk.is_risk,
-		risk_audit_status: risk.risk_audit_status,
-		stats_eligible: !!bound,
-		trade_member_bucket: tradeMemberBucket,
-		amount,
-		is_refund: refundFlag,
-		refund_of_trade_no: refundFlag ? ologno : '',
-		is_activated: !!activated,
-		total_transaction: newTotal,
-		cashback: cashback,
-		cashback_time: cashback > 0 ? createTime : null,
-		release_amount: releaseAmount,
-		release_ratio: Number((100 / installments).toFixed(2)),
-		is_deleted: false,
-		company: machine.merchant || '管理员',
-		risk_control_status: risk.is_risk ? 'risk' : 'no',
-		salesman: machine.salesman || '管理员',
-		create_time: createTime
-	});
+	let addRes;
+	try {
+		addRes = await machineTradesCol.add({
+			device_id: deviceId,
+			trade_no: tradeNo,
+			user_id: bound ? machine.bind_user_id : '',
+			user_name: bound ? (machine.bind_user_name || '') : '',
+			user_mobile: bound ? (machine.bind_user_mobile || '') : '',
+			trade_type: 'real',
+			trade_source: 'xingyi',
+			paychannel: pch || '',
+			paychannel_text: pchText,
+			is_risk_trade: !!risk.is_risk,
+			risk_audit_status: risk.risk_audit_status,
+			stats_eligible: !!bound,
+			trade_member_bucket: tradeMemberBucket,
+			amount,
+			is_refund: refundFlag,
+			refund_of_trade_no: refundFlag ? ologno : '',
+			is_activated: !!activated,
+			total_transaction: newTotal,
+			cashback: cashback,
+			cashback_time: cashback > 0 ? createTime : null,
+			release_amount: releaseAmount,
+			release_ratio: Number((100 / installments).toFixed(2)),
+			is_deleted: false,
+			company: machine.merchant || '管理员',
+			risk_control_status: risk.is_risk ? 'risk' : 'no',
+			salesman: machine.salesman || '管理员',
+			create_time: createTime
+		});
+	} catch (e) {
+		// 唯一索引冲突：并发下另一实例已写入同一 trade_no
+		const msg = String(e && (e.message || e.errMsg || e) || '');
+		if (/duplicate|E11000|唯一|unique/i.test(msg)) {
+			console.warn('maybeAddXingyiMachineTrade duplicate trade_no skipped', tradeNo);
+			return;
+		}
+		throw e;
+	}
 	const refundTradeId = typeof addRes === 'string' ? addRes : addRes?.id || addRes?._id || '';
 
 	if (risk.is_risk && risk.risk_audit_status === 'pending' && amount > 0) {
@@ -474,7 +489,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 				data: {
 					action: 'internalTradeRefundClawback',
 					data: {
-						refundLogno: String(d.logno),
+						refundLogno: tradeNo,
 						ologno,
 						refundAmountAbs: Math.abs(Number(amount || 0)),
 						refundTradeId: String(refundTradeId || ''),

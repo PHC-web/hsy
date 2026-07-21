@@ -45,7 +45,7 @@
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag2')">2</uni-th>
 							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
-							<uni-th align="center" width="180">操作</uni-th>
+							<uni-th align="center" width="200">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
@@ -93,6 +93,7 @@
 							<uni-td align="center">
 								<view class="cell-actions">
 									<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
+									<button size="mini" type="warn" plain @click="openEditPending(item)">修改积分</button>
 									<button size="mini" type="default" @click="openDeviceManage(item)">机具维护</button>
 									<button size="mini" plain @click="openRefundWindow(item)">退款窗口</button>
 									<button
@@ -126,6 +127,30 @@
 		<!-- #ifndef H5 -->
 		<fix-window />
 		<!-- #endif -->
+		<uni-popup ref="editPendingPopup" type="dialog">
+			<view class="offline-popup">
+				<view class="offline-title">修改待提现积分</view>
+				<view class="offline-merchant-preview">
+					<text>商户：{{ editPendingForm.wxUser || editPendingForm.userId || '-' }}</text>
+				</view>
+				<view class="offline-label">当前待提现</view>
+				<view class="money" style="margin-bottom: 8px;">{{ editPendingForm.currentText || '-' }}</view>
+				<view class="offline-label required">新待提现积分</view>
+				<input
+					v-model="editPendingForm.pendingYuan"
+					class="offline-input"
+					type="digit"
+					placeholder="请输入 ≥0 的数字，1积分=1元"
+				/>
+				<view class="offline-label">备注（可选）</view>
+				<input v-model="editPendingForm.remark" class="offline-input" placeholder="如：人工补差 / 纠错" />
+				<view class="offline-tip">仅修改待提现（账号积分），不改冻结金额、剩余额度、已提现。</view>
+				<view class="offline-actions">
+					<button size="mini" @click="closeEditPending">取消</button>
+					<button size="mini" type="primary" :loading="editPendingSubmitting" @click="submitEditPending">保存</button>
+				</view>
+			</view>
+		</uni-popup>
 		<uni-popup ref="offlineRechargePopup" type="dialog">
 			<view class="offline-popup">
 				<view class="offline-title">线下首充额度</view>
@@ -451,6 +476,15 @@ export default {
 				newDeviceId: '',
 				loading: false,
 				submitting: false
+			},
+			editPendingSubmitting: false,
+			editPendingForm: {
+				id: '',
+				userId: '',
+				wxUser: '',
+				currentText: '',
+				pendingYuan: '',
+				remark: ''
 			}
 		};
 	},
@@ -1259,6 +1293,70 @@ export default {
 				this.pointsInsightLoading = false;
 			}
 		},
+		parseMoneyText(raw) {
+			const n = Number(String(raw == null ? '' : raw).replace(/[￥¥,\s]/g, '').trim());
+			return Number.isFinite(n) ? n : 0;
+		},
+		openEditPending(item) {
+			if (!item || !(item.userId || item.id)) return;
+			const current = this.parseMoneyText(item.pendingWithdraw);
+			this.editPendingForm = {
+				id: item.id || '',
+				userId: item.userId || item.id || '',
+				wxUser: String(item.wxUser || '').replace(/\n/g, ' / '),
+				currentText: item.pendingWithdraw || `￥${current.toFixed(2)}`,
+				pendingYuan: String(current),
+				remark: ''
+			};
+			this.$refs.editPendingPopup && this.$refs.editPendingPopup.open();
+		},
+		closeEditPending() {
+			if (this.$refs.editPendingPopup) this.$refs.editPendingPopup.close();
+		},
+		async submitEditPending() {
+			const userId = String(this.editPendingForm.userId || '').trim();
+			const pendingYuan = this.parseMoneyText(this.editPendingForm.pendingYuan);
+			if (!userId) {
+				uni.showToast({ title: '商户信息缺失', icon: 'none' });
+				return;
+			}
+			if (!Number.isFinite(pendingYuan) || pendingYuan < 0) {
+				uni.showToast({ title: '请输入 ≥0 的待提现积分', icon: 'none' });
+				return;
+			}
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '确认修改待提现',
+					content: `将「${this.editPendingForm.currentText}」改为「￥${pendingYuan.toFixed(2)}」？\n不改冻结金额。`,
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			this.editPendingSubmitting = true;
+			try {
+				const res = await this.$request(
+					'adminMerchantRecoverPendingBalance',
+					{
+						userId,
+						merchantId: this.editPendingForm.id,
+						pendingYuan,
+						reason: this.editPendingForm.remark || '管理员修改待提现积分'
+					},
+					{ functionName: 'merchant' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '保存失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '保存成功', icon: 'success' });
+				this.closeEditPending();
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: e?.message || '保存失败', icon: 'none' });
+			} finally {
+				this.editPendingSubmitting = false;
+			}
+		},
 		closePointsInsight() {
 			if (this.$refs.pointsInsightPopup) this.$refs.pointsInsightPopup.close();
 		},
@@ -1555,6 +1653,13 @@ export default {
 	content: '*';
 	color: #f56c6c;
 	margin-right: 4px;
+}
+
+.offline-tip {
+	margin-top: 10px;
+	font-size: 12px;
+	color: #909399;
+	line-height: 1.5;
 }
 
 .offline-input {

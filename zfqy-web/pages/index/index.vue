@@ -147,6 +147,10 @@
 									<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmountMember) }}</view>
 								</view>
 								<view class="returns-metric">
+									<view class="returns-metric-label">会员待打款</view>
+									<view class="returns-metric-value">{{ toMoney(dashboard.pendingWithdrawAmountMember) }}</view>
+								</view>
+								<view class="returns-metric">
 									<view class="returns-metric-label">会员刷卡金额</view>
 									<view class="returns-metric-value">{{ toMoney(dashboard.boundMerchantTradeAmountMember) }}</view>
 								</view>
@@ -157,6 +161,10 @@
 								<view class="returns-metric">
 									<view class="returns-metric-label">非会员到账金额</view>
 									<view class="returns-metric-value">{{ toMoney(dashboard.arrivedWithdrawAmountNonMember) }}</view>
+								</view>
+								<view class="returns-metric">
+									<view class="returns-metric-label">非会员待打款</view>
+									<view class="returns-metric-value">{{ toMoney(dashboard.pendingWithdrawAmountNonMember) }}</view>
 								</view>
 								<view class="returns-metric">
 									<view class="returns-metric-label">非会员刷卡金额</view>
@@ -269,6 +277,8 @@
 					arrivedWithdrawAmount: 0,
 					arrivedWithdrawAmountMember: 0,
 					arrivedWithdrawAmountNonMember: 0,
+					pendingWithdrawAmountMember: 0,
+					pendingWithdrawAmountNonMember: 0,
 					boundMerchantTradeAmount: 0,
 					boundMerchantTradeAmountMember: 0,
 					boundMerchantTradeAmountNonMember: 0,
@@ -454,6 +464,8 @@
 						arrivedWithdrawAmount: Number(sum.arrivedWithdrawAmount || 0),
 						arrivedWithdrawAmountMember: Number(sum.arrivedWithdrawAmountMember || 0),
 						arrivedWithdrawAmountNonMember: Number(sum.arrivedWithdrawAmountNonMember || 0),
+						pendingWithdrawAmountMember: Number(sum.pendingWithdrawAmountMember || 0),
+						pendingWithdrawAmountNonMember: Number(sum.pendingWithdrawAmountNonMember || 0),
 						boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
 						boundMerchantTradeAmountMember: Number(sum.boundMerchantTradeAmountMember || 0),
 						boundMerchantTradeAmountNonMember: Number(sum.boundMerchantTradeAmountNonMember || 0),
@@ -783,7 +795,7 @@
 			trendRangeLabel() {
 				return this.trendRangeLabelText();
 			},
-			/** 每万元刷卡对应的提现已到账金额：已提现÷总刷卡×10000，显示「X.XX元/万」 */
+			/** 每万元刷卡对应的已到账提现金额：已到账÷刷卡×10000，显示「X.XX元/万」 */
 			withdrawRatePerWan() {
 				const w = Number(this.dashboard.arrivedWithdrawAmount || 0);
 				const s = Number(this.dashboard.boundMerchantTradeAmount || 0);
@@ -1218,19 +1230,19 @@
 		min-width: 0;
 	}
 
-	/* 会员/非会员四项同一行；极窄屏降为 2×2，仍为「金额+率」相邻 */
+	/* 会员/非会员：到账、待打款、刷卡、提现率 */
 	.returns-metrics--tier {
 		box-sizing: border-box;
 		display: grid;
 		width: 100%;
 		min-width: 0;
-		grid-template-columns: repeat(6, minmax(0, 1fr));
+		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 10px 12px;
 	}
 
 	@media (max-width: 900px) {
 		.returns-metrics--tier {
-			grid-template-columns: repeat(3, minmax(0, 1fr));
+			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
 

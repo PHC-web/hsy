@@ -17,8 +17,15 @@
 
 			<view class="intro-card">
 				<view class="intro-title">参数配置说明</view>
-				<text class="intro-text">本页用于统一配置 H5 充值、兑换、退款与风控参数。修改后保存即生效。</text>
+				<text class="intro-text">本页用于统一配置 H5 充值、兑换、退款与风控参数。修改后保存即生效，并同步刷新 Redis 配置。</text>
 				<text class="intro-text">其中“退款周期”仅对新充值用户生效，已充值用户沿用原规则。</text>
+				<view class="redis-meta">
+					<text class="redis-meta-label">Redis 更新时间</text>
+					<text class="redis-meta-value">{{ redisUpdatedAtText || '暂无（保存配置后写入）' }}</text>
+					<text class="redis-meta-status" :class="{ ok: redisAlive, warn: !redisAlive }">
+						{{ redisAlive ? '缓存有效' : '缓存未命中/已过期' }}
+					</text>
+				</view>
 			</view>
 
 			<view class="card card-wx-mch">
@@ -146,7 +153,7 @@
 
 			<view class="card">
 				<view class="card-title">2）优化金额分期策略</view>
-				<text class="card-tip">例：阈值 300 元；300 及以上分 5 期，300 以下一次返还。</text>
+				<text class="card-tip">按阈值拆分分期数；每期最低可获 0.01 积分时，对应最低流水 = 0.01 × 分期数 ÷ 0.0038。</text>
 				<view class="form-grid">
 					<view class="field">
 						<text class="label">分期阈值金额(元)</text>
@@ -158,7 +165,22 @@
 					</view>
 					<view class="field">
 						<text class="label">阈值以下分期数</text>
-						<uni-easyinput v-model="form.optimizeConfig.belowInstallments" type="number" placeholder="如 1" />
+						<uni-easyinput v-model="form.optimizeConfig.belowInstallments" type="number" placeholder="如 5" />
+					</view>
+				</view>
+				<view class="optimize-min-trade">
+					<text class="optimize-min-trade-title">最低可积分流水（实时）</text>
+					<view class="optimize-min-trade-row">
+						<text>
+							≥ {{ optimizeThresholdText }} 元（{{ optimizeAboveInstallments }} 期）：
+							最低 {{ optimizeMinTradeAboveText }} 元
+						</text>
+					</view>
+					<view class="optimize-min-trade-row">
+						<text>
+							&lt; {{ optimizeThresholdText }} 元（{{ optimizeBelowInstallments }} 期）：
+							最低 {{ optimizeMinTradeBelowText }} 元
+						</text>
 					</view>
 				</view>
 			</view>
@@ -313,7 +335,7 @@ const defaultForm = () => ({
 		paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
 		paidDiamond: { dayMax: 200, weekMax: 500 }
 	},
-	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
@@ -342,6 +364,9 @@ export default {
 			periodDiamondWeek: 500,
 			cfBuild: '',
 			egressIp: '',
+			redisUpdatedAt: 0,
+			redisUpdatedAtText: '',
+			redisAlive: false,
 			wxPayMchOptions: [
 				{ mchId: '1111130439', label: '帆帆电子' },
 				{ mchId: '1646399792', label: '志帆科技' }
@@ -351,6 +376,24 @@ export default {
 	computed: {
 		cfBuildOk() {
 			return String(this.cfBuild || '').indexOf('PERIOD_V4') === 0;
+		},
+		optimizeThresholdText() {
+			const n = Number(this.form?.optimizeConfig?.thresholdYuan);
+			return Number.isFinite(n) && n >= 0 ? String(n) : '300';
+		},
+		optimizeAboveInstallments() {
+			const n = Math.floor(Number(this.form?.optimizeConfig?.aboveInstallments));
+			return Number.isFinite(n) && n >= 1 ? n : 5;
+		},
+		optimizeBelowInstallments() {
+			const n = Math.floor(Number(this.form?.optimizeConfig?.belowInstallments));
+			return Number.isFinite(n) && n >= 1 ? n : 5;
+		},
+		optimizeMinTradeAboveText() {
+			return this.calcMinSubsidyTradeYuan(this.optimizeAboveInstallments);
+		},
+		optimizeMinTradeBelowText() {
+			return this.calcMinSubsidyTradeYuan(this.optimizeBelowInstallments);
 		},
 		wxPayMchRows() {
 			return [
@@ -376,6 +419,12 @@ export default {
 		this.load();
 	},
 	methods: {
+		calcMinSubsidyTradeYuan(installments) {
+			const n = Math.max(1, Number(installments) || 1);
+			// 每期最低 0.01 积分 → 最低流水 = 0.01 * 期数 / 0.0038，向上取整到分
+			const raw = (0.01 * n) / 0.0038;
+			return (Math.ceil(raw * 100 - 1e-9) / 100).toFixed(2);
+		},
 		wxMchLabel(mchId) {
 			const hit = this.wxPayMchOptions.find((x) => x.mchId === mchId);
 			return hit ? `${hit.label}（${hit.mchId}）` : mchId || '-';
@@ -484,6 +533,9 @@ export default {
 				}
 				this.syncPeriodFieldsFrom(merged.withdrawPeriodLimits);
 				this.cfBuild = String((res.data && res.data.cfBuild) || '');
+				this.redisUpdatedAt = Number((res.data && res.data.redisUpdatedAt) || 0) || 0;
+				this.redisUpdatedAtText = String((res.data && res.data.redisUpdatedAtText) || '') || '';
+				this.redisAlive = !!(res.data && res.data.redisAlive);
 				if (Array.isArray(res.data?.wxPayMchOptions) && res.data.wxPayMchOptions.length) {
 					this.wxPayMchOptions = res.data.wxPayMchOptions;
 				}
@@ -500,6 +552,9 @@ export default {
 				delete merged._savedWithdrawPeriodLimits;
 				delete merged.cfBuild;
 				delete merged._debugPeriod;
+				delete merged.redisUpdatedAt;
+				delete merged.redisUpdatedAtText;
+				delete merged.redisAlive;
 				this.form = merged;
 			} finally {
 				this.loading = false;
@@ -558,14 +613,18 @@ export default {
 				const res = await this.$request('bizConfigSave', payload, { functionName: 'merchant' });
 				if (res.code !== 0) return uni.showToast({ title: res.message || '保存失败', icon: 'none' });
 				this.cfBuild = String((res.data && res.data.cfBuild) || this.cfBuild || '');
+				if (res.data && res.data.redisUpdatedAtText) {
+					this.redisUpdatedAt = Number(res.data.redisUpdatedAt || 0) || 0;
+					this.redisUpdatedAtText = String(res.data.redisUpdatedAtText || '');
+					this.redisAlive = res.data.redisAlive !== false;
+				}
 
 				await this.load();
 				const loadedWeek = Number(this.periodDiamondWeek);
 				if (loadedWeek === sentDiamondWeek || clientSavedWeek === sentDiamondWeek) {
 					uni.showToast({
-						title: `钻石周上限已保存为 ${sentDiamondWeek}`,
-						icon: 'none',
-						duration: 2500
+						title: '保存成功',
+						icon: 'success'
 					});
 				} else {
 					uni.showModal({
@@ -628,10 +687,63 @@ export default {
 }
 .intro-card,
 .card { background: #fff; border: 1px solid #ebeef5; border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.redis-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 8px 12px;
+	margin-top: 10px;
+	padding: 8px 10px;
+	background: #f5f7fa;
+	border-radius: 6px;
+}
+.redis-meta-label {
+	font-size: 12px;
+	color: #909399;
+}
+.redis-meta-value {
+	font-size: 13px;
+	font-weight: 600;
+	color: #303133;
+}
+.redis-meta-status {
+	font-size: 12px;
+	padding: 2px 8px;
+	border-radius: 10px;
+	background: #fef0f0;
+	color: #f56c6c;
+}
+.redis-meta-status.ok {
+	background: #f0f9eb;
+	color: #67c23a;
+}
+.redis-meta-status.warn {
+	background: #fdf6ec;
+	color: #e6a23c;
+}
 .intro-title { font-size: 15px; font-weight: 700; color: #303133; margin-bottom: 6px; }
 .intro-text { display: block; font-size: 12px; color: #606266; line-height: 1.6; }
 .card-title { font-size: 14px; font-weight: 700; color: #303133; margin-bottom: 6px; }
 .card-tip { display: block; font-size: 12px; color: #909399; margin-bottom: 10px; }
+.optimize-min-trade {
+	margin-top: 12px;
+	padding: 10px 12px;
+	background: #f5f7fa;
+	border-radius: 6px;
+	border: 1px solid #ebeef5;
+}
+.optimize-min-trade-title {
+	display: block;
+	font-size: 13px;
+	font-weight: 600;
+	color: #303133;
+	margin-bottom: 6px;
+}
+.optimize-min-trade-row {
+	font-size: 13px;
+	color: #606266;
+	line-height: 1.7;
+}
 .period-block { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #ebeef5; }
 .period-block:first-of-type { margin-top: 4px; padding-top: 0; border-top: 0; }
 .period-title { display: block; font-size: 13px; font-weight: 600; color: #606266; margin-bottom: 8px; }

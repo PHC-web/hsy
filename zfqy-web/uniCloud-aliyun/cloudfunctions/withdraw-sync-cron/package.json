@@ -1,0 +1,12 @@
+{
+	"name": "withdraw-sync-cron",
+	"version": "1.0.0",
+	"description": "日间轮询：微信 SUCCESS 提现及时同步本地已到账（含无需审核单）",
+	"main": "index.js",
+	"dependencies": {},
+	"cloudfunction-config": {
+		"concurrency": 1,
+		"memorySize": 512,
+		"timeout": 120
+	}
+}
