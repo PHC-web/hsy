@@ -1287,9 +1287,11 @@ async function merchantPointsMonthlyInsight(data) {
 		if (!uid) return { code: 400, message: '商户标识无效' };
 		const now = nowTs();
 		const curYm = subsidyEngine.monthNoFromTs(now);
+		const bizInsight = await getBizSettings();
+		const optimizeConfig = bizInsight.optimizeConfig;
 		const tRes = await machineTradeCollection
 			.where({ user_id: uid, trade_type: db.command.in(['real', 'virtual']), amount: db.command.gt(0) })
-			.field({ amount: true, cashback: true, release_amount: true, create_time: true })
+			.field({ amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true })
 			.orderBy('create_time', 'asc')
 			.limit(20000)
 			.get();
@@ -1301,11 +1303,10 @@ async function merchantPointsMonthlyInsight(data) {
 			if (!(amount > 0)) continue;
 			const tradeYm = subsidyEngine.monthNoFromTs(Number(t.create_time || now));
 			const total = Number((amount * 0.0038).toFixed(4));
-			const first = Number(t.release_amount != null ? t.release_amount : total);
 			genByYm[tradeYm] = Number(((genByYm[tradeYm] || 0) + total).toFixed(4));
 			flowByYm[tradeYm] = Number(((flowByYm[tradeYm] || 0) + amount).toFixed(2));
 		}
-		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, now, 10000);
+		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, now, 10000, optimizeConfig);
 		const dueSlicesByTargetSource = {};
 		Object.keys(sourceSlicesByYm).forEach((srcYm) => {
 			const slices = sourceSlicesByYm[srcYm] || [];
@@ -9027,7 +9028,7 @@ const DEFAULT_BIZ_SETTINGS = {
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
 	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
-	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
+	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	/** H5 权益页待领取奖励自流水/生成时刻起的有效天数，到期后不再展示 */
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -13840,7 +13841,7 @@ function ymToDisplayLabel(ym) {
  * @param {number} nowTs
  * @returns {{ buckets: Record<string, number>, curYm: string }}
  */
-function computePendingReturnBucketsForTrades(tradeRows, nowTs) {
+function computePendingReturnBucketsForTrades(tradeRows, nowTs, optimizeConfig) {
 	const curYm = shanghaiYearMonthFromTs(nowTs);
 	const buckets = {};
 	for (const row of tradeRows || []) {
@@ -13851,17 +13852,16 @@ function computePendingReturnBucketsForTrades(tradeRows, nowTs) {
 				? Number(cbRaw)
 				: Number((amount * 0.0038).toFixed(4));
 		if (!Number.isFinite(cb) || cb <= 0) continue;
+		const installments = subsidyEngine.resolveInstallmentCount(amount, row.release_ratio, optimizeConfig);
+		if (!subsidyEngine.isSubsidyEligibleTradeAmount(amount, row.release_ratio, optimizeConfig)) continue;
 		const raRaw = row.release_amount;
-		const r =
-			raRaw != null && raRaw !== '' && Number.isFinite(Number(raRaw))
-				? Number(raRaw)
-				: Number((cb / 5).toFixed(4));
+		const r = subsidyEngine.resolveFirstReleaseYuan(amount, raRaw, row.release_ratio, optimizeConfig);
 		if (!Number.isFinite(r) || r <= 0) continue;
 		const rr = Number(row.release_ratio);
-		const installments = Number.isFinite(rr) && rr >= 99 ? 1 : 5;
+		const nInst = Number.isFinite(rr) && rr >= 99 ? 1 : installments;
 		const ts = Number(row.create_time || 0);
 		const tradeYm = shanghaiYearMonthFromTs(ts);
-		for (let k = 0; k < installments; k += 1) {
+		for (let k = 0; k < nInst; k += 1) {
 			const targetYm = addCalendarMonthsYm(tradeYm, k);
 			if (String(targetYm).localeCompare(curYm) < 0) continue;
 			buckets[targetYm] = Number(((buckets[targetYm] || 0) + r).toFixed(4));
@@ -13874,9 +13874,9 @@ function computePendingReturnBucketsForTrades(tradeRows, nowTs) {
  * 与「积分明细」同口径：按来源月分片计算应返，再扣除已领取的分期补贴金额，
  * 剩余即为待返；随领取逐步减少，全部领完则该月条目消失。
  */
-function computeDeferredPendingReturnBuckets(trades, packets, nowTs) {
+function computeDeferredPendingReturnBuckets(trades, packets, nowTs, optimizeConfig) {
 	const curYm = subsidyEngine.monthNoFromTs(nowTs);
-	const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, nowTs, 10000);
+	const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, nowTs, 10000, optimizeConfig);
 	const dueSlicesByTargetSource = {};
 	Object.keys(sourceSlicesByYm || {}).forEach((srcYm) => {
 		const slices = sourceSlicesByYm[srcYm] || [];
@@ -13994,6 +13994,12 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 		rowsByUser.get(uid).push(row);
 	}
 
+	let optimizeConfig = null;
+	try {
+		const biz = await getBizSettings();
+		optimizeConfig = biz.optimizeConfig;
+	} catch (e) {}
+
 	for (const m of rows) {
 		const uid = String(m.user_id || m._id || '');
 		if (!uid) continue;
@@ -14002,7 +14008,7 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 		if (bt) {
 			userRows = userRows.filter((r) => Number(r.create_time || 0) >= bt);
 		}
-		const { buckets, curYm } = computePendingReturnBucketsForTrades(userRows, nowTs);
+		const { buckets, curYm } = computePendingReturnBucketsForTrades(userRows, nowTs, optimizeConfig);
 		frozenByUid.set(uid, sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm));
 	}
 	return frozenByUid;
@@ -14066,7 +14072,13 @@ async function h5PendingReturnPoints(data) {
 				}
 			}
 		);
-		const { buckets, curYm } = computeDeferredPendingReturnBuckets(tradeRows, deferredPackets, now);
+		const bizPending = await getBizSettings();
+		const { buckets, curYm } = computeDeferredPendingReturnBuckets(
+			tradeRows,
+			deferredPackets,
+			now,
+			bizPending.optimizeConfig
+		);
 		const months = Object.keys(buckets).sort();
 		const list = months.map((ym) => {
 			const pts = buckets[ym];
@@ -14365,7 +14377,8 @@ async function h5IncomeList(data) {
 		const biz = await getBizSettings();
 		try {
 			await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
-				claimValidDays: biz.incomePacketClaimValidDays
+				claimValidDays: biz.incomePacketClaimValidDays,
+				optimizeConfig: biz.optimizeConfig
 			});
 		} catch (e) {
 			console.error('syncSubsidyPackets', e);

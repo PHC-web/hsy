@@ -139,8 +139,9 @@
 				<input
 					v-model="editPendingForm.pendingYuan"
 					class="offline-input"
-					type="digit"
-					placeholder="请输入 ≥0 的数字，1积分=1元"
+					type="text"
+					inputmode="decimal"
+					placeholder="支持小数，如 12.34（1积分=1元）"
 				/>
 				<view class="offline-label">备注（可选）</view>
 				<input v-model="editPendingForm.remark" class="offline-input" placeholder="如：人工补差 / 纠错" />
@@ -1305,7 +1306,7 @@ export default {
 				userId: item.userId || item.id || '',
 				wxUser: String(item.wxUser || '').replace(/\n/g, ' / '),
 				currentText: item.pendingWithdraw || `￥${current.toFixed(2)}`,
-				pendingYuan: String(current),
+				pendingYuan: Number(current.toFixed(4)).toString(),
 				remark: ''
 			};
 			this.$refs.editPendingPopup && this.$refs.editPendingPopup.open();
@@ -1315,13 +1316,13 @@ export default {
 		},
 		async submitEditPending() {
 			const userId = String(this.editPendingForm.userId || '').trim();
-			const pendingYuan = this.parseMoneyText(this.editPendingForm.pendingYuan);
+			const pendingYuan = Number(this.parseMoneyText(this.editPendingForm.pendingYuan).toFixed(4));
 			if (!userId) {
 				uni.showToast({ title: '商户信息缺失', icon: 'none' });
 				return;
 			}
 			if (!Number.isFinite(pendingYuan) || pendingYuan < 0) {
-				uni.showToast({ title: '请输入 ≥0 的待提现积分', icon: 'none' });
+				uni.showToast({ title: '请输入 ≥0 的待提现积分（可含小数）', icon: 'none' });
 				return;
 			}
 			const ok = await new Promise((resolve) => {

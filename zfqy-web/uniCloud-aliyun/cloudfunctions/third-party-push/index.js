@@ -128,7 +128,7 @@ function normalizePaychannelCode(raw) {
 	return s.length === 1 ? `0${s}` : s;
 }
 
-const DEFAULT_OPTIMIZE_CONFIG = { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 };
+const DEFAULT_OPTIMIZE_CONFIG = { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 };
 const DEFAULT_RISK_RATES = { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 };
 let bizConfigCache = null;
 let bizConfigCacheAt = 0;
@@ -386,15 +386,21 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const pchText = mapPaychannelText(d.paychannel);
 	const bizCfg = await getBizConfig();
 	const risk = riskAuditFromPaychannel(d.paychannel, bizCfg.riskRates || DEFAULT_RISK_RATES);
-	const cashback = amount > 0 ? Number((amount * 0.0038).toFixed(4)) : 0;
+	const cashbackRaw = amount > 0 ? Number((amount * 0.0038).toFixed(4)) : 0;
 	const optimize = bizCfg.optimizeConfig || DEFAULT_OPTIMIZE_CONFIG;
 	const thresholdYuan = Math.max(0, Number(optimize.thresholdYuan || 300));
 	const aboveInstallments = Math.max(1, Number(optimize.aboveInstallments || 5));
-	const belowInstallments = Math.max(1, Number(optimize.belowInstallments || 5));
-	// 业务口径：阈值上下均可按配置分期（当前默认均为 5 期）；
-	// 每期最低 0.01 → 可产生积分的最低流水 ≈ 0.05/0.0038 ≈ 13.16 元
+	const belowInstallments = Math.max(1, Number(optimize.belowInstallments || 1));
+	// 业务口径：按参数配置阈值上下分期；每期最低 0.01 → 最低可积分流水 = ceil(0.01×期数/0.0038)
+	// 低于门槛：不产生首期积分、不累加冻结（cashback/release 记 0）
 	const installments = amount > thresholdYuan ? aboveInstallments : belowInstallments;
-	const releaseAmount = amount > 0 ? Number((cashback / installments).toFixed(4)) : 0;
+	const minTradeYuan = Math.ceil(((0.01 * installments) / 0.0038) * 100 - 1e-9) / 100;
+	const subsidyEligible = amount > 0 && amount >= minTradeYuan && cashbackRaw > 0;
+	const cashback = subsidyEligible ? cashbackRaw : 0;
+	const releaseAmount = subsidyEligible ? Number((cashback / installments).toFixed(4)) : 0;
+	const deferredToFrozen = subsidyEligible
+		? Number(Math.max(0, cashback - releaseAmount).toFixed(4))
+		: 0;
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
 	let tradeMemberBucket = 'non_member';
@@ -466,17 +472,21 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 
 	await machineCol.where({ device_id: deviceId, is_deleted: false }).update({
 		total_transaction: newTotal,
-		frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
+		...(deferredToFrozen > 0
+			? {
+					frozen_amount: Number((Number(machine.frozen_amount || 0) + deferredToFrozen).toFixed(4))
+				}
+			: {})
 	});
-	// 商户基础表 frozen_amount 同步累加，供商户列表直接读取
-	if (cashback > 0 && machine.bind_user_id && (!risk.is_risk || risk.risk_audit_status === 'approved')) {
+	// 低于可积分门槛或一期全返：不累加冻结
+	if (deferredToFrozen > 0 && machine.bind_user_id && (!risk.is_risk || risk.risk_audit_status === 'approved')) {
 		const mRes = await merchantCol.where(
 			db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }])
 		).limit(1).get();
 		const mer = mRes.data && mRes.data[0];
 		if (mer) {
 			await merchantCol.doc(mer._id).update({
-				frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
+				frozen_amount: Number((Number(mer.frozen_amount || 0) + deferredToFrozen).toFixed(4)),
 				update_time: createTime
 			});
 		}

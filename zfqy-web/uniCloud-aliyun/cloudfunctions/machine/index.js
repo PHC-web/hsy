@@ -11,6 +11,78 @@ const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-
 const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
 
 const monthNo = shanghaiYearMonthFromTs;
+const systemSettingCollection = db.collection('hsy-system-settings');
+const BIZ_SETTING_KEY = 'h5_biz_params';
+
+function normalizeOptimizeConfigMachine(oc) {
+	const raw = oc && typeof oc === 'object' ? oc : {};
+	return {
+		thresholdYuan: Math.max(0, Number(raw.thresholdYuan != null ? raw.thresholdYuan : 300)),
+		aboveInstallments: Math.max(1, Math.floor(Number(raw.aboveInstallments != null ? raw.aboveInstallments : 5))),
+		belowInstallments: Math.max(1, Math.floor(Number(raw.belowInstallments != null ? raw.belowInstallments : 1)))
+	};
+}
+
+async function loadOptimizeConfigForMachine() {
+	try {
+		const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(5).get();
+		const rows = r.data || [];
+		rows.sort((a, b) => Number(b.update_time || b.create_time || 0) - Number(a.update_time || a.create_time || 0));
+		const doc = rows[0];
+		const raw = doc && doc.value && typeof doc.value === 'object' ? doc.value : {};
+		return normalizeOptimizeConfigMachine(raw.optimizeConfig || {});
+	} catch (e) {
+		return normalizeOptimizeConfigMachine(null);
+	}
+}
+
+function resolveInstallmentsForAmount(amount, optimizeConfig) {
+	const oc = normalizeOptimizeConfigMachine(optimizeConfig);
+	const amt = Number(amount || 0);
+	return amt > oc.thresholdYuan ? oc.aboveInstallments : oc.belowInstallments;
+}
+
+function ceilYuan2Machine(raw) {
+	const n = Number(raw || 0);
+	if (!Number.isFinite(n) || n <= 0) return 0;
+	return Math.ceil(n * 100 - 1e-9) / 100;
+}
+
+/** 低于该金额：不产生首期积分、不累加冻结 */
+function minTradeYuanForInstallments(installments) {
+	return ceilYuan2Machine((0.01 * Math.max(1, Number(installments) || 1)) / 0.0038);
+}
+
+/**
+ * @returns {{ cashback: number, installments: number, releaseAmount: number, deferredToFrozen: number, subsidyEligible: boolean }}
+ */
+function resolveSubsidyAmountsForTrade(amountYuan, optimizeConfig) {
+	const amt = Number(amountYuan || 0);
+	const cashback = amt > 0 ? Number((amt * 0.0038).toFixed(4)) : 0;
+	const installments = resolveInstallmentsForAmount(amt, optimizeConfig);
+	const minTrade = minTradeYuanForInstallments(installments);
+	const subsidyEligible = amt >= minTrade && cashback > 0;
+	if (!subsidyEligible) {
+		return {
+			cashback: 0,
+			installments,
+			releaseAmount: 0,
+			deferredToFrozen: 0,
+			subsidyEligible: false,
+			minTradeYuan: minTrade
+		};
+	}
+	const releaseAmount = Number((cashback / installments).toFixed(4));
+	const deferredToFrozen = Number(Math.max(0, cashback - releaseAmount).toFixed(4));
+	return {
+		cashback,
+		installments,
+		releaseAmount,
+		deferredToFrozen,
+		subsidyEligible: true,
+		minTradeYuan: minTrade
+	};
+}
 
 function generateTradeNo() {
 	const ts = Date.now();
@@ -505,15 +577,16 @@ async function virtualSwipe(data, event) {
 			return { code: 403, message: '未绑定用户不允许刷卡' };
 		}
 
-		const cashback = Number((swipeAmount * 0.0038).toFixed(4));
-		// 与参数配置一致：阈值上下默认均为 5 期；每期最低 0.01 → 最低可积分流水 ≈ 13.16
-		const installments = 5;
-		const releaseAmount = Number((cashback / installments).toFixed(4));
+		const optimizeConfig = await loadOptimizeConfigForMachine();
+		const sub = resolveSubsidyAmountsForTrade(swipeAmount, optimizeConfig);
+		const { cashback, installments, releaseAmount, deferredToFrozen } = sub;
 		const newTotal = Number((Number(machine.total_transaction || 0) + swipeAmount).toFixed(2));
 		const now = Date.now();
 		await machineCollection.where({ device_id: deviceId, is_deleted: false }).update({
 			total_transaction: newTotal,
-			frozen_amount: Number((Number(machine.frozen_amount || 0) + cashback).toFixed(4))
+			...(deferredToFrozen > 0
+				? { frozen_amount: Number((Number(machine.frozen_amount || 0) + deferredToFrozen).toFixed(4)) }
+				: {})
 		});
 		let tradeMemberBucket = 'non_member';
 		let mer = null;
@@ -525,10 +598,10 @@ async function virtualSwipe(data, event) {
 			mer = mRes.data && mRes.data[0];
 			if (mer) tradeMemberBucket = tradeMemberBucketForMerchant(mer);
 		}
-		// 商户基础表 frozen_amount 同步累加，供商户管理列表直接读取
-		if (cashback > 0 && mer) {
+		// 低于可积分门槛：不累加冻结；一期全返：deferred=0 也不加冻结
+		if (deferredToFrozen > 0 && mer) {
 			await merchantCollection.doc(mer._id).update({
-				frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
+				frozen_amount: Number((Number(mer.frozen_amount || 0) + deferredToFrozen).toFixed(4)),
 				update_time: now
 			});
 		}

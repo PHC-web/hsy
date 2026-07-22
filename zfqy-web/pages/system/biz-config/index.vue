@@ -335,7 +335,7 @@ const defaultForm = () => ({
 		paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
 		paidDiamond: { dayMax: 200, weekMax: 500 }
 	},
-	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
+	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,

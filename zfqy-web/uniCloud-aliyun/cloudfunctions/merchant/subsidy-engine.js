@@ -7,7 +7,10 @@ const POINTS_PER_MONTH = 7.6;
 /** 待领取奖励默认有效期（天），可被业务参数 incomePacketClaimValidDays 覆盖 */
 const DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS = 7;
 const CASHBACK_RATE = 0.0038;
-const DEFAULT_INSTALLMENTS = 5;
+const DEFAULT_THRESHOLD_YUAN = 300;
+const DEFAULT_ABOVE_INSTALLMENTS = 5;
+/** 与历史产品一致：阈值以下默认 1 期；实际以参数配置 optimizeConfig 为准 */
+const DEFAULT_BELOW_INSTALLMENTS = 1;
 const MIN_PACKET_AMOUNT = 0.01;
 /** 两位小数向上取整（例：13.1501 → 13.16） */
 function ceilYuan2(raw) {
@@ -15,8 +18,6 @@ function ceilYuan2(raw) {
 	if (!Number.isFinite(n) || n <= 0) return 0;
 	return Math.ceil(n * 100 - 1e-9) / 100;
 }
-/** 每期最低 0.01 × 期数 / 0.0038，向上取整到分；默认 5 期 → 13.16 */
-const MIN_SUBSIDY_TRADE_YUAN = ceilYuan2((MIN_PACKET_AMOUNT * DEFAULT_INSTALLMENTS) / CASHBACK_RATE);
 /** 权益气泡金额：统一四舍五入到 2 位小数，展示与合计口径一致 */
 function roundPacketAmountYuan(raw) {
 	const n = Number(raw || 0);
@@ -24,21 +25,82 @@ function roundPacketAmountYuan(raw) {
 	return Math.max(0, Math.round(n * 100) / 100);
 }
 
-function resolveInstallmentCount(amount, releaseRatio) {
-	const rr = Number(releaseRatio);
-	if (Number.isFinite(rr) && rr >= 99) return 1;
-	return DEFAULT_INSTALLMENTS;
+function normalizeOptimizeConfig(oc) {
+	const raw = oc && typeof oc === 'object' ? oc : {};
+	return {
+		thresholdYuan: Math.max(
+			0,
+			Number(raw.thresholdYuan != null && raw.thresholdYuan !== '' ? raw.thresholdYuan : DEFAULT_THRESHOLD_YUAN)
+		),
+		aboveInstallments: Math.max(
+			1,
+			Math.floor(
+				Number(
+					raw.aboveInstallments != null && raw.aboveInstallments !== ''
+						? raw.aboveInstallments
+						: DEFAULT_ABOVE_INSTALLMENTS
+				)
+			)
+		),
+		belowInstallments: Math.max(
+			1,
+			Math.floor(
+				Number(
+					raw.belowInstallments != null && raw.belowInstallments !== ''
+						? raw.belowInstallments
+						: DEFAULT_BELOW_INSTALLMENTS
+				)
+			)
+		)
+	};
 }
 
-function resolveFirstReleaseYuan(amount, releaseAmount, releaseRatio) {
-	const amt = Number(amount || 0);
-	if (!(amt >= MIN_SUBSIDY_TRADE_YUAN)) return 0;
-	if (releaseAmount !== undefined && releaseAmount !== null && releaseAmount !== '') {
-		return Number(releaseAmount || 0);
-	}
-	const installments = resolveInstallmentCount(amt, releaseRatio);
-	return Number(((amt * CASHBACK_RATE) / installments).toFixed(4));
+/** 每期最低 0.01 × 期数 / 0.0038，向上取整到分 */
+function minSubsidyTradeYuanForInstallments(installments) {
+	const n = Math.max(1, Number(installments) || 1);
+	return ceilYuan2((MIN_PACKET_AMOUNT * n) / CASHBACK_RATE);
 }
+
+/**
+ * 按参数配置解析分期数。
+ * release_ratio≥99 视为历史「一期全返」标记。
+ */
+function resolveInstallmentCount(amount, releaseRatio, optimizeConfig) {
+	const rr = Number(releaseRatio);
+	if (Number.isFinite(rr) && rr >= 99) return 1;
+	const oc = normalizeOptimizeConfig(optimizeConfig);
+	const amt = Number(amount || 0);
+	return amt > oc.thresholdYuan ? oc.aboveInstallments : oc.belowInstallments;
+}
+
+/**
+ * 首期应返：按当前参数期数计算；库内过小的脏 release_amount（曾按 5 期写入）按参数重算。
+ */
+function resolveFirstReleaseYuan(amount, releaseAmount, releaseRatio, optimizeConfig) {
+	const amt = Number(amount || 0);
+	const installments = resolveInstallmentCount(amt, releaseRatio, optimizeConfig);
+	const minTrade = minSubsidyTradeYuanForInstallments(installments);
+	if (!(amt >= minTrade)) return 0;
+	const expected = Number(((amt * CASHBACK_RATE) / installments).toFixed(4));
+	const ra =
+		releaseAmount !== undefined && releaseAmount !== null && releaseAmount !== ''
+			? Number(releaseAmount)
+			: NaN;
+	if (Number.isFinite(ra) && roundPacketAmountYuan(ra) >= MIN_PACKET_AMOUNT) {
+		if (expected > 0 && ra + 1e-9 < expected * 0.5) return expected;
+		return ra;
+	}
+	return expected;
+}
+
+function isSubsidyEligibleTradeAmount(amount, releaseRatio, optimizeConfig) {
+	const amt = Number(amount || 0);
+	const installments = resolveInstallmentCount(amt, releaseRatio, optimizeConfig);
+	return amt >= minSubsidyTradeYuanForInstallments(installments);
+}
+
+/** @deprecated 兼容旧引用；业务请用 minSubsidyTradeYuanForInstallments(期数) */
+const MIN_SUBSIDY_TRADE_YUAN = minSubsidyTradeYuanForInstallments(DEFAULT_ABOVE_INSTALLMENTS);
 /** uniCloud 单次 get 上限 1000，须分页拉全量 */
 const DB_PAGE_SIZE = 1000;
 const DB_MAX_ROWS = 2000000;
@@ -135,7 +197,7 @@ async function sumEligibleRealFlowYuan(db, merchantUserId, start, end) {
 	return Number(total.toFixed(2));
 }
 
-async function sumEligibleReleasePoints(db, merchantUserId, start, end) {
+async function sumEligibleReleasePoints(db, merchantUserId, start, end, optimizeConfig) {
 	const _ = db.command;
 	const where = _.and([
 		buildEligibleSubsidyTradeWhere(db, merchantUserId),
@@ -150,15 +212,13 @@ async function sumEligibleReleasePoints(db, merchantUserId, start, end) {
 		(rows) => {
 			for (const row of rows) {
 				const amount = Number(row.amount || 0);
-				if (!(amount >= MIN_SUBSIDY_TRADE_YUAN)) continue;
-				const hasRelease = row.release_amount !== undefined && row.release_amount !== null;
-				let release = hasRelease
-					? Number(row.release_amount || 0)
-					: resolveFirstReleaseYuan(amount, null, row.release_ratio);
-				const rr = Number(row.release_ratio);
-				if (!hasRelease && Number.isFinite(rr) && rr >= 99) {
-					release = Number((amount * CASHBACK_RATE).toFixed(4));
-				}
+				if (!isSubsidyEligibleTradeAmount(amount, row.release_ratio, optimizeConfig)) continue;
+				const release = resolveFirstReleaseYuan(
+					amount,
+					row.release_amount,
+					row.release_ratio,
+					optimizeConfig
+				);
 				if (Number.isFinite(release) && release > 0) total += release;
 			}
 		}
@@ -191,7 +251,7 @@ async function upsertPacket(db, doc, dedupSet) {
 	dedupSet.add(dk);
 }
 
-function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
+function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000, optimizeConfig) {
 	const byMonth = {};
 	for (const t of trades || []) {
 		const ym = monthNoFromTs(t.create_time || nowTs);
@@ -205,11 +265,9 @@ function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000) {
 		const slices = [];
 		for (const t of rows) {
 			const amount = Number(t.amount || 0);
-			if (!(amount >= MIN_SUBSIDY_TRADE_YUAN)) continue;
+			if (!isSubsidyEligibleTradeAmount(amount, t.release_ratio, optimizeConfig)) continue;
 			const total = Number((amount * CASHBACK_RATE).toFixed(4));
-			const first = Number(
-				t.release_amount != null ? t.release_amount : resolveFirstReleaseYuan(amount, null, t.release_ratio)
-			);
+			const first = resolveFirstReleaseYuan(amount, t.release_amount, t.release_ratio, optimizeConfig);
 			// 后续4个月“每个月”的应到期积分，而非4个月总和
 			const monthlyDeferred = Number(((total - first) / 4).toFixed(6));
 			let remainAmt = amount;
@@ -257,6 +315,7 @@ function buildIncomePacketClaimWindow(anchorTs, claimValidMs) {
 
 async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 	const claimValidMs = resolveIncomePacketClaimValidMs(options);
+	const optimizeConfig = normalizeOptimizeConfig(options.optimizeConfig);
 	const merchantUserId = merchant.user_id || merchant._id;
 	const dedupSet = await existingDedupKeys(db, merchantUserId);
 	const tradeWhere = buildEligibleSubsidyTradeWhere(db, merchantUserId);
@@ -281,7 +340,7 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		const ym = monthNoFromTs(t.create_time || nowTs);
 		monthFlowMap[ym] = Number((monthFlowMap[ym] || 0) + Number(t.amount || 0));
 	}
-	const deferredSlicesBySourceMonth = buildDeferredSlicesByMonth(trades, nowTs, 10000);
+	const deferredSlicesBySourceMonth = buildDeferredSlicesByMonth(trades, nowTs, 10000, optimizeConfig);
 	// 目标月 => 源月 => slices[]
 	const deferredDueByTargetMonth = {};
 	Object.keys(deferredSlicesBySourceMonth).forEach((srcYm) => {
@@ -293,11 +352,11 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		}
 	});
 
-	// 1) 首期（第一个月）按每笔流水生成气泡（低于最低可积分流水不生成）
+	// 1) 首期（第一个月）按每笔流水生成气泡（低于该期数对应最低流水不生成）
 	for (const t of trades) {
 		const amount = Number(t.amount || 0);
-		if (!(amount >= MIN_SUBSIDY_TRADE_YUAN)) continue;
-		const firstRelease = resolveFirstReleaseYuan(amount, t.release_amount, t.release_ratio);
+		if (!isSubsidyEligibleTradeAmount(amount, t.release_ratio, optimizeConfig)) continue;
+		const firstRelease = resolveFirstReleaseYuan(amount, t.release_amount, t.release_ratio, optimizeConfig);
 		if (!(firstRelease > 0)) continue;
 		const ym = monthNoFromTs(t.create_time || nowTs);
 		const tradeNo = String(t.trade_no || t._id || '');
@@ -400,15 +459,20 @@ module.exports = {
 	POINTS_PER_BLOCK,
 	POINTS_PER_MONTH,
 	CASHBACK_RATE,
-	DEFAULT_INSTALLMENTS,
+	DEFAULT_THRESHOLD_YUAN,
+	DEFAULT_ABOVE_INSTALLMENTS,
+	DEFAULT_BELOW_INSTALLMENTS,
 	MIN_PACKET_AMOUNT,
 	MIN_SUBSIDY_TRADE_YUAN,
 	DB_PAGE_SIZE,
 	DB_MAX_ROWS,
-	roundPacketAmountYuan,
 	ceilYuan2,
+	roundPacketAmountYuan,
+	normalizeOptimizeConfig,
+	minSubsidyTradeYuanForInstallments,
 	resolveInstallmentCount,
 	resolveFirstReleaseYuan,
+	isSubsidyEligibleTradeAmount,
 	resolveIncomePacketClaimValidMs,
 	buildIncomePacketClaimWindow,
 	DEFAULT_INCOME_PACKET_CLAIM_VALID_DAYS,
