@@ -1,0 +1,24 @@
+{
+	"bsonType": "object",
+	"required": ["merchant_user_id", "target_ym", "source_ym", "slice_index", "create_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": false },
+	"properties": {
+		"_id": { "description": "主键" },
+		"merchant_user_id": { "bsonType": "string", "description": "商户 user_id" },
+		"target_ym": { "bsonType": "string", "description": "目标月 YYYY-MM" },
+		"source_ym": { "bsonType": "string", "description": "来源月 YYYY-MM" },
+		"slice_index": { "bsonType": "int", "description": "片序号(0起)" },
+		"original_amount": { "bsonType": "number", "description": "流水理论原始积分", "default": 0 },
+		"system_amount": { "bsonType": "number", "description": "系统优化后积分", "default": 0 },
+		"manual_amount": { "bsonType": "number", "description": "人工覆盖；缺省表示无覆盖" },
+		"effective_amount": { "bsonType": "number", "description": "生效积分", "default": 0 },
+		"is_claimed": { "bsonType": "bool", "description": "已领取则不再优化", "default": false },
+		"opt_skip": { "bsonType": "bool", "description": "勾选后续不优化后跳过登录周自动砍", "default": false },
+		"packet_id": { "bsonType": "string", "description": "关联待领红包ID" },
+		"packet_status": { "bsonType": "string", "description": "红包状态" },
+		"version": { "bsonType": "int", "description": "乐观锁", "default": 0 },
+		"is_deleted": { "bsonType": "bool", "default": false },
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" }
+	}
+}

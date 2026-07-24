@@ -330,7 +330,9 @@
 				echartsReady: false,
 				echartsInstances: [],
 				_resizeHandler: null,
-				_chartResizeObserver: null
+				_chartResizeObserver: null,
+				_homeStatsTimer: null,
+				homeCacheUpdatedAt: 0
 			};
 		},
 		onLoad() {
@@ -365,10 +367,14 @@
 				}
 				return;
 			}
-			this.loadDashboard();
-			this.loadTrendCharts();
+			this.loadHomeStats();
+			this.startHomeStatsTimer();
+		},
+		onHide() {
+			this.stopHomeStatsTimer();
 		},
 		onUnload() {
+			this.stopHomeStatsTimer();
 			this.disposeEcharts();
 			// #ifdef H5
 			if (this._resizeHandler && typeof window !== 'undefined') {
@@ -389,107 +395,171 @@
 					maximumFractionDigits: 2
 				});
 			},
-			async loadDashboard() {
-				this.loading = true;
-				const db = uniCloud.database();
-				const dbCmd = db.command;
-				try {
-					const todayStart = new Date();
-					todayStart.setHours(0, 0, 0, 0);
-
-					const summaryPromise = this.$request('adminHomeSummary', {}, { functionName: 'merchant' });
-					const [
-						brandRes,
-						machineRes,
-						activatedRes,
-						boundRes,
-						todayActivatedRes,
-						withdrawRes,
-						merchantRes,
-						memberRes,
-						summaryRes
-					] = await Promise.all([
-						db.collection('hsy-brand').where({ is_deleted: false }).count(),
-						db.collection('hsy-machine').where({ is_deleted: false }).count(),
-						db.collection('hsy-machine').where({ is_deleted: false, is_activated: true }).count(),
-						db.collection('hsy-machine').where({ is_deleted: false, is_bound: 1 }).count(),
-						db.collection('hsy-machine').where({
-							is_deleted: false,
-							is_activated: true,
-							activated_time: dbCmd.gte(todayStart)
-						}).count(),
-						db.collection('hsy-withdraw-records').where({
-							is_deleted: false,
-							is_paid: true,
-							arrival_status: 'received'
-						}).field('payable,fee_tax').limit(10000).get(),
-						db.collection('hsy-merchant-users').count(),
-						db.collection('hsy-merchant-users').where(
-							dbCmd.or([
-								{ recharge_amount: dbCmd.gt(0) },
-								{ recharge_total_yuan: dbCmd.gt(0) }
-							])
-						).count(),
-						summaryPromise
-					]);
-
-					const withdrawRows = withdrawRes.result?.data || [];
-					const withdrawAmount = withdrawRows.reduce((sum, item) => sum + Number(item.payable || 0), 0);
-
-					const userCount = merchantRes.result?.total || 0;
-					const memberCount = memberRes.result?.total || 0;
-					const memberRate = userCount ? ((memberCount / userCount) * 100).toFixed(2) : '0.00';
-
-					const sum = summaryRes && summaryRes.code === 0 ? summaryRes.data || {} : {};
-					if (summaryRes && summaryRes.code !== 0) {
-						uni.showToast({ title: summaryRes.message || '资金汇总加载失败', icon: 'none' });
-					} else if (sum.membershipCounts && sum.membershipCounts._error) {
-						console.error('membershipCounts', sum.membershipCounts._error);
-					}
-
-					this.dashboard = {
-						brandCount: brandRes.result?.total || 0,
-						machineCount: machineRes.result?.total || 0,
-						activatedCount: activatedRes.result?.total || 0,
-						boundCount: boundRes.result?.total || 0,
-						withdrawCount: withdrawRows.length,
-						withdrawAmount,
-						todayActivatedCount: todayActivatedRes.result?.total || 0,
-						userCount,
-						memberCount,
-						memberRate,
-						returnPaid: 0,
-						returnDue: 0,
-						returnRate: '0.00',
-						arrivedWithdrawAmount: Number(sum.arrivedWithdrawAmount || 0),
-						arrivedWithdrawAmountMember: Number(sum.arrivedWithdrawAmountMember || 0),
-						arrivedWithdrawAmountNonMember: Number(sum.arrivedWithdrawAmountNonMember || 0),
-						pendingWithdrawAmountMember: Number(sum.pendingWithdrawAmountMember || 0),
-						pendingWithdrawAmountNonMember: Number(sum.pendingWithdrawAmountNonMember || 0),
-						boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
-						boundMerchantTradeAmountMember: Number(sum.boundMerchantTradeAmountMember || 0),
-						boundMerchantTradeAmountNonMember: Number(sum.boundMerchantTradeAmountNonMember || 0),
-						totalRechargeAmount: Number(sum.totalRechargeAmount || 0),
-						totalRefundAmount: Number(sum.totalRefundAmount || 0),
-						membershipCounts: Object.assign(
-							{
-								normal: 0,
-								silver: 0,
-								gold: 0,
-								white_gold: 0,
-								diamond: 0,
-								other: 0
-							},
-							sum.membershipCounts || {}
+			startHomeStatsTimer() {
+				this.stopHomeStatsTimer();
+				// 前端每 5 分钟从 Redis 拉一次；云端每 3 分钟预热
+				this._homeStatsTimer = setInterval(() => {
+					this.loadHomeStats({ silent: true });
+				}, 5 * 60 * 1000);
+			},
+			stopHomeStatsTimer() {
+				if (this._homeStatsTimer) {
+					clearInterval(this._homeStatsTimer);
+					this._homeStatsTimer = null;
+				}
+			},
+			applyPreviewAndSummary(preview, summary) {
+				const p = preview && typeof preview === 'object' ? preview : {};
+				const sum = summary && typeof summary === 'object' ? summary : {};
+				this.dashboard = {
+					brandCount: Number(p.brandCount || 0),
+					machineCount: Number(p.machineCount || 0),
+					activatedCount: Number(p.activatedCount || 0),
+					boundCount: Number(p.boundCount || 0),
+					withdrawCount: Number(p.withdrawCount || 0),
+					withdrawAmount: Number(p.withdrawAmount || 0),
+					todayActivatedCount: Number(p.todayActivatedCount || 0),
+					userCount: Number(p.userCount || 0),
+					memberCount: Number(p.memberCount || 0),
+					memberRate: p.memberRate != null ? String(p.memberRate) : '0.00',
+					returnPaid: Number(p.returnPaid || 0),
+					returnDue: Number(p.returnDue || 0),
+					returnRate: p.returnRate != null ? String(p.returnRate) : '0.00',
+					arrivedWithdrawAmount: Number(sum.arrivedWithdrawAmount || 0),
+					arrivedWithdrawAmountMember: Number(sum.arrivedWithdrawAmountMember || 0),
+					arrivedWithdrawAmountNonMember: Number(sum.arrivedWithdrawAmountNonMember || 0),
+					pendingWithdrawAmountMember: Number(sum.pendingWithdrawAmountMember || 0),
+					pendingWithdrawAmountNonMember: Number(sum.pendingWithdrawAmountNonMember || 0),
+					boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
+					boundMerchantTradeAmountMember: Number(sum.boundMerchantTradeAmountMember || 0),
+					boundMerchantTradeAmountNonMember: Number(sum.boundMerchantTradeAmountNonMember || 0),
+					totalRechargeAmount: Number(sum.totalRechargeAmount || 0),
+					totalRefundAmount: Number(sum.totalRefundAmount || 0),
+					membershipCounts: Object.assign(
+						{
+							normal: 0,
+							silver: 0,
+							gold: 0,
+							white_gold: 0,
+							diamond: 0,
+							other: 0
+						},
+						sum.membershipCounts || {}
+					)
+				};
+			},
+			async applyTrendPayload(d) {
+				if (!d || typeof d !== 'object') return;
+				const categories = d.categories || [];
+				const s = d.series || {};
+				this.trendSummary = Object.assign({ totalFlow: 0 }, d.summary || {});
+				this.trendCharts.flow = this.buildLineData(categories, [
+					{ name: '每日交易额(元)', data: s.dailyFlow || [] }
+				]);
+				this.trendCharts.bindRechargeUsers = this.buildLineData(categories, [
+					{ name: '新增绑定商户数', data: s.newBindMerchantCount || [] },
+					{ name: '升级商户数', data: s.rechargeMerchantCount || [] }
+				]);
+				this.trendCharts.rechargeRefund = this.buildLineData(categories, [
+					{ name: '充值金额(元)', data: s.rechargeAmount || [] },
+					{ name: '退款金额(元)', data: s.refundAmount || [] }
+				]);
+				this.trendCharts.exchange = this.buildLineData(categories, [
+					{ name: '积分兑换数量', data: s.exchangeCount || [] },
+					{ name: '兑换到账金额(元)', data: s.exchangeNetAmount || [] }
+				]);
+				const tradeTypeStats = Array.isArray(d.tradeTypeStats) ? d.tradeTypeStats : [];
+				const typeLabelMap = {};
+				tradeTypeStats.forEach((x) => {
+					const k = String(x.type || '');
+					if (k) typeLabelMap[k] = x.label || k;
+				});
+				const countSeriesRaw = Array.isArray(s.tradeTypeCountSeries) ? s.tradeTypeCountSeries : [];
+				const amountSeriesRaw = Array.isArray(s.tradeTypeAmountSeries) ? s.tradeTypeAmountSeries : [];
+				this.trendCharts.tradeType = {
+					categories,
+					countSeries: countSeriesRaw.map((x) => ({
+						type: x.type,
+						label: x.label || typeLabelMap[String(x.type || '')] || String(x.type || ''),
+						data: Array.isArray(x.data) ? x.data : []
+					})),
+					amountSeries: amountSeriesRaw.map((x) => ({
+						type: x.type,
+						label: x.label || typeLabelMap[String(x.type || '')] || String(x.type || ''),
+						data: Array.isArray(x.data) ? x.data : []
+					}))
+				};
+				await this.renderEcharts();
+			},
+			async fetchHomeCache(rangeType) {
+				return this.$request(
+					'adminHomeCacheGet',
+					{ rangeType },
+					{ functionName: 'merchant' }
+				);
+			},
+			async warmHomeCacheIfMiss(hit, rangeType) {
+				const h = hit || {};
+				const tasks = [];
+				const baseParts = [];
+				if (!h.preview) baseParts.push('preview');
+				if (!h.summary) baseParts.push('summary');
+				if (baseParts.length) {
+					tasks.push(
+						this.$request(
+							'adminHomeCacheRefresh',
+							{ parts: baseParts },
+							{ functionName: 'merchant' }
 						)
-					};
+					);
+				}
+				if (!h.trend) {
+					tasks.push(
+						this.$request(
+							'adminHomeCacheRefresh',
+							{ parts: ['trend'], rangeTypes: [rangeType] },
+							{ functionName: 'merchant' }
+						)
+					);
+				}
+				if (!tasks.length) return;
+				await Promise.all(tasks);
+			},
+			async loadHomeStats(options = {}) {
+				const silent = !!(options && options.silent);
+				if (!silent) this.loading = true;
+				try {
+					const rangeType = this.trendRangeType || '30d';
+					let res = await this.fetchHomeCache(rangeType);
+					if (!res || res.code !== 0) {
+						if (!silent) {
+							uni.showToast({ title: (res && res.message) || '首页缓存读取失败', icon: 'none' });
+						}
+						return;
+					}
+					let hit = (res.data && res.data.cacheHit) || {};
+					if (!(hit.preview && hit.summary && hit.trend)) {
+						await this.warmHomeCacheIfMiss(hit, rangeType);
+						res = await this.fetchHomeCache(rangeType);
+						if (!res || res.code !== 0) return;
+						hit = (res.data && res.data.cacheHit) || {};
+					}
+					const d = res.data || {};
+					if (d.preview || d.summary) this.applyPreviewAndSummary(d.preview, d.summary);
+					if (d.trend) await this.applyTrendPayload(d.trend);
+					this.homeCacheUpdatedAt = Number(d.updatedAt || 0) || 0;
+					if (!(hit.preview && hit.summary && hit.trend) && !silent) {
+						uni.showToast({ title: '部分首页数据尚未预热完成', icon: 'none' });
+					}
 				} catch (err) {
-					uni.showModal({
-						content: err.message || '首页数据加载失败',
-						showCancel: false
-					});
+					if (!silent) {
+						uni.showModal({
+							content: err.message || '首页数据加载失败',
+							showCancel: false
+						});
+					}
 				} finally {
-					this.loading = false;
+					if (!silent) this.loading = false;
 				}
 			},
 			buildLineData(categories, defs = []) {
@@ -504,7 +574,7 @@
 			changeTrendRange(v) {
 				if (!v || v === this.trendRangeType) return;
 				this.trendRangeType = v;
-				this.loadTrendCharts();
+				this.loadHomeStats({ silent: true });
 			},
 			trendRangeLabelText() {
 				const m = {
@@ -728,53 +798,6 @@
 					});
 				}
 				// #endif
-			},
-			async loadTrendCharts() {
-				try {
-					const res = await this.$request('adminDashboardTrend30d', { rangeType: this.trendRangeType }, { functionName: 'merchant' });
-					if (!res || res.code !== 0) return;
-					const d = res.data || {};
-					const categories = d.categories || [];
-					const s = d.series || {};
-					this.trendSummary = Object.assign({ totalFlow: 0 }, d.summary || {});
-					this.trendCharts.flow = this.buildLineData(categories, [
-						{ name: '每日交易额(元)', data: s.dailyFlow || [] }
-					]);
-					this.trendCharts.bindRechargeUsers = this.buildLineData(categories, [
-						{ name: '新增绑定商户数', data: s.newBindMerchantCount || [] },
-						{ name: '升级商户数', data: s.rechargeMerchantCount || [] }
-					]);
-					this.trendCharts.rechargeRefund = this.buildLineData(categories, [
-						{ name: '充值金额(元)', data: s.rechargeAmount || [] },
-						{ name: '退款金额(元)', data: s.refundAmount || [] }
-					]);
-					this.trendCharts.exchange = this.buildLineData(categories, [
-						{ name: '积分兑换数量', data: s.exchangeCount || [] },
-						{ name: '兑换到账金额(元)', data: s.exchangeNetAmount || [] }
-					]);
-					const tradeTypeStats = Array.isArray(d.tradeTypeStats) ? d.tradeTypeStats : [];
-					const typeLabelMap = {};
-					tradeTypeStats.forEach((x) => {
-						const k = String(x.type || '');
-						if (k) typeLabelMap[k] = x.label || k;
-					});
-					const countSeriesRaw = Array.isArray(s.tradeTypeCountSeries) ? s.tradeTypeCountSeries : [];
-					const amountSeriesRaw = Array.isArray(s.tradeTypeAmountSeries) ? s.tradeTypeAmountSeries : [];
-					this.trendCharts.tradeType = {
-						categories,
-						countSeries: countSeriesRaw.map((x) => ({
-							type: x.type,
-							label: x.label || typeLabelMap[String(x.type || '')] || String(x.type || ''),
-							data: Array.isArray(x.data) ? x.data : []
-						})),
-						amountSeries: amountSeriesRaw.map((x) => ({
-							type: x.type,
-							label: x.label || typeLabelMap[String(x.type || '')] || String(x.type || ''),
-							data: Array.isArray(x.data) ? x.data : []
-						}))
-					};
-					await this.renderEcharts();
-				} catch (e) {}
 			}
 		},
 		computed: {

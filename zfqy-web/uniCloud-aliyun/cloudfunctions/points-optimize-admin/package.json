@@ -1,0 +1,14 @@
+{
+	"name": "points-optimize-admin",
+	"version": "1.0.0",
+	"description": "登录周积分优化（待返分片）：预览/跑批/白名单/手工调整；与 merchant 解耦便于维护",
+	"main": "index.js",
+	"dependencies": {},
+	"extensions": {
+		"uni-cloud-redis": {}
+	},
+	"cloudfunction-config": {
+		"memorySize": 512,
+		"timeout": 120
+	}
+}

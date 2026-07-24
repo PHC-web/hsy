@@ -449,13 +449,22 @@ async function getMachineList(data) {
 		const merchantDocs = resolved.map((r) => r.merchant).filter(Boolean);
 		const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(merchantDocs);
 
+		// 冻结口径与商户一致：读商户 frozen_amount（仅首期已领才有值）；不再用「流水返现−已领」实时推高
+		const frozenByMerchantKey = new Map();
+		for (const mer of merchantDocs) {
+			const uid = String(mer.user_id || mer._id || '');
+			const id = String(mer._id || '');
+			const v = Number(mer.frozen_amount || 0) || 0;
+			if (uid) frozenByMerchantKey.set(uid, v);
+			if (id) frozenByMerchantKey.set(id, v);
+		}
+
 		// 格式化数据
 		const machineList = await Promise.all(
 			resolved.map(async ({ item, merchant }) => {
 				let frozen = Number(item.frozen_amount || 0);
 				let pendingAmt = Number(item.pending_amount || 0);
 				let withdrawnAmt = Number(item.withdrawn_amount || 0);
-				const bindStart = Number(item.bind_time || 0);
 				if (item.is_bound === 1 && item.bind_user_id) {
 					try {
 						if (merchant) {
@@ -464,47 +473,28 @@ async function getMachineList(data) {
 							withdrawnAmt = Number(
 								(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(merchant.withdrawn || 0)) || 0
 							);
-							if (
-								Number(item.pending_amount || 0) !== pendingAmt ||
-								Number(item.withdrawn_amount || 0) !== withdrawnAmt
-							) {
-								await machineCollection.doc(item._id).update({
-									pending_amount: Number(pendingAmt.toFixed(4)),
-									withdrawn_amount: Number(withdrawnAmt.toFixed(4))
-								});
+							const bindKey = String(item.bind_user_id || '');
+							frozen = Number(
+								frozenByMerchantKey.has(uid)
+									? frozenByMerchantKey.get(uid)
+									: frozenByMerchantKey.has(bindKey)
+										? frozenByMerchantKey.get(bindKey)
+										: merchant.frozen_amount || 0
+							);
+							const patch = {};
+							if (Number(item.pending_amount || 0) !== pendingAmt) {
+								patch.pending_amount = Number(pendingAmt.toFixed(4));
+							}
+							if (Number(item.withdrawn_amount || 0) !== withdrawnAmt) {
+								patch.withdrawn_amount = Number(withdrawnAmt.toFixed(4));
+							}
+							if (Math.abs(Number(item.frozen_amount || 0) - frozen) > 0.0001) {
+								patch.frozen_amount = Number(frozen.toFixed(4));
+							}
+							if (Object.keys(patch).length) {
+								await machineCollection.doc(item._id).update(patch);
 							}
 						}
-
-						const tradeRes = await tradeCollection
-							.where({
-								device_id: item.device_id,
-								is_deleted: db.command.neq(true),
-								amount: db.command.gt(0),
-								create_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
-							})
-							.field({ cashback: true, amount: true })
-							.limit(5000)
-							.get();
-						let freezeTotal = 0;
-						(tradeRes.data || []).forEach((t) => {
-							const c = t.cashback != null ? Number(t.cashback || 0) : Number(t.amount || 0) * 0.0038;
-							if (Number.isFinite(c) && c > 0) freezeTotal += c;
-						});
-						const claimRes = await incomePacketCollection
-							.where({
-								merchant_user_id: String(item.bind_user_id),
-								status: 'claimed',
-								is_deleted: false,
-								claimed_time: bindStart ? db.command.gte(bindStart) : db.command.gt(0)
-							})
-							.field({ amount: true })
-							.limit(5000)
-							.get();
-						let releaseTotal = 0;
-						(claimRes.data || []).forEach((p) => {
-							releaseTotal += Number(p.amount || 0);
-						});
-						frozen = Math.max(0, Number((freezeTotal - releaseTotal).toFixed(4)));
 					} catch (e) {
 						console.error('calc frozen_amount failed:', e);
 					}
@@ -579,14 +569,12 @@ async function virtualSwipe(data, event) {
 
 		const optimizeConfig = await loadOptimizeConfigForMachine();
 		const sub = resolveSubsidyAmountsForTrade(swipeAmount, optimizeConfig);
-		const { cashback, installments, releaseAmount, deferredToFrozen } = sub;
+		const { cashback, installments, releaseAmount } = sub;
 		const newTotal = Number((Number(machine.total_transaction || 0) + swipeAmount).toFixed(2));
 		const now = Date.now();
+		// 冻结改为首期领取后才生成，刷卡入库不累加 frozen_amount
 		await machineCollection.where({ device_id: deviceId, is_deleted: false }).update({
-			total_transaction: newTotal,
-			...(deferredToFrozen > 0
-				? { frozen_amount: Number((Number(machine.frozen_amount || 0) + deferredToFrozen).toFixed(4)) }
-				: {})
+			total_transaction: newTotal
 		});
 		let tradeMemberBucket = 'non_member';
 		let mer = null;
@@ -597,13 +585,6 @@ async function virtualSwipe(data, event) {
 				.get();
 			mer = mRes.data && mRes.data[0];
 			if (mer) tradeMemberBucket = tradeMemberBucketForMerchant(mer);
-		}
-		// 低于可积分门槛：不累加冻结；一期全返：deferred=0 也不加冻结
-		if (deferredToFrozen > 0 && mer) {
-			await merchantCollection.doc(mer._id).update({
-				frozen_amount: Number((Number(mer.frozen_amount || 0) + deferredToFrozen).toFixed(4)),
-				update_time: now
-			});
 		}
 		const act = await tryActivateMachineByTotal(machine, newTotal, now);
 
@@ -643,6 +624,21 @@ async function virtualSwipe(data, event) {
 		}
 
 		await recordOperationLog(event, 'virtualSwipe', deviceId, deviceId, `虚拟刷卡: ${deviceId} 金额￥${swipeAmount}`);
+
+		// 按「首期领取后才冻结」重算，避免列表仍展示旧口径脏数据；未领首期时冻结应为 0（或仅含其它已领首期流水）
+		if (mer && mer._id) {
+			try {
+				await uniCloud.callFunction({
+					name: 'merchant',
+					data: {
+						action: 'recalcFrozenAmount',
+						params: { merchantId: String(mer._id) }
+					}
+				});
+			} catch (e) {
+				console.error('virtualSwipe recalcFrozenAmount', e);
+			}
+		}
 
 		return { code: 0, message: '刷卡成功', data: { totalTransaction: newTotal, tradeNo } };
 	} catch (error) {
@@ -1602,21 +1598,7 @@ async function riskAuditTrade(data, event) {
 			risk_audit_time: now,
 			risk_control_status: status === 'approved' ? 'release' : 'risk'
 		});
-		// 风险流水审核通过后，补计入商户基础表 frozen_amount（之前 pending 不计入）
-		if (status === 'approved') {
-			const cashback = Number(doc.cashback || 0);
-			const uid = String(doc.user_id || '').trim();
-			if (cashback > 0 && uid) {
-				const mRes = await merchantCollection.where(db.command.or([{ user_id: uid }, { _id: uid }])).limit(1).get();
-				const mer = mRes.data && mRes.data[0];
-				if (mer) {
-					await merchantCollection.doc(mer._id).update({
-						frozen_amount: Number((Number(mer.frozen_amount || 0) + cashback).toFixed(4)),
-						update_time: now
-					});
-				}
-			}
-		}
+		// 冻结仅在首期领取后生成，审核通过不再即时累加 frozen_amount
 
 		await recordOperationLog(event, 'riskAuditTrade', tradeId, tradeId, `风险审核:${status} ${remark}`);
 

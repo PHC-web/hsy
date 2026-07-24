@@ -1,0 +1,12 @@
+{
+	"name": "admin-home-cache-cron",
+	"version": "1.0.0",
+	"description": "每 3 分钟预热管理端首页统计到 Redis",
+	"main": "index.js",
+	"dependencies": {},
+	"cloudfunction-config": {
+		"concurrency": 1,
+		"memorySize": 512,
+		"timeout": 300
+	}
+}

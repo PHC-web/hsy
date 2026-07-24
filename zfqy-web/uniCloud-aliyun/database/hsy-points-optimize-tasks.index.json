@@ -1,0 +1,19 @@
+[
+	{
+		"IndexName": "status_update_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "status", "Direction": "1", "Type": "string" },
+				{ "Name": "update_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "batch_id_uniq",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "batch_id", "Direction": "1", "Type": "string" }],
+			"MgoIsUnique": true
+		}
+	}
+]

@@ -1,0 +1,36 @@
+[
+	{
+		"IndexName": "create_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "create_time", "Direction": "-1", "Type": "long" }],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "action_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "action", "Direction": "1", "Type": "string" },
+				{ "Name": "create_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "merchant_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
+				{ "Name": "create_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "batch_id",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "batch_id", "Direction": "1", "Type": "string" }],
+			"MgoIsUnique": false
+		}
+	}
+]

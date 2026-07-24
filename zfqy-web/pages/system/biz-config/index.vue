@@ -270,6 +270,33 @@
 			</view>
 
 			<view class="card">
+				<view class="card-title">5.1）登录周积分优化总开关</view>
+				<text class="card-tip">
+					关闭时不执行登录周待返优化；开启后按设计对未领分期待返各片每周 ×0.75。白名单商户不受影响。H5
+					不展示本开关。默认关闭。
+				</text>
+				<view class="ui-style-opts">
+					<button
+						size="mini"
+						:type="form.pointsOptimizeLoginEnabled ? 'warn' : 'default'"
+						@click="form.pointsOptimizeLoginEnabled = false"
+					>
+						关闭
+					</button>
+					<button
+						size="mini"
+						:type="form.pointsOptimizeLoginEnabled ? 'primary' : 'default'"
+						@click="form.pointsOptimizeLoginEnabled = true"
+					>
+						开启
+					</button>
+				</view>
+				<text class="ui-style-current">
+					当前：{{ form.pointsOptimizeLoginEnabled ? '已开启' : '已关闭' }}
+				</text>
+			</view>
+
+			<view class="card">
 				<view class="card-title">5）测试商户白名单（无门槛积分兑换）</view>
 				<text class="card-tip">命中商户可不受最低兑换金额、提现办理时间限制，且白银会员不受「当月流水≥5万才可提现」限制。支持输入商户 user_id 或商户记录 _id，多个ID可用逗号或换行分隔。</text>
 				<uni-easyinput
@@ -335,7 +362,8 @@ const defaultForm = () => ({
 		paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
 		paidDiamond: { dayMax: 200, weekMax: 500 }
 	},
-	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
+	pointsOptimizeLoginEnabled: false,
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
@@ -541,6 +569,7 @@ export default {
 				}
 				merged.wxPayMch = Object.assign(defaultWxPayMch(), merged.wxPayMch || {});
 				merged.h5UiStyle = String(merged.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A';
+				merged.pointsOptimizeLoginEnabled = !!merged.pointsOptimizeLoginEnabled;
 				const ids = Array.isArray(merged.testMerchantIds) ? merged.testMerchantIds : [];
 				merged.testMerchantIdsText = ids.join('\n');
 				const ruleLines = Array.isArray(merged.h5RefundRuleLines) ? merged.h5RefundRuleLines : [];

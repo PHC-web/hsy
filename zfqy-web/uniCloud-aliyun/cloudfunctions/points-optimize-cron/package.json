@@ -1,0 +1,12 @@
+{
+	"name": "points-optimize-cron",
+	"version": "1.0.0",
+	"description": "每天 01:30：登录周积分优化分批续跑",
+	"main": "index.js",
+	"dependencies": {},
+	"cloudfunction-config": {
+		"concurrency": 1,
+		"memorySize": 512,
+		"timeout": 7200
+	}
+}

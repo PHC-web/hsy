@@ -1,0 +1,24 @@
+{
+	"bsonType": "object",
+	"required": ["action", "create_time"],
+	"permission": { "read": true, "create": true, "update": false, "delete": false },
+	"properties": {
+		"_id": { "description": "主键" },
+		"batch_id": { "bsonType": "string", "description": "任务批次" },
+		"action": { "bsonType": "string", "description": "动作类型" },
+		"merchant_user_id": { "bsonType": "string" },
+		"operator": { "bsonType": "string" },
+		"before_week": { "bsonType": "int" },
+		"after_week": { "bsonType": "int" },
+		"before_total": { "bsonType": "number" },
+		"after_total": { "bsonType": "number" },
+		"cut_total": { "bsonType": "number" },
+		"slice_diffs": { "bsonType": "array" },
+		"anchor_ts": { "bsonType": "timestamp" },
+		"idle_days": { "bsonType": "int" },
+		"due_weeks": { "bsonType": "int" },
+		"dry_run": { "bsonType": "bool", "default": false },
+		"remark": { "bsonType": "string" },
+		"create_time": { "bsonType": "timestamp" }
+	}
+}

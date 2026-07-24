@@ -55,11 +55,23 @@ const REDIS_EX_H5_RECHARGE_HINT_SEC = 25;
 /** 管理端交易账单列表缓存（秒），减轻重复筛选下的云函数+DB 压力 */
 const REDIS_EX_TRADE_BILL_SEC = 22;
 const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v4';
+const REDIS_KEY_ADMIN_HOME_PREVIEW = 'hsy:admin:home:preview:v1';
+const REDIS_KEY_ADMIN_HOME_META = 'hsy:admin:home:meta:v1';
 const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
-const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 55;
-const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 180;
+/** 定时每 3 分钟预热；TTL 略长于两轮 cron，避免偶发失败空窗 */
+const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 600;
+const REDIS_EX_ADMIN_HOME_PREVIEW_SEC = 600;
+const REDIS_EX_ADMIN_HOME_TREND_SEC = 600;
+const REDIS_EX_ADMIN_HOME_META_SEC = 600;
+const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 600;
 const ADMIN_HOME_SUMMARY_CACHE_MS = 45000;
 const ADMIN_MEMBERSHIP_TIER_CACHE_MS = 180000;
+const ADMIN_HOME_TREND_RANGE_TYPES = ['today', 'week', 'month', '30d'];
+
+function redisKeyAdminHomeTrend(rangeType) {
+	const t = String(rangeType || '30d').trim() || '30d';
+	return `hsy:admin:home:trend:v1:${t}`;
+}
 /** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
 
@@ -826,7 +838,8 @@ async function listMerchants(data) {
 					withdraw_quota_balance: true,
 					withdraw_pending_balance: true,
 					agreement_signed_ip: true,
-					agreement_sign_device: true
+					agreement_sign_device: true,
+					points_opt_whitelist: true
 				})
 				.get(),
 			getBizSettings()
@@ -834,21 +847,37 @@ async function listMerchants(data) {
 		const total = countRes.total;
 		const rows = res.data || [];
 		// 已提现口径：提现记录里“已到账(arrival_status=received)”的历史累计（与 H5 已到账统计同源）
-		const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(rows);
+		const [withdrawnByUid, frozenByUid] = await Promise.all([
+			batchComputeReceivedWithdrawAmountForMerchants(rows),
+			batchComputeFutureDeferredFrozenForMerchants(rows, nowTs())
+		]);
 		const bindUserIds = rows
 			.flatMap((item) => [String(item.user_id || '').trim(), String(item._id || '').trim()])
 			.filter(Boolean);
 		const machinesByBindUser = await batchListBoundMachinesByBindUserIds(bindUserIds);
 
 		// pendingWithdraw：与 H5 待提现金额/账号积分一致 = account_points（已领取未发起提现扣减的积分，1:1 元）
-		const list = rows.map((item) => {
+		const list = await Promise.all(
+			rows.map(async (item) => {
 			const uid = String(item.user_id || item._id || '');
 			const boundMachines = collectBoundMachinesForMerchant(item, machinesByBindUser);
 			const deviceDisplay = merchantDeviceDisplayText(item, machinesByBindUser);
 			const deviceNo = boundMachines.length
 				? boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean).join('、')
 				: safeText(item.device_id, 80) || '-';
-			const frozenYuan = Number(item.frozen_amount || 0) || 0;
+			// 冻结：仅首期已领流水的后几期；列表即时重算并回写，避免旧「流水即冻」脏数据
+			const frozenYuan = Number(frozenByUid.has(uid) ? frozenByUid.get(uid) : item.frozen_amount || 0) || 0;
+			const curFrozen = Number(Number(item.frozen_amount || 0).toFixed(4));
+			if (Math.abs(frozenYuan - curFrozen) > 0.0001 && item._id) {
+				try {
+					await merchantCollection.doc(item._id).update({
+						frozen_amount: Number(frozenYuan.toFixed(4)),
+						update_time: nowTs()
+					});
+				} catch (e) {
+					console.error('listMerchants persist frozen', e);
+				}
+			}
 			const withdrawnYuan = Number(
 				(withdrawnByUid.has(uid) ? withdrawnByUid.get(uid) : Number(item.withdrawn || 0)) || 0
 			);
@@ -880,9 +909,11 @@ async function listMerchants(data) {
 			useStatus: item.use_status === 1 ? '正常' : '异常',
 			loginTime: formatTime(item.login_time),
 			agreementSignedIp: safeText(item.agreement_signed_ip, 80) || '',
-			agreementSignDevice: safeText(item.agreement_sign_device, 320) || ''
+			agreementSignDevice: safeText(item.agreement_sign_device, 320) || '',
+			pointsOptWhitelist: !!item.points_opt_whitelist
 			};
-		});
+		})
+		);
 
 		return {
 			code: 0,
@@ -2558,34 +2589,33 @@ function adminChunkIdsForIn(arr, chunkSize) {
 	return out;
 }
 
-async function adminFetchAllBoundMachineIdsForCardAlign(boundMachineWhere) {
+/** 仅收集已绑定机具 device_id（首页汇总不再双 $in user_id，避免误走 user_id 索引） */
+async function adminFetchAllBoundDeviceIdsForCardAlign(boundMachineWhere) {
 	const deviceSet = new Set();
-	const userSet = new Set();
 	let skip = 0;
 	for (;;) {
 		const r = await machineCollection
 			.where(boundMachineWhere)
-			.field({ device_id: true, bind_user_id: true })
+			.field({ device_id: true })
 			.skip(skip)
 			.limit(ADMIN_CARD_ALIGN_MACHINE_PAGE)
 			.get();
 		const rows = r.data || [];
 		for (const x of rows) {
 			const d = String(x.device_id || '').trim();
-			const u = String(x.bind_user_id || '').trim();
 			if (d) deviceSet.add(d);
-			if (u) userSet.add(u);
 		}
 		if (rows.length < ADMIN_CARD_ALIGN_MACHINE_PAGE) break;
 		skip += ADMIN_CARD_ALIGN_MACHINE_PAGE;
 		if (skip > 200000) break;
 	}
-	return { boundDeviceIds: [...deviceSet], boundUserIds: [...userSet] };
+	return [...deviceSet];
 }
 
 /**
- * 与 cloudfunctions/machine#getCardRecordList 在无额外筛选时的条件一致（不含时间）。
- * 用于首页流水统计、粉卡总刷卡、交易类型图等与「刷卡记录」列表口径对齐。
+ * 与 cloudfunctions/machine#getCardRecordList 在无额外筛选时的主口径对齐（不含时间）。
+ * 仅用「当前已绑定机具」的 device_id $in + stats_eligible 等；不再叠加巨大的 user_id $in。
+ * 用于首页流水统计、粉卡总刷卡、交易类型图等。
  */
 async function buildCardRecordAlignedTradeBaseWhere(_) {
 	try {
@@ -2594,21 +2624,22 @@ async function buildCardRecordAlignedTradeBaseWhere(_) {
 			is_bound: 1,
 			bind_user_id: _.neq('')
 		};
-		const { boundDeviceIds, boundUserIds } = await adminFetchAllBoundMachineIdsForCardAlign(boundMachineWhere);
-		if (!boundDeviceIds.length || !boundUserIds.length) {
+		const boundDeviceIds = await adminFetchAllBoundDeviceIdsForCardAlign(boundMachineWhere);
+		if (!boundDeviceIds.length) {
 			return { ok: false, baseWhere: null };
 		}
 		const whereParts = [{ is_deleted: _.neq(true) }];
-		const pushIdIn = (field, ids) => {
-			if (!ids || !ids.length) return;
-			if (ids.length <= ADMIN_CARD_ALIGN_IN_CHUNK) {
-				whereParts.push({ [field]: _.in(ids) });
-				return;
-			}
-			whereParts.push(_.or(adminChunkIdsForIn(ids, ADMIN_CARD_ALIGN_IN_CHUNK).map((c) => ({ [field]: _.in(c) }))));
-		};
-		pushIdIn('device_id', boundDeviceIds);
-		pushIdIn('user_id', boundUserIds);
+		if (boundDeviceIds.length <= ADMIN_CARD_ALIGN_IN_CHUNK) {
+			whereParts.push({ device_id: _.in(boundDeviceIds) });
+		} else {
+			whereParts.push(
+				_.or(
+					adminChunkIdsForIn(boundDeviceIds, ADMIN_CARD_ALIGN_IN_CHUNK).map((c) => ({
+						device_id: _.in(c)
+					}))
+				)
+			);
+		}
 		whereParts.push({ stats_eligible: true });
 		whereParts.push(_.and([{ user_id: _.neq('') }, { user_id: _.neq(null) }]));
 		whereParts.push(_.or([{ user_name: _.neq('') }, { user_mobile: _.neq('') }]));
@@ -2677,12 +2708,26 @@ async function adminDashboardTrend30d(data = {}) {
 		const startDay = range.keys[0];
 		const endDay = range.keys[range.keys.length - 1];
 		const cacheKey = `${range.type}_${startDay}_${endDay}`;
-		if (
-			adminDashboardTrendCache.data &&
-			adminDashboardTrendCache.key === cacheKey &&
-			now - Number(adminDashboardTrendCache.at || 0) < ADMIN_DASHBOARD_TREND_CACHE_MS
-		) {
-			return { code: 0, message: 'ok', data: adminDashboardTrendCache.data };
+		const redisTrendKey = redisKeyAdminHomeTrend(range.type);
+		const cacheOnly = !!(data && (data.cacheOnly === true || data.fromCache === true));
+		const forceRefresh = !!(data && data.refresh);
+
+		if (!forceRefresh) {
+			if (
+				adminDashboardTrendCache.data &&
+				adminDashboardTrendCache.key === cacheKey &&
+				now - Number(adminDashboardTrendCache.at || 0) < ADMIN_DASHBOARD_TREND_CACHE_MS
+			) {
+				return { code: 0, message: 'ok', data: adminDashboardTrendCache.data, cache: 'memory' };
+			}
+			const redisHit = await redisH5.h5RedisGetJson(redisTrendKey);
+			if (redisHit && Array.isArray(redisHit.categories)) {
+				adminDashboardTrendCache = { at: now, key: cacheKey, data: redisHit };
+				return { code: 0, message: 'ok', data: redisHit, cache: 'redis' };
+			}
+			if (cacheOnly) {
+				return { code: 0, message: 'cache_miss', data: null, cache: 'miss' };
+			}
 		}
 		const startTs = Number(range.startTs || 0);
 		const endTs = Number(range.endTs || now);
@@ -3126,7 +3171,8 @@ async function adminDashboardTrend30d(data = {}) {
 			}
 		};
 		adminDashboardTrendCache = { at: now, key: cacheKey, data: payload };
-		return { code: 0, message: 'ok', data: payload };
+		await redisH5.h5RedisSetJson(redisTrendKey, payload, REDIS_EX_ADMIN_HOME_TREND_SEC);
+		return { code: 0, message: 'ok', data: payload, cache: 'fresh' };
 	} catch (e) {
 		console.error('adminDashboardTrend30d failed', e);
 		return { code: 500, message: '获取首页趋势数据失败' };
@@ -3356,8 +3402,14 @@ function resolveAdminHomeMembershipCategory(merchant, packages = []) {
 async function invalidateAdminHomeSummaryCache() {
 	adminHomeSummaryCache = { at: 0, data: null };
 	adminMembershipTierCache = { at: 0, data: null };
+	adminDashboardTrendCache = { at: 0, key: '', data: null };
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_SUMMARY);
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PREVIEW);
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_META);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_MEMBERSHIP_TIER);
+	for (const t of ADMIN_HOME_TREND_RANGE_TYPES) {
+		await redisH5.h5RedisDel(redisKeyAdminHomeTrend(t));
+	}
 }
 
 /** 历史 withdraw/trade 分档回填：勿在首页热路径调用，可手动触发 action adminHomeBackfillBuckets */
@@ -3446,16 +3498,20 @@ async function adminCountMembershipTierCountsCached(forceRefresh = false) {
 async function adminHomeSummary(data = {}) {
 	try {
 		const forceRefresh = !!(data && data.refresh);
+		const cacheOnly = !!(data && (data.cacheOnly === true || data.fromCache === true));
 		const now = nowTs();
 		if (!forceRefresh) {
 			if (adminHomeSummaryCache.data && now - adminHomeSummaryCache.at < ADMIN_HOME_SUMMARY_CACHE_MS) {
-				return { code: 0, message: 'ok', data: adminHomeSummaryCache.data };
+				return { code: 0, message: 'ok', data: adminHomeSummaryCache.data, cache: 'memory' };
 			}
 			const redisHit = await redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_SUMMARY);
 			if (redisHit && redisHit.membershipCounts) {
 				adminHomeSummaryCache = { at: now, data: redisHit };
 				adminMembershipTierCache = { at: now, data: redisHit.membershipCounts || null };
-				return { code: 0, message: 'ok', data: redisHit };
+				return { code: 0, message: 'ok', data: redisHit, cache: 'redis' };
+			}
+			if (cacheOnly) {
+				return { code: 0, message: 'cache_miss', data: null, cache: 'miss' };
 			}
 		}
 
@@ -3688,10 +3744,193 @@ async function adminHomeSummary(data = {}) {
 		};
 		adminHomeSummaryCache = { at: now, data: payload };
 		await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_HOME_SUMMARY, payload, REDIS_EX_ADMIN_HOME_SUMMARY_SEC);
-		return { code: 0, message: 'ok', data: payload };
+		return { code: 0, message: 'ok', data: payload, cache: 'fresh' };
 	} catch (e) {
 		console.error('adminHomeSummary failed', e);
 		return { code: 500, message: '获取首页汇总失败' };
+	}
+}
+
+/** 数据预览中控台计数（原前端直查 DB，改为服务端预热进 Redis） */
+async function computeAdminHomePreviewCounts() {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const brandCollection = db.collection('hsy-brand');
+	const todayStart = new Date();
+	todayStart.setHours(0, 0, 0, 0);
+	const todayTs = todayStart.getTime();
+
+	const [
+		brandRes,
+		machineRes,
+		activatedRes,
+		boundRes,
+		todayActivatedRes,
+		merchantRes,
+		memberRes,
+		wdAgg
+	] = await Promise.all([
+		brandCollection.where({ is_deleted: false }).count(),
+		machineCollection.where({ is_deleted: false }).count(),
+		machineCollection.where({ is_deleted: false, is_activated: true }).count(),
+		machineCollection.where({ is_deleted: false, is_bound: 1 }).count(),
+		machineCollection
+			.where({
+				is_deleted: false,
+				is_activated: true,
+				activated_time: _.gte(todayTs)
+			})
+			.count()
+			.catch(async () =>
+				machineCollection
+					.where({
+						is_deleted: false,
+						is_activated: true,
+						activated_time: _.gte(todayStart)
+					})
+					.count()
+			),
+		merchantCollection.count(),
+		merchantCollection
+			.where(
+				_.or([{ recharge_amount: _.gt(0) }, { recharge_total_yuan: _.gt(0) }])
+			)
+			.count(),
+		withdrawCollection
+			.aggregate()
+			.match({
+				is_deleted: _.neq(true),
+				is_paid: true,
+				arrival_status: 'received'
+			})
+			.group({
+				_id: null,
+				count: $.sum(1),
+				total: $.sum('$payable')
+			})
+			.end()
+			.catch((e) => {
+				console.error('computeAdminHomePreviewCounts wdAgg', e);
+				return { data: [] };
+			})
+	]);
+
+	const wdRow = ((wdAgg && wdAgg.data) || [])[0] || {};
+	const userCount = Number((merchantRes && merchantRes.total) || 0);
+	const memberCount = Number((memberRes && memberRes.total) || 0);
+	const memberRate = userCount ? ((memberCount / userCount) * 100).toFixed(2) : '0.00';
+
+	return {
+		brandCount: Number((brandRes && brandRes.total) || 0),
+		machineCount: Number((machineRes && machineRes.total) || 0),
+		activatedCount: Number((activatedRes && activatedRes.total) || 0),
+		boundCount: Number((boundRes && boundRes.total) || 0),
+		todayActivatedCount: Number((todayActivatedRes && todayActivatedRes.total) || 0),
+		withdrawCount: Number(wdRow.count || 0),
+		withdrawAmount: Number(Number(wdRow.total || 0).toFixed(2)),
+		userCount,
+		memberCount,
+		memberRate,
+		returnPaid: 0,
+		returnDue: 0,
+		returnRate: '0.00'
+	};
+}
+
+async function refreshAdminHomePreviewCache() {
+	const preview = await computeAdminHomePreviewCounts();
+	await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_HOME_PREVIEW, preview, REDIS_EX_ADMIN_HOME_PREVIEW_SEC);
+	return preview;
+}
+
+/**
+ * 定时预热：写入 Redis。parts 可选 preview / summary / trend
+ * rangeTypes 仅对 trend 生效，默认四档全刷（建议 cron 分次调用避免超时）
+ */
+async function adminHomeCacheRefresh(data = {}) {
+	const partsRaw = Array.isArray(data.parts) ? data.parts.map((x) => String(x || '').trim()) : [];
+	const parts = partsRaw.length
+		? new Set(partsRaw)
+		: new Set(['preview', 'summary', 'trend']);
+	const rangeTypes = Array.isArray(data.rangeTypes) && data.rangeTypes.length
+		? data.rangeTypes.map((x) => String(x || '').trim()).filter(Boolean)
+		: ADMIN_HOME_TREND_RANGE_TYPES.slice();
+
+	const out = {
+		updatedAt: nowTs(),
+		preview: false,
+		summary: false,
+		trends: {}
+	};
+
+	try {
+		if (parts.has('preview')) {
+			await refreshAdminHomePreviewCache();
+			out.preview = true;
+		}
+		if (parts.has('summary')) {
+			const sumRes = await adminHomeSummary({ refresh: true });
+			out.summary = !!(sumRes && sumRes.code === 0);
+			if (!out.summary) {
+				return { code: sumRes?.code || 500, message: sumRes?.message || '汇总刷新失败', data: out };
+			}
+		}
+		if (parts.has('trend')) {
+			for (const rangeType of rangeTypes) {
+				const tr = await adminDashboardTrend30d({ rangeType, refresh: true });
+				out.trends[rangeType] = !!(tr && tr.code === 0);
+				if (!out.trends[rangeType]) {
+					return {
+						code: tr?.code || 500,
+						message: tr?.message || `趋势刷新失败(${rangeType})`,
+						data: out
+					};
+				}
+			}
+		}
+		await redisH5.h5RedisSetJson(
+			REDIS_KEY_ADMIN_HOME_META,
+			{ updatedAt: out.updatedAt },
+			REDIS_EX_ADMIN_HOME_META_SEC
+		);
+		return { code: 0, message: 'ok', data: out };
+	} catch (e) {
+		console.error('adminHomeCacheRefresh failed', e);
+		return { code: 500, message: e?.message || '首页缓存刷新失败', data: out };
+	}
+}
+
+/** 前端只读 Redis：预览 + 资金汇总 + 指定区间趋势 */
+async function adminHomeCacheGet(data = {}) {
+	try {
+		const rangeType = String(data.rangeType || '30d').trim() || '30d';
+		const [preview, summary, trend, meta] = await Promise.all([
+			redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_PREVIEW),
+			redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_SUMMARY),
+			redisH5.h5RedisGetJson(redisKeyAdminHomeTrend(rangeType)),
+			redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_META)
+		]);
+		const hit = {
+			preview: !!(preview && typeof preview === 'object'),
+			summary: !!(summary && summary.membershipCounts),
+			trend: !!(trend && Array.isArray(trend.categories))
+		};
+		const allHit = hit.preview && hit.summary && hit.trend;
+		return {
+			code: 0,
+			message: allHit ? 'ok' : 'partial',
+			data: {
+				preview: hit.preview ? preview : null,
+				summary: hit.summary ? summary : null,
+				trend: hit.trend ? trend : null,
+				rangeType,
+				updatedAt: Number((meta && meta.updatedAt) || 0) || 0,
+				cacheHit: hit
+			}
+		};
+	} catch (e) {
+		console.error('adminHomeCacheGet failed', e);
+		return { code: 500, message: '读取首页缓存失败' };
 	}
 }
 
@@ -7439,6 +7678,36 @@ function pickAuthProfile(data) {
 	};
 }
 
+/** 最后登录写入最短间隔，避免首页缓存刷新频繁写库 */
+const MERCHANT_LOGIN_TOUCH_MIN_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * 记录最后登录时间（并重置登录周优化进度，与鉴权登录一致）。
+ * @param {object} merchant 商户文档（需含 _id、login_time）
+ * @param {{ force?: boolean }} options force=true 时忽略节流（鉴权登录用）
+ */
+async function markMerchantLastLogin(merchant, options = {}) {
+	if (!merchant || !merchant._id) return false;
+	const now = nowTs();
+	const force = !!(options && options.force);
+	const prev = Number(merchant.login_time) || 0;
+	if (!force && prev > 0 && now - prev < MERCHANT_LOGIN_TOUCH_MIN_INTERVAL_MS) {
+		return false;
+	}
+	try {
+		await merchantCollection.doc(merchant._id).update({
+			login_time: now,
+			points_opt_week_applied: 0
+		});
+		merchant.login_time = now;
+		merchant.points_opt_week_applied = 0;
+		return true;
+	} catch (e) {
+		console.error('markMerchantLastLogin', e);
+		return false;
+	}
+}
+
 async function upsertMerchantByAuth(profile) {
 	const now = nowTs();
 	const where = profile.openid ? { wx_openid: profile.openid } : { mobile: profile.mobile };
@@ -7450,7 +7719,9 @@ async function upsertMerchantByAuth(profile) {
 			wx_nickname: profile.nickname || row.wx_nickname || '',
 			wx_avatar: profile.avatar || row.wx_avatar || '',
 			mobile: profile.mobile || row.mobile || '',
-			login_time: now
+			login_time: now,
+			// 登录周优化：重置相对锚点进度，已砍待返金额不恢复
+			points_opt_week_applied: 0
 		});
 		return { id: row._id, userId: row.user_id || row._id, created: false };
 	}
@@ -9028,7 +9299,9 @@ const DEFAULT_BIZ_SETTINGS = {
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
 	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
-	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 },
+	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
+	/** 登录周积分优化总开关：默认关闭，仅管理端控制；H5 不展示 */
+	pointsOptimizeLoginEnabled: false,
 	/** H5 权益页待领取奖励自流水/生成时刻起的有效天数，到期后不再展示 */
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -9183,6 +9456,10 @@ function sanitizeBizSettings(raw = {}) {
 	const h5UiStyle = String(raw.h5UiStyle || DEFAULT_BIZ_SETTINGS.h5UiStyle || 'A').trim().toUpperCase() === 'B' ? 'B' : 'A';
 	const h5RefundRuleLines = sanitizeH5RefundRuleLines(raw.h5RefundRuleLines);
 	const wxPayMch = sanitizeWxPayMchSelection(raw.wxPayMch, resolveDefaultWxPayMchIds());
+	const pointsOptimizeLoginEnabled =
+		raw.pointsOptimizeLoginEnabled === true ||
+		raw.pointsOptimizeLoginEnabled === '1' ||
+		raw.pointsOptimizeLoginEnabled === 1;
 	return {
 		rechargeRules: normRules,
 		withdrawRange,
@@ -9191,6 +9468,7 @@ function sanitizeBizSettings(raw = {}) {
 		withdrawAudit,
 		refundTransferAudit,
 		optimizeConfig,
+		pointsOptimizeLoginEnabled,
 		incomePacketClaimValidDays,
 		refundCycle,
 		refundPenaltyRate,
@@ -10480,6 +10758,8 @@ async function h5HomeDashboard(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		// 本地会话直进首页不会再走鉴权：在此刷新「最后登录」（1 小时内节流）
+		await markMerchantLastLogin(merchant);
 		const now = nowTs();
 		const merchantId = String(merchant._id || merchant.user_id || '');
 		const cacheSign = `${merchantId}|${Number(merchant.update_time || 0)}|${Number(merchant.recharge_cycle_start || 0)}|${Number(rawWithdrawQuotaBalance(merchant) || 0)}|${Number(rawPendingBalance(merchant) || 0)}|${Number(merchant.silver_member_end_at || 0)}`;
@@ -13929,8 +14209,49 @@ function sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm) {
 	return Number(s.toFixed(2));
 }
 
+/** 从 trade_first 红包 dedup_key 解析 trade_no：`trade_${uid}_${tradeNo}` */
+function tradeNoFromTradeFirstDedupKey(dedupKey, merchantUserId) {
+	const dk = String(dedupKey || '').trim();
+	const uid = String(merchantUserId || '').trim();
+	if (!dk || !uid) return '';
+	const prefix = `trade_${uid}_`;
+	if (!dk.startsWith(prefix)) return '';
+	return dk.slice(prefix.length).trim();
+}
+
 /**
- * 商户列表批量：按账号 user_id 计算「未来月待返」冻结额（与 h5PendingReturnPoints 同一套交易口径）。
+ * 拉取商户已领取首期对应的 trade_no 集合（冻结仅在这些流水上生成）。
+ * @returns {Map<string, Set<string>>} uid -> trade_no set
+ */
+async function loadClaimedTradeFirstTradeNosByUids(uids) {
+	const out = new Map();
+	const list = Array.isArray(uids) ? uids.map((x) => String(x || '').trim()).filter(Boolean) : [];
+	for (const uid of list) out.set(uid, new Set());
+	if (!list.length) return out;
+	const _ = db.command;
+	const rows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-income-packets',
+		{
+			merchant_user_id: _.in(list),
+			subsidy_kind: 'trade_first',
+			status: 'claimed',
+			is_deleted: _.neq(true)
+		},
+		{ field: { merchant_user_id: true, dedup_key: true } }
+	);
+	for (const p of rows || []) {
+		const uid = String(p.merchant_user_id || '');
+		if (!out.has(uid)) continue;
+		const tn = tradeNoFromTradeFirstDedupKey(p.dedup_key, uid);
+		if (tn) out.get(uid).add(tn);
+	}
+	return out;
+}
+
+/**
+ * 商户列表批量：按账号 user_id 计算「未来月待返」冻结额。
+ * 口径：仅「首期已领取」的流水才计入后几期冻结；首期 pending/expired 不计。
  */
 async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs) {
 	const frozenByUid = new Map();
@@ -13965,6 +14286,8 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 		return bindTs;
 	};
 
+	const claimedFirstByUid = await loadClaimedTradeFirstTradeNosByUids(uids);
+
 	const tradePartsBase = [
 		{ user_id: _.in(uids) },
 		{ trade_type: _.in(['real', 'virtual']) },
@@ -13977,6 +14300,7 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 		.where(_.and(tradePartsBase))
 		.field({
 			user_id: true,
+			trade_no: true,
 			amount: true,
 			cashback: true,
 			release_amount: true,
@@ -14003,10 +14327,23 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 	for (const m of rows) {
 		const uid = String(m.user_id || m._id || '');
 		if (!uid) continue;
+		const claimedNos = claimedFirstByUid.get(uid) || new Set();
+		if (!claimedNos.size) {
+			frozenByUid.set(uid, 0);
+			continue;
+		}
 		let userRows = rowsByUser.get(uid) || [];
 		const bt = bindTsForMerchant(m);
 		if (bt) {
 			userRows = userRows.filter((r) => Number(r.create_time || 0) >= bt);
+		}
+		userRows = userRows.filter((r) => {
+			const tn = String(r.trade_no || '').trim();
+			return tn && claimedNos.has(tn);
+		});
+		if (!userRows.length) {
+			frozenByUid.set(uid, 0);
+			continue;
 		}
 		const { buckets, curYm } = computePendingReturnBucketsForTrades(userRows, nowTs, optimizeConfig);
 		frozenByUid.set(uid, sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm));
@@ -14020,10 +14357,22 @@ async function recalcAndPersistFrozenAmountForMerchantById(merchantIdOrUserId) {
 	const frozenByUid = await batchComputeFutureDeferredFrozenForMerchants([merchant], nowTs());
 	const uid = String(merchant.user_id || merchant._id || '');
 	const nextFrozen = Number(frozenByUid.get(uid) || 0);
+	const now = nowTs();
 	await merchantCollection.doc(merchant._id).update({
 		frozen_amount: Number(nextFrozen.toFixed(4)),
-		update_time: nowTs()
+		update_time: now
 	});
+	try {
+		const boundMachines = await listBoundMachinesByMerchant(merchant);
+		const primary = pickPrimaryBoundMachine(merchant, boundMachines);
+		if (primary && primary._id) {
+			await machineCollection.doc(primary._id).update({
+				frozen_amount: Number(nextFrozen.toFixed(4))
+			});
+		}
+	} catch (e) {
+		console.error('recalc frozen sync machine', e);
+	}
 	return { ok: true, frozenAmount: Number(nextFrozen.toFixed(4)), merchantId: merchant._id, userId: uid };
 }
 
@@ -14376,10 +14725,17 @@ async function h5IncomeList(data) {
 		const now = nowTs();
 		const biz = await getBizSettings();
 		try {
-			await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
+			const syncRet = await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
 				claimValidDays: biz.incomePacketClaimValidDays,
 				optimizeConfig: biz.optimizeConfig
 			});
+			if (syncRet && Number(syncRet.expiredTradeFirst || 0) > 0) {
+				try {
+					await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
+				} catch (e2) {
+					console.error('recalc frozen after trade_first expire', e2);
+				}
+			}
 		} catch (e) {
 			console.error('syncSubsidyPackets', e);
 		}
@@ -14567,13 +14923,12 @@ async function claimPackets(merchant, packetIds) {
 		const boundMachines = await listBoundMachinesByMerchant(merchant);
 		const m = pickPrimaryBoundMachine(merchant, boundMachines);
 		if (m) {
-			const nextFrozen = Math.max(0, Number(Number(m.frozen_amount || 0) - claimedAmount).toFixed(4));
+			// 领取进待提现：机具 pending 增加；冻结一律全量重算（首期领取会抬冻结，分期待返领取后理论仍按「未到期月」计）
 			await machineCollection.doc(m._id).update({
-				frozen_amount: nextFrozen,
 				pending_amount: Number((Number(m.pending_amount || 0) + claimedAmount).toFixed(4))
 			});
 		}
-		// 同步刷新商户基础表 frozen_amount（与商户列表读取口径保持一致）
+		// 首期领取后生成冻结、首期以外领取后刷新口径，统一全量重算商户+主绑机具
 		await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
 	}
 	return { claimedCount: claimedIds.length, claimedAmount: subsidyEngine.roundPacketAmountYuan(claimedAmount) };
@@ -16226,6 +16581,159 @@ async function adminSilverExchangeMerchantsQuotaFloor(data = {}, event = {}) {
 	}
 }
 
+/**
+ * 用「最后领取积分时间」回填 login_time（未领取过的商户不改）。
+ * 控制台分批：dryRun 预览 → apply 写库，用 nextCursor 续跑。
+ */
+async function adminLoginTimeBackfillFromLastClaim(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 100), 10), 300);
+		const cursorId = safeText(data?.cursorId || data?.cursor || '', 80);
+		const onlyUid = safeText(data?.merchantUserId || data?.userId || '', 80);
+		const now = nowTs();
+		const _ = db.command;
+
+		let rows = [];
+		if (onlyUid) {
+			const m = await getMerchantByIdOrUserId(onlyUid);
+			if (!m) return { code: 404, message: '商户不存在' };
+			rows = [m];
+		} else {
+			const where = cursorId ? { _id: _.gt(cursorId) } : {};
+			const res = await merchantCollection
+				.where(where)
+				.field({
+					_id: true,
+					user_id: true,
+					wx_nickname: true,
+					mobile: true,
+					login_time: true,
+					create_time: true
+				})
+				.orderBy('_id', 'asc')
+				.limit(chunkSize)
+				.get();
+			rows = res.data || [];
+		}
+
+		let scanned = 0;
+		let updated = 0;
+		let skippedNoClaim = 0;
+		let skippedSame = 0;
+		const samples = [];
+
+		for (const row of rows) {
+			scanned += 1;
+			const uid = String(row.user_id || row._id || '').trim();
+			if (!uid) {
+				skippedNoClaim += 1;
+				continue;
+			}
+			const uidOr = [uid];
+			const docId = String(row._id || '');
+			if (docId && docId !== uid) uidOr.push(docId);
+
+			let lastClaimTs = 0;
+			try {
+				const pr = await incomePacketCollection
+					.where(
+						_.and([
+							{ merchant_user_id: uidOr.length === 1 ? uidOr[0] : _.in(uidOr) },
+							{ is_deleted: _.neq(true) },
+							{ status: 'claimed' }
+						])
+					)
+					.field({ claimed_time: true, update_time: true })
+					.orderBy('claimed_time', 'desc')
+					.limit(1)
+					.get();
+				const pkt = (pr.data || [])[0];
+				if (pkt) {
+					lastClaimTs = Number(pkt.claimed_time || pkt.update_time || 0) || 0;
+				}
+				// claimed_time 可能为空/未建索引排到前面：再按 update_time 兜底取一条
+				if (!(lastClaimTs > 0)) {
+					const pr2 = await incomePacketCollection
+						.where(
+							_.and([
+								{ merchant_user_id: uidOr.length === 1 ? uidOr[0] : _.in(uidOr) },
+								{ is_deleted: _.neq(true) },
+								{ status: 'claimed' }
+							])
+						)
+						.field({ claimed_time: true, update_time: true })
+						.orderBy('update_time', 'desc')
+						.limit(5)
+						.get();
+					for (const p of pr2.data || []) {
+						const ts = Number(p.claimed_time || p.update_time || 0) || 0;
+						if (ts > lastClaimTs) lastClaimTs = ts;
+					}
+				}
+			} catch (e) {
+				console.error('adminLoginTimeBackfillFromLastClaim packet query', uid, e);
+				continue;
+			}
+
+			if (!(lastClaimTs > 0)) {
+				skippedNoClaim += 1;
+				continue;
+			}
+
+			const prevLogin = Number(row.login_time) || 0;
+			if (prevLogin === lastClaimTs) {
+				skippedSame += 1;
+				continue;
+			}
+
+			if (apply && !dryRun) {
+				await merchantCollection.doc(row._id).update({
+					login_time: lastClaimTs,
+					update_time: now
+				});
+			}
+
+			updated += 1;
+			if (samples.length < 15) {
+				samples.push({
+					_id: row._id,
+					user_id: uid,
+					nickname: row.wx_nickname || '',
+					prevLoginTime: prevLogin,
+					prevLoginText: prevLogin ? formatTime(prevLogin) : '',
+					lastClaimTime: lastClaimTs,
+					lastClaimText: formatTime(lastClaimTs)
+				});
+			}
+		}
+
+		const nextCursor = onlyUid ? '' : rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = onlyUid ? true : rows.length < chunkSize;
+		return {
+			code: 0,
+			message: apply && !dryRun ? 'ok' : 'dry-run 完成（未写库）',
+			data: {
+				dryRun: !(apply && !dryRun),
+				apply: !!(apply && !dryRun),
+				chunkSize,
+				scanned,
+				updated,
+				skippedNoClaim,
+				skippedSame,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminLoginTimeBackfillFromLastClaim failed', e);
+		return { code: 500, message: safeText(e?.message || '回填 login_time 失败', 180) };
+	}
+}
+
 async function feedbackFindOpenTicket(merchantId) {
 	const r = await feedbackTicketCollection
 		.where({ merchant_id: merchantId, status: 'open', is_deleted: false })
@@ -17763,6 +18271,10 @@ exports.main = async (event, context) => {
 			return await adminDashboardTrend30d(actualData);
 		case 'adminHomeSummary':
 			return await adminHomeSummary(actualData);
+		case 'adminHomeCacheGet':
+			return await adminHomeCacheGet(actualData);
+		case 'adminHomeCacheRefresh':
+			return await adminHomeCacheRefresh(actualData);
 		case 'adminHomeBackfillBuckets':
 			return await adminHomeBackfillBuckets(actualData);
 		case 'adminMerchantRefundWindow':
@@ -17803,6 +18315,8 @@ exports.main = async (event, context) => {
 			return await adminSilverMembersQuotaZeroBackfill(actualData, event);
 		case 'adminSilverMembersQuotaRecalcByWithdrawn':
 			return await adminSilverMembersQuotaRecalcByWithdrawn(actualData, event);
+		case 'adminLoginTimeBackfillFromLastClaim':
+			return await adminLoginTimeBackfillFromLastClaim(actualData, event);
 		case 'rechargeGiftShipmentList':
 			return await rechargeGiftShipmentList(actualData);
 		case 'rechargeGiftShipmentUpdate':
@@ -17945,6 +18459,13 @@ exports.main = async (event, context) => {
 			return await bizConfigGet();
 		case 'bizConfigSave':
 			return await bizConfigSave(actualData, event);
+		case 'recalcFrozenAmount':
+			return await (async () => {
+				const key = actualData?.merchantId || actualData?.merchantUserId || actualData?.userId;
+				const r = await recalcAndPersistFrozenAmountForMerchantById(key);
+				if (!r.ok) return { code: 404, message: '商户不存在', data: r };
+				return { code: 0, message: 'ok', data: r };
+			})();
 		case 'debugGetEgressIp':
 			return await debugGetEgressIp();
 		default:

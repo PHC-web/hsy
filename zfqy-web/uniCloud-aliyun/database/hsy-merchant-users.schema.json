@@ -35,7 +35,21 @@
 		"flag2": { "bsonType": "bool", "description": "开关2", "default": false },
 		"flag3": { "bsonType": "bool", "description": "开关3", "default": false },
 		"micro_merchant": { "bsonType": "bool", "description": "小微商户", "default": false },
-		"login_time": { "bsonType": "timestamp", "description": "登录时间" },
+		"login_time": { "bsonType": "timestamp", "description": "最后登录时间（H5 鉴权登录或进入首页时刷新）" },
+		"points_opt_week_applied": {
+			"bsonType": "int",
+			"description": "登录周优化：相对当前登录锚点已执行周数",
+			"default": 0
+		},
+		"points_opt_update_time": { "bsonType": "timestamp", "description": "上次登录周优化时间" },
+		"points_opt_whitelist": {
+			"bsonType": "bool",
+			"description": "积分优化白名单：true 不受登录周优化",
+			"default": false
+		},
+		"points_opt_whitelist_at": { "bsonType": "timestamp", "description": "加入白名单时间" },
+		"points_opt_whitelist_by": { "bsonType": "string", "description": "白名单操作人" },
+		"points_opt_whitelist_remark": { "bsonType": "string", "description": "白名单备注" },
 		"recharge_total_yuan": {
 			"bsonType": "number",
 			"description": "当前充值周期内用户已成功支付的累计金额（元），退款成功后清零",

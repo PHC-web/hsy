@@ -816,6 +816,18 @@
 		"_id": "operations_points_records"
 	},
 	{
+		"menu_id": "operations_points_optimize",
+		"name": "积分优化",
+		"icon": "",
+		"url": "/pages/operations/points-optimize/index",
+		"sort": 1826,
+		"parent_id": "operations_management",
+		"permission": [],
+		"enable": true,
+		"create_date": 1777113000106,
+		"_id": "operations_points_optimize"
+	},
+	{
 		"menu_id": "operations_logs",
 		"name": "日志管理",
 		"icon": "",

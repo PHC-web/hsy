@@ -1,0 +1,36 @@
+[
+	{
+		"IndexName": "uniq_merchant_target_source_slice",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
+				{ "Name": "target_ym", "Direction": "1", "Type": "string" },
+				{ "Name": "source_ym", "Direction": "1", "Type": "string" },
+				{ "Name": "slice_index", "Direction": "1", "Type": "int" }
+			],
+			"MgoIsUnique": true
+		}
+	},
+	{
+		"IndexName": "merchant_claimed_update",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
+				{ "Name": "is_claimed", "Direction": "1", "Type": "bool" },
+				{ "Name": "update_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "merchant_target_ym",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
+				{ "Name": "target_ym", "Direction": "1", "Type": "string" },
+				{ "Name": "is_deleted", "Direction": "1", "Type": "bool" }
+			],
+			"MgoIsUnique": false
+		}
+	}
+]

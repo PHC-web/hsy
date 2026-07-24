@@ -1,0 +1,23 @@
+{
+	"bsonType": "object",
+	"required": ["status", "create_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": false },
+	"properties": {
+		"_id": { "description": "主键=batch_id 可用" },
+		"batch_id": { "bsonType": "string" },
+		"status": { "bsonType": "string", "description": "running/done/failed" },
+		"cursor": { "bsonType": "string", "description": "商户_id游标" },
+		"progress": { "bsonType": "int", "default": 0 },
+		"scanned": { "bsonType": "int", "default": 0 },
+		"upgraded": { "bsonType": "int", "default": 0 },
+		"skipped_whitelist": { "bsonType": "int", "default": 0 },
+		"skipped": { "bsonType": "int", "default": 0 },
+		"failed": { "bsonType": "int", "default": 0 },
+		"cut_total": { "bsonType": "number", "default": 0 },
+		"dry_run": { "bsonType": "bool", "default": false },
+		"error_message": { "bsonType": "string" },
+		"operator": { "bsonType": "string" },
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" }
+	}
+}

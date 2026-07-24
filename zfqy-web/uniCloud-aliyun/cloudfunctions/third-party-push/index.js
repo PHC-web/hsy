@@ -398,9 +398,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const subsidyEligible = amount > 0 && amount >= minTradeYuan && cashbackRaw > 0;
 	const cashback = subsidyEligible ? cashbackRaw : 0;
 	const releaseAmount = subsidyEligible ? Number((cashback / installments).toFixed(4)) : 0;
-	const deferredToFrozen = subsidyEligible
-		? Number(Math.max(0, cashback - releaseAmount).toFixed(4))
-		: 0;
+	// 冻结改为「首期领取后」才生成，流水入库时不再累加 deferredToFrozen
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
 	let tradeMemberBucket = 'non_member';
@@ -471,26 +469,8 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	}
 
 	await machineCol.where({ device_id: deviceId, is_deleted: false }).update({
-		total_transaction: newTotal,
-		...(deferredToFrozen > 0
-			? {
-					frozen_amount: Number((Number(machine.frozen_amount || 0) + deferredToFrozen).toFixed(4))
-				}
-			: {})
+		total_transaction: newTotal
 	});
-	// 低于可积分门槛或一期全返：不累加冻结
-	if (deferredToFrozen > 0 && machine.bind_user_id && (!risk.is_risk || risk.risk_audit_status === 'approved')) {
-		const mRes = await merchantCol.where(
-			db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }])
-		).limit(1).get();
-		const mer = mRes.data && mRes.data[0];
-		if (mer) {
-			await merchantCol.doc(mer._id).update({
-				frozen_amount: Number((Number(mer.frozen_amount || 0) + deferredToFrozen).toFixed(4)),
-				update_time: createTime
-			});
-		}
-	}
 
 	if (refundFlag && ologno) {
 		try {

@@ -2,13 +2,24 @@
 	{
 		"IndexName": "login_time_desc",
 		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "login_time", "Direction": "-1", "Type": "long" }],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "points_opt_whitelist",
+		"MgoKeySchema": {
 			"MgoIndexKeys": [
-				{
-					"Name": "login_time",
-					"Direction": "-1",
-					"Type": "long"
-				}
+				{ "Name": "points_opt_whitelist", "Direction": "1", "Type": "bool" },
+				{ "Name": "points_opt_whitelist_at", "Direction": "-1", "Type": "long" }
 			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "user_id",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "user_id", "Direction": "1", "Type": "string" }],
 			"MgoIsUnique": false
 		}
 	}

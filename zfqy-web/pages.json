@@ -845,6 +845,12 @@
 					"style": {
 						"navigationBarTitleText": "积分记录"
 					}
+				},
+				{
+					"path": "points-optimize/index",
+					"style": {
+						"navigationBarTitleText": "积分优化"
+					}
 				}
 			]
 		}

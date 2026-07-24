@@ -31,6 +31,7 @@
 						<uni-tr>
 							<uni-th align="center" width="60">头像</uni-th>
 							<uni-th align="center" width="60">协议</uni-th>
+							<uni-th align="center" width="160">商户编号</uni-th>
 							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具号码</uni-th>
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'wxNickname')">微信用户</uni-th>
 							<uni-th align="center" width="140" filter-type="select" :filter-data="membershipLevelFilterData" @filter-change="headerFilterChange($event, 'membershipLevel')">会员级别</uni-th>
@@ -41,11 +42,8 @@
 							<uni-th align="center" width="90">冻结金额</uni-th>
 							<uni-th align="center" width="70">优惠券</uni-th>
 							<uni-th align="center" width="90" filter-type="select" :filter-data="useStatusFilterData" @filter-change="headerFilterChange($event, 'useStatus')">使用状态</uni-th>
-							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag1')">1</uni-th>
-							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag2')">2</uni-th>
-							<uni-th align="center" width="60" filter-type="select" :filter-data="flagBoolFilterData" @filter-change="headerFilterChange($event, 'flag3')">3</uni-th>
-							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">登录时间</uni-th>
-							<uni-th align="center" width="200">操作</uni-th>
+							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">最后登录</uni-th>
+							<uni-th align="center" width="300">操作</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item.id">
 							<uni-td align="center">
@@ -58,6 +56,9 @@
 									@click="previewAgreement(item)"
 								>已签署</text>
 								<text v-else class="agreement-status agreement-status--unsigned">未签署</text>
+							</uni-td>
+							<uni-td align="center">
+								<view class="cell-multiline tiny-id">{{ item.userId || item.id || '-' }}</view>
 							</uni-td>
 							<uni-td align="center">
 								<view class="cell-multiline">{{ formatDeviceDisplay(item.deviceDisplay) }}</view>
@@ -80,31 +81,26 @@
 							<uni-td align="center">
 								<switch :checked="item.status" @change="onSwitch(item, 'status', $event.detail.value)" />
 							</uni-td>
-							<uni-td align="center">
-								<switch :checked="item.flag1" @change="onSwitch(item, 'flag1', $event.detail.value)" />
-							</uni-td>
-							<uni-td align="center">
-								<switch :checked="item.flag2" @change="onSwitch(item, 'flag2', $event.detail.value)" />
-							</uni-td>
-							<uni-td align="center">
-								<switch :checked="item.flag3" @change="onSwitch(item, 'flag3', $event.detail.value)" />
-							</uni-td>
 							<uni-td align="center">{{ item.loginTime }}</uni-td>
-							<uni-td align="center">
+							<uni-td align="center" class="ops-td">
 								<view class="cell-actions">
-									<button size="mini" type="primary" @click="openPointsInsight(item)">积分明细</button>
-									<button size="mini" type="warn" plain @click="openEditPending(item)">修改积分</button>
-									<button size="mini" type="default" @click="openDeviceManage(item)">机具维护</button>
-									<button size="mini" plain @click="openRefundWindow(item)">退款窗口</button>
+									<button class="act-btn act-btn--detail" @click="openPointsInsight(item)">积分明细</button>
+									<button class="act-btn act-btn--edit" @click="openEditPending(item)">修改积分</button>
+									<button class="act-btn act-btn--slice" @click="openPointsSlices(item)">优化调整</button>
+									<button
+										class="act-btn"
+										:class="item.pointsOptWhitelist ? 'act-btn--wl-on' : 'act-btn--wl'"
+										@click="togglePointsOptWhitelist(item)"
+									>
+										{{ item.pointsOptWhitelist ? '移出白名单' : '优化白名单' }}
+									</button>
+									<button class="act-btn act-btn--device" @click="openDeviceManage(item)">机具维护</button>
+									<button class="act-btn act-btn--refund" @click="openRefundWindow(item)">退款窗口</button>
 									<button
 										v-if="item.agreementSigned"
-										size="mini"
-										type="warn"
-										plain
+										class="act-btn act-btn--danger"
 										@click="confirmClearAgreement(item)"
-									>
-										删除协议
-									</button>
+									>删除协议</button>
 								</view>
 							</uni-td>
 						</uni-tr>
@@ -377,6 +373,46 @@
 				</view>
 			</view>
 		</uni-popup>
+		<uni-popup ref="slicePopup" type="center">
+			<view class="slice-modal">
+				<view class="slice-title">优化调整 · {{ sliceMerchant.name || sliceMerchant.userId }}</view>
+				<view class="slice-hint">
+					白名单：{{ sliceMerchant.whitelist ? '是' : '否' }} · 已执行={{ sliceMerchant.applied }} ·
+					应达周={{ sliceMerchant.dueWeeks }}
+				</view>
+				<scroll-view scroll-y class="slice-scroll">
+					<view v-for="group in sliceGroupsByMonth" :key="group.targetYm" class="slice-month-block">
+						<view class="slice-month-head">
+							<text class="slice-month-title">待返月份 {{ group.targetYmLabel }}</text>
+							<text class="slice-month-sum">
+								共 {{ group.slices.length }} 片 · 生效合计 {{ group.effectiveSum }}
+							</text>
+						</view>
+						<view v-for="s in group.slices" :key="s.id" class="slice-row">
+							<text class="slice-meta">
+								来源 {{ s.sourceYm }} · 第 {{ Number(s.sliceIndex) + 1 }} 档（#{{ s.sliceIndex }}）
+								{{ s.isClaimed ? '（已领）' : '' }}
+								{{ s.optSkip ? ' · 后续不优化' : '' }}
+							</text>
+							<text>原始 {{ s.original }} / 系统 {{ s.system }} / 生效 {{ s.effective }}</text>
+							<view v-if="!s.isClaimed" class="slice-edit">
+								<input v-model="s._edit" class="slice-input slice-amt" type="digit" placeholder="人工金额" />
+								<button size="mini" type="primary" :loading="sliceLoading" @click="saveSlice(s)">保存</button>
+								<label class="opt-skip-label" @click.stop.prevent="toggleOptSkip(s)">
+									<checkbox :checked="!!s.optSkip" />
+									<text>后续不优化</text>
+								</label>
+							</view>
+						</view>
+					</view>
+					<view v-if="!sliceList.length" class="slice-hint">暂无分片（可先点对账）</view>
+				</scroll-view>
+				<view class="slice-actions">
+					<button size="mini" :loading="sliceLoading" @click="reconcileSlices">对账原始片</button>
+					<button size="mini" @click="closeSlices">关闭</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -486,7 +522,10 @@ export default {
 				currentText: '',
 				pendingYuan: '',
 				remark: ''
-			}
+			},
+			sliceLoading: false,
+			sliceMerchant: {},
+			sliceList: []
 		};
 	},
 	computed: {
@@ -501,6 +540,30 @@ export default {
 		offlineGiftRequired() {
 			const pkg = (this.offlinePackages || []).find((x) => x.value === this.offlineForm.packageId);
 			return !!(pkg && pkg.giftChoiceRequired);
+		},
+		/** 按目标待返月分组，与积分优化页一致 */
+		sliceGroupsByMonth() {
+			const map = new Map();
+			for (const s of this.sliceList || []) {
+				const ym = String(s.targetYm || '').trim() || '未知';
+				if (!map.has(ym)) map.set(ym, []);
+				map.get(ym).push(s);
+			}
+			const yms = [...map.keys()].sort((a, b) => String(a).localeCompare(String(b)));
+			return yms.map((ym) => {
+				const slices = map.get(ym) || [];
+				let sum = 0;
+				for (const s of slices) sum += Number(s.effective || 0);
+				const [ys, ms] = String(ym).split('-');
+				const m = Number(ms);
+				const label = ys && Number.isFinite(m) ? `${ys}年${m}月` : ym;
+				return {
+					targetYm: ym,
+					targetYmLabel: label,
+					slices,
+					effectiveSum: Number(sum.toFixed(2))
+				};
+			});
 		}
 	},
 	mounted() {
@@ -1068,6 +1131,7 @@ export default {
 				if (page > 500) break;
 			}
 			return all.map((x) => ({
+				商户编号: x.userId || x.id || '',
 				机具号码: x.deviceNo || '',
 				微信用户: x.wxUser || '',
 				会员级别: x.membershipLevel || '普通会员',
@@ -1079,10 +1143,7 @@ export default {
 				冻结金额: x.frozenAmount || '',
 				优惠券: x.couponCount || 0,
 				使用状态: x.useStatus || '',
-				开关1: x.flag1 ? '启用' : '禁用',
-				开关2: x.flag2 ? '启用' : '禁用',
-				开关3: x.flag3 ? '启用' : '禁用',
-				登录时间: x.loginTime || '',
+				最后登录: x.loginTime || '',
 				协议签署IP: x.agreementSignedIp || '',
 				协议设备标识: x.agreementSignDevice || ''
 			}));
@@ -1294,6 +1355,109 @@ export default {
 				this.pointsInsightLoading = false;
 			}
 		},
+		async loadSliceState(uid) {
+			const merchantUserId = String(uid || '').trim();
+			if (!merchantUserId) return false;
+			const res = await this.$request(
+				'pointsSliceStateList',
+				{ merchantUserId },
+				{ functionName: 'points-optimize-admin' }
+			);
+			if (res.code !== 0) {
+				uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+				return false;
+			}
+			this.sliceMerchant = (res.data && res.data.merchant) || {};
+			this.sliceList = ((res.data && res.data.list) || []).map((s) => ({
+				...s,
+				optSkip: !!s.optSkip,
+				_edit: s.manual != null ? String(s.manual) : String(s.effective)
+			}));
+			return true;
+		},
+		async openPointsSlices(item) {
+			const uid = item && (item.userId || item.id);
+			if (!uid) return;
+			this.sliceLoading = true;
+			uni.showLoading({ title: '加载中', mask: true });
+			try {
+				const ok = await this.loadSliceState(uid);
+				if (ok && this.$refs.slicePopup) this.$refs.slicePopup.open();
+			} finally {
+				uni.hideLoading();
+				this.sliceLoading = false;
+			}
+		},
+		closeSlices() {
+			this.$refs.slicePopup && this.$refs.slicePopup.close();
+		},
+		async reconcileSlices() {
+			const uid = this.sliceMerchant.userId;
+			if (!uid) return;
+			this.sliceLoading = true;
+			try {
+				const res = await this.$request(
+					'pointsSliceReconcile',
+					{ merchantUserId: uid },
+					{ functionName: 'points-optimize-admin' }
+				);
+				uni.showToast({
+					title: res.code === 0 ? '对账成功' : res.message || '对账失败',
+					icon: 'none'
+				});
+				await this.loadSliceState(uid);
+			} finally {
+				this.sliceLoading = false;
+			}
+		},
+		async saveSlice(s) {
+			this.sliceLoading = true;
+			try {
+				const res = await this.$request(
+					'pointsSliceManualSet',
+					{ sliceId: s.id, amount: s._edit },
+					{ functionName: 'points-optimize-admin' }
+				);
+				uni.showToast({ title: res.message || '保存成功', icon: 'none' });
+				await this.loadSliceState(this.sliceMerchant.userId);
+			} finally {
+				this.sliceLoading = false;
+			}
+		},
+		async toggleOptSkip(s) {
+			if (!s || s.isClaimed) return;
+			const next = !s.optSkip;
+			const res = await this.$request(
+				'pointsSliceManualSet',
+				{ sliceId: s.id, optSkip: next },
+				{ functionName: 'points-optimize-admin' }
+			);
+			if (res.code !== 0) {
+				uni.showToast({ title: res.message || '设置失败', icon: 'none' });
+				return;
+			}
+			s.optSkip = next;
+			uni.showToast({ title: res.message || '已更新', icon: 'none' });
+		},
+		async togglePointsOptWhitelist(item) {
+			const uid = item && (item.userId || item.id);
+			if (!uid) return;
+			const on = !!item.pointsOptWhitelist;
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: on ? '移出优化白名单' : '加入优化白名单',
+					content: on
+						? '移出后该商户将重新受登录周优化规则影响（已砍金额不恢复）。'
+						: '加入后该商户不受登录周优化影响（已砍金额不恢复）。',
+					success: (r) => resolve(!!r.confirm)
+				});
+			});
+			if (!ok) return;
+			const action = on ? 'pointsOptimizeWhitelistRemove' : 'pointsOptimizeWhitelistAdd';
+			const res = await this.$request(action, { merchantUserId: uid }, { functionName: 'points-optimize-admin' });
+			uni.showToast({ title: res.message || (res.code === 0 ? '成功' : '失败'), icon: 'none' });
+			if (res.code === 0) this.search();
+		},
 		parseMoneyText(raw) {
 			const n = Number(String(raw == null ? '' : raw).replace(/[￥¥,\s]/g, '').trim());
 			return Number.isFinite(n) ? n : 0;
@@ -1378,7 +1542,7 @@ export default {
 			if (!item || !item.userId) return;
 			this.deviceManage = {
 				title: `${this.formatWxUserLine(item)} · 机具维护`,
-				subtitle: `商户 ID：${item.userId}`,
+				subtitle: `商户编号：${item.userId}`,
 				merchantId: item.id || '',
 				merchantUserId: item.userId,
 				list: [],
@@ -1613,6 +1777,11 @@ export default {
 .cell-multiline {
 	white-space: pre-line;
 	line-height: 18px;
+}
+
+.tiny-id {
+	font-size: 12px;
+	word-break: break-all;
 }
 
 .member-cell {
@@ -1974,10 +2143,126 @@ export default {
 }
 
 .cell-actions {
-	display: flex;
-	flex-direction: column;
-	align-items: stretch;
-	gap: 8px;
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 6px;
+	width: 288px;
+	margin: 0 auto;
+	padding: 2px 0;
+}
+
+.ops-td {
+	vertical-align: middle;
+}
+
+.act-btn {
+	margin: 0;
+	padding: 0 4px;
+	height: 28px;
+	line-height: 28px;
+	font-size: 12px;
+	font-weight: 500;
+	color: #4b5563;
+	background: #f8fafc;
+	border: 1px solid #e2e8f0;
+	border-radius: 6px;
+	box-sizing: border-box;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.act-btn::after {
+	border: none;
+}
+
+.act-btn--detail {
+	color: #fff;
+	background: #3b82f6;
+	border-color: #3b82f6;
+}
+
+.act-btn--detail:hover {
+	background: #2563eb;
+	border-color: #2563eb;
+}
+
+.act-btn--edit {
+	color: #be123c;
+	background: #fff1f2;
+	border-color: #fecdd3;
+}
+
+.act-btn--edit:hover {
+	background: #ffe4e6;
+	border-color: #fda4af;
+}
+
+.act-btn--slice {
+	color: #6d28d9;
+	background: #f5f3ff;
+	border-color: #ddd6fe;
+}
+
+.act-btn--slice:hover {
+	background: #ede9fe;
+	border-color: #c4b5fd;
+}
+
+.act-btn--wl {
+	color: #b45309;
+	background: #fffbeb;
+	border-color: #fde68a;
+}
+
+.act-btn--wl:hover {
+	background: #fef3c7;
+	border-color: #fcd34d;
+}
+
+.act-btn--wl-on {
+	color: #92400e;
+	background: #fef3c7;
+	border-color: #f59e0b;
+}
+
+.act-btn--wl-on:hover {
+	background: #fde68a;
+	border-color: #d97706;
+}
+
+.act-btn--device {
+	color: #047857;
+	background: #ecfdf5;
+	border-color: #a7f3d0;
+}
+
+.act-btn--device:hover {
+	background: #d1fae5;
+	border-color: #6ee7b7;
+}
+
+.act-btn--refund {
+	color: #c2410c;
+	background: #fff7ed;
+	border-color: #fed7aa;
+}
+
+.act-btn--refund:hover {
+	background: #ffedd5;
+	border-color: #fdba74;
+}
+
+.act-btn--danger {
+	color: #b91c1c;
+	background: #fef2f2;
+	border-color: #fecaca;
+}
+
+.act-btn--danger:hover {
+	background: #fee2e2;
+	border-color: #fca5a5;
 }
 
 .device-manage-modal {
@@ -2120,6 +2405,107 @@ export default {
 	margin-top: 10px;
 	display: flex;
 	justify-content: flex-end;
+}
+
+.slice-modal {
+	width: 720px;
+	max-width: 94vw;
+	max-height: 86vh;
+	background: #fff;
+	border-radius: 10px;
+	padding: 14px;
+	box-sizing: border-box;
+}
+.slice-title {
+	font-size: 16px;
+	font-weight: 700;
+}
+.slice-hint {
+	font-size: 12px;
+	color: #606266;
+	line-height: 1.6;
+	margin-top: 6px;
+}
+.slice-scroll {
+	height: 56vh;
+	margin-top: 8px;
+}
+.slice-month-block {
+	margin-bottom: 12px;
+	border: 1px solid #dcdfe6;
+	border-radius: 8px;
+	background: #fafbfc;
+	overflow: hidden;
+}
+.slice-month-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 10px 12px;
+	background: #eef3fb;
+	border-bottom: 1px solid #d9e4f5;
+}
+.slice-month-title {
+	font-size: 14px;
+	font-weight: 700;
+	color: #1f2d3d;
+}
+.slice-month-sum {
+	font-size: 12px;
+	color: #606266;
+}
+.slice-row {
+	border-bottom: 1px solid #ebeef5;
+	padding: 8px 12px;
+	font-size: 12px;
+	color: #606266;
+	background: #fff;
+}
+.slice-month-block .slice-row:last-child {
+	border-bottom: none;
+}
+.slice-meta {
+	display: block;
+	font-weight: 600;
+	color: #303133;
+	margin-bottom: 4px;
+}
+.slice-edit {
+	display: flex;
+	gap: 6px;
+	margin-top: 6px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+.slice-input {
+	height: 32px;
+	border: 1px solid #dcdfe6;
+	border-radius: 4px;
+	padding: 0 8px;
+	box-sizing: border-box;
+}
+.slice-amt {
+	min-width: 100px;
+	width: 110px;
+}
+.opt-skip-label {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: 12px;
+	color: #606266;
+	margin-left: 4px;
+	cursor: pointer;
+}
+.slice-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	align-items: center;
+	gap: 8px;
+	margin-top: 8px;
 }
 </style>
 

@@ -43,5 +43,44 @@
 			],
 			"MgoIsUnique": false
 		}
+	},
+	{
+		"IndexName": "device_id_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "device_id",
+					"Direction": "1"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "stats_eligible_device_id_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "stats_eligible",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "device_id",
+					"Direction": "1"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
 	}
 ]
