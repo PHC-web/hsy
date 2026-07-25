@@ -1,0 +1,35 @@
+[
+	{
+		"IndexName": "deleted_status_claimed_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "is_deleted", "Direction": "1", "Type": "bool" },
+				{ "Name": "status", "Direction": "1", "Type": "string" },
+				{ "Name": "claimed_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "merchant_deleted_status_claimed_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
+				{ "Name": "is_deleted", "Direction": "1", "Type": "bool" },
+				{ "Name": "status", "Direction": "1", "Type": "string" },
+				{ "Name": "claimed_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "merchant_dedup_key",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
+				{ "Name": "dedup_key", "Direction": "1", "Type": "string" }
+			],
+			"MgoIsUnique": false
+		}
+	}
+]
