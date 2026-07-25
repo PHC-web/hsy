@@ -3017,6 +3017,7 @@ async function adminDashboardTrend30d(data = {}) {
 			{ key: 'other', label: '其他(虚拟的)' }
 		];
 		const trendTradeTypeKeySet = new Set(trendTradeTypeDefs.map((x) => x.key));
+		let allTimeTradeCount = 0;
 		const normalizeTrendTradeType = (row = {}) => {
 			const isVirtual = String(row.trade_type || '') === 'virtual';
 			if (isVirtual) return 'other';
@@ -3024,11 +3025,6 @@ async function adminDashboardTrend30d(data = {}) {
 			if (trendTradeTypeKeySet.has(code)) return code;
 			return 'other';
 		};
-		try {
-			allTimeTotalFlow = cardBase.ok ? await adminSumTradeAmountCardAligned(cardBase) : 0;
-		} catch (eAgg) {
-			allTimeTotalFlow = 0;
-		}
 		try {
 			// 有绑定时间即视为已绑定机具商户，走 bind_time 索引，避免 user_id/device_id $exists 误选索引
 			const bindCountRes = await merchantCollection.where({ bind_time: _.gt(0) }).count();
@@ -3130,23 +3126,32 @@ async function adminDashboardTrend30d(data = {}) {
 		}
 		try {
 			if (cardBase.ok) {
+				// 一次扫全量：同时累计 allTime 金额/笔数/交易类型，避免再单独 aggregate sum/count
 				await adminForEachTradeRowPagedCardAligned(
 					cardBase,
 					{ trade_type: true, paychannel: true, amount: true },
 					(rows) => {
 						rows.forEach((row) => {
+							const amt = Number(row.amount || 0);
+							allTimeTotalFlow += amt;
+							allTimeTradeCount += 1;
 							const k = normalizeTrendTradeType(row);
 							if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
 							allTimeTradeTypeStats[k].count += 1;
-							allTimeTradeTypeStats[k].amount += Number(row.amount || 0);
+							allTimeTradeTypeStats[k].amount += amt;
 						});
 					}
 				);
+				allTimeTotalFlow = Number(Number(allTimeTotalFlow || 0).toFixed(2));
 			} else {
 				allTimeTradeTypeStats = {};
+				allTimeTotalFlow = 0;
+				allTimeTradeCount = 0;
 			}
 		} catch (eAgg) {
 			allTimeTradeTypeStats = {};
+			allTimeTotalFlow = 0;
+			allTimeTradeCount = 0;
 		}
 
 		const dayFlow = {};
@@ -3161,6 +3166,8 @@ async function adminDashboardTrend30d(data = {}) {
 		const dayTradeTypeCount = {};
 		const dayTradeTypeAmount = {};
 		const rangeTradeTypeStats = {};
+		let rangeTradeCount = 0;
+		let rangeTradeAmount = 0;
 		range.keys.forEach((d) => {
 			dayFlow[d] = 0;
 			dayBind[d] = 0;
@@ -3178,17 +3185,21 @@ async function adminDashboardTrend30d(data = {}) {
 				rows.forEach((row) => {
 					const d = bucketKeyByRange(row.create_time, range);
 					if (!dayFlow[d] && dayFlow[d] !== 0) return;
-					dayFlow[d] += Number(row.amount || 0);
+					const amt = Number(row.amount || 0);
+					dayFlow[d] += amt;
+					rangeTradeAmount += amt;
+					rangeTradeCount += 1;
 					const typeKey = normalizeTrendTradeType(row);
 					if (!rangeTradeTypeStats[typeKey]) rangeTradeTypeStats[typeKey] = { count: 0, amount: 0 };
 					rangeTradeTypeStats[typeKey].count += 1;
-					rangeTradeTypeStats[typeKey].amount += Number(row.amount || 0);
+					rangeTradeTypeStats[typeKey].amount += amt;
 					if (!dayTradeTypeCount[d][typeKey]) dayTradeTypeCount[d][typeKey] = 0;
 					if (!dayTradeTypeAmount[d][typeKey]) dayTradeTypeAmount[d][typeKey] = 0;
 					dayTradeTypeCount[d][typeKey] += 1;
-					dayTradeTypeAmount[d][typeKey] += Number(row.amount || 0);
+					dayTradeTypeAmount[d][typeKey] += amt;
 				});
 			}, tradeRangeExtra);
+			rangeTradeAmount = Number(Number(rangeTradeAmount || 0).toFixed(2));
 		}
 
 		const bindSeenByDay = {};
@@ -3295,13 +3306,7 @@ async function adminDashboardTrend30d(data = {}) {
 				};
 			}),
 			summary: {
-				totalFlow: cardBase.ok
-					? await adminSumTradeAmountCardAligned(cardBase, tradeRangeExtra)
-					: Number(
-							Object.values(dayFlow)
-								.reduce((sum, n) => sum + Number(n || 0), 0)
-								.toFixed(2)
-					  ),
+				totalFlow: Number(Number(rangeTradeAmount || 0).toFixed(2)),
 				allTimeTotalFlow: Number(Number(allTimeTotalFlow || 0).toFixed(2)),
 				totalBindMerchantCount: Number(rangeBindMerchants.size || 0),
 				totalRechargeMerchantCount: Number(rangeRechargeMerchants.size || 0),
@@ -3315,10 +3320,10 @@ async function adminDashboardTrend30d(data = {}) {
 				totalExchangeNetAmount: Number(exchangeNetAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
 				allTimeExchangeCount: Number(allTimeExchangeCount || 0),
 				allTimeExchangeNetAmount: Number(Number(allTimeExchangeNetAmount || 0).toFixed(2)),
-				totalTradeCount: cardBase.ok ? await adminCountTradesCardAligned(cardBase, tradeRangeExtra) : 0,
-				allTimeTradeCount: cardBase.ok ? await adminCountTradesCardAligned(cardBase) : 0,
-				totalTradeAmount: cardBase.ok ? await adminSumTradeAmountCardAligned(cardBase, tradeRangeExtra) : 0,
-				allTimeTradeAmount: cardBase.ok ? await adminSumTradeAmountCardAligned(cardBase) : 0
+				totalTradeCount: Number(rangeTradeCount || 0),
+				allTimeTradeCount: Number(allTimeTradeCount || 0),
+				totalTradeAmount: Number(Number(rangeTradeAmount || 0).toFixed(2)),
+				allTimeTradeAmount: Number(Number(allTimeTotalFlow || 0).toFixed(2))
 			},
 			series: {
 				dailyFlow,
