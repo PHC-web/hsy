@@ -2642,7 +2642,10 @@ function bucketKeyByRange(ts, range) {
 
 /** 与 machine/getCardRecordList 一致：get() 默认仅 100 条，须分页拉全量已绑定机具 */
 const ADMIN_CARD_ALIGN_MACHINE_PAGE = 1000;
-const ADMIN_CARD_ALIGN_IN_CHUNK = 450;
+/** 单次 $in 机具数；禁止再用 $or 拼多段 $in（慢查询） */
+const ADMIN_CARD_ALIGN_IN_CHUNK = 300;
+/** 分 chunk 查交易时的并发，避免打爆 DB */
+const ADMIN_CARD_ALIGN_QUERY_CONCURRENCY = 3;
 
 function adminChunkIdsForIn(arr, chunkSize) {
 	const out = [];
@@ -2675,9 +2678,57 @@ async function adminFetchAllBoundDeviceIdsForCardAlign(boundMachineWhere) {
 }
 
 /**
+ * 粉卡对齐口径：公共条件（不含 device_id）。
+ * 顺序刻意把 stats_eligible 放前面，便于走 stats_eligible+device_id+create_time 索引。
+ */
+function buildCardAlignTradeCommonParts(_) {
+	return [
+		{ stats_eligible: true },
+		{ is_deleted: _.neq(true) },
+		_.and([{ user_id: _.neq('') }, { user_id: _.neq(null) }]),
+		_.or([{ user_name: _.neq('') }, { user_mobile: _.neq('') }]),
+		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
+	];
+}
+
+/** 单 chunk：stats_eligible + device_id $in(chunk) + 公共条件 + extra */
+function buildCardAlignedTradeWhereForChunk(_, deviceChunk, extraAnd = []) {
+	const ids = (Array.isArray(deviceChunk) ? deviceChunk : []).map((x) => String(x || '').trim()).filter(Boolean);
+	if (!ids.length) return null;
+	const parts = [{ stats_eligible: true }, { device_id: _.in(ids) }, ...buildCardAlignTradeCommonParts(_).slice(1)];
+	const extras = (Array.isArray(extraAnd) ? extraAnd : []).filter(Boolean);
+	if (extras.length) parts.push(...extras);
+	return parts.length === 1 ? parts[0] : _.and(parts);
+}
+
+async function adminMapCardAlignDeviceChunks(cardBase, worker, concurrency = ADMIN_CARD_ALIGN_QUERY_CONCURRENCY) {
+	const chunks = (cardBase && Array.isArray(cardBase.deviceChunks) ? cardBase.deviceChunks : []).filter(
+		(c) => Array.isArray(c) && c.length
+	);
+	if (!chunks.length) return [];
+	const results = new Array(chunks.length);
+	let cursor = 0;
+	const limit = Math.max(1, Math.min(Number(concurrency) || 1, chunks.length));
+	const runners = [];
+	for (let c = 0; c < limit; c += 1) {
+		runners.push(
+			(async () => {
+				for (;;) {
+					const idx = cursor;
+					cursor += 1;
+					if (idx >= chunks.length) break;
+					results[idx] = await worker(chunks[idx], idx);
+				}
+			})()
+		);
+	}
+	await Promise.all(runners);
+	return results;
+}
+
+/**
  * 与 cloudfunctions/machine#getCardRecordList 在无额外筛选时的主口径对齐（不含时间）。
- * 仅用「当前已绑定机具」的 device_id $in + stats_eligible 等；不再叠加巨大的 user_id $in。
- * 用于首页流水统计、粉卡总刷卡、交易类型图等。
+ * 返回 deviceChunks，查询时按 chunk 分别执行再合并，禁止巨型 $or+$in。
  */
 async function buildCardRecordAlignedTradeBaseWhere(_) {
 	try {
@@ -2688,30 +2739,91 @@ async function buildCardRecordAlignedTradeBaseWhere(_) {
 		};
 		const boundDeviceIds = await adminFetchAllBoundDeviceIdsForCardAlign(boundMachineWhere);
 		if (!boundDeviceIds.length) {
-			return { ok: false, baseWhere: null };
+			return { ok: false, deviceChunks: [], baseWhere: null };
 		}
-		const whereParts = [{ is_deleted: _.neq(true) }];
-		if (boundDeviceIds.length <= ADMIN_CARD_ALIGN_IN_CHUNK) {
-			whereParts.push({ device_id: _.in(boundDeviceIds) });
-		} else {
-			whereParts.push(
-				_.or(
-					adminChunkIdsForIn(boundDeviceIds, ADMIN_CARD_ALIGN_IN_CHUNK).map((c) => ({
-						device_id: _.in(c)
-					}))
-				)
-			);
-		}
-		whereParts.push({ stats_eligible: true });
-		whereParts.push(_.and([{ user_id: _.neq('') }, { user_id: _.neq(null) }]));
-		whereParts.push(_.or([{ user_name: _.neq('') }, { user_mobile: _.neq('') }]));
-		whereParts.push(_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]));
-		const baseWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
-		return { ok: true, baseWhere };
+		const deviceChunks = adminChunkIdsForIn(boundDeviceIds, ADMIN_CARD_ALIGN_IN_CHUNK);
+		// 兼容旧调用：仅单 chunk 时提供 baseWhere；多 chunk 必须走分片 helper
+		const baseWhere =
+			deviceChunks.length === 1 ? buildCardAlignedTradeWhereForChunk(_, deviceChunks[0]) : null;
+		return {
+			ok: true,
+			deviceChunks,
+			deviceCount: boundDeviceIds.length,
+			baseWhere
+		};
 	} catch (e) {
 		console.error('buildCardRecordAlignedTradeBaseWhere', e);
-		return { ok: false, baseWhere: null };
+		return { ok: false, deviceChunks: [], baseWhere: null };
 	}
+}
+
+async function adminSumTradeAmountCardAligned(cardBase, extraAnd = []) {
+	const _ = db.command;
+	if (!cardBase || !cardBase.ok) return 0;
+	const parts = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
+		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
+		return where ? await adminSumTradeAmountWhere(where) : 0;
+	});
+	const sum = (parts || []).reduce((s, n) => s + Number(n || 0), 0);
+	return Number(sum.toFixed(2));
+}
+
+async function adminCountTradesCardAligned(cardBase, extraAnd = []) {
+	const _ = db.command;
+	if (!cardBase || !cardBase.ok) return 0;
+	const parts = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
+		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
+		return where ? await adminCountTradesWhere(where) : 0;
+	});
+	return (parts || []).reduce((s, n) => s + Number(n || 0), 0);
+}
+
+/** 按 trade_member_bucket 分桶求和（分 chunk 聚合后合并） */
+async function adminSumTradeAmountByBucketCardAligned(cardBase, extraAnd = []) {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const byBucket = Object.create(null);
+	if (!cardBase || !cardBase.ok) return { total: 0, byBucket, rows: [] };
+	const chunkRows = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
+		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
+		if (!where) return [];
+		try {
+			const agg = await machineTradeCollection
+				.aggregate()
+				.match(where)
+				.group({ _id: '$trade_member_bucket', total: $.sum('$amount') })
+				.end();
+			return agg.data || [];
+		} catch (e) {
+			console.error('adminSumTradeAmountByBucketCardAligned chunk', e);
+			return [];
+		}
+	});
+	for (const rows of chunkRows || []) {
+		for (const row of rows || []) {
+			const key = row._id == null || row._id === '' ? '__empty__' : String(row._id);
+			byBucket[key] = Number(((byBucket[key] || 0) + Number(row.total || 0)).toFixed(2));
+		}
+	}
+	const rows = Object.keys(byBucket).map((k) => ({
+		_id: k === '__empty__' ? null : k,
+		total: byBucket[k]
+	}));
+	const total = Number(rows.reduce((s, r) => s + Number(r.total || 0), 0).toFixed(2));
+	return { total, byBucket, rows };
+}
+
+async function adminForEachTradeRowPagedCardAligned(cardBase, field, onBatch, extraAnd = []) {
+	const _ = db.command;
+	if (!cardBase || !cardBase.ok || typeof onBatch !== 'function') return 0;
+	let total = 0;
+	// 分页扫行串行按 chunk，避免并发 skip 放大压力
+	for (const chunk of cardBase.deviceChunks || []) {
+		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
+		if (!where) continue;
+		total += await adminForEachTradeRowPaged(where, field, onBatch);
+	}
+	return total;
 }
 
 /** 首页趋势：分页拉全量刷卡记录（规避单次 get 默认/上限约 1000 条） */
@@ -2801,13 +2913,7 @@ async function adminDashboardTrend30d(data = {}) {
 		const _ = db.command;
 		const $ = db.command.aggregate;
 		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
-		const tradeRangeWhere = cardBase.ok
-			? _.and([
-					cardBase.baseWhere,
-					{ create_time: _.gte(startTs) },
-					{ create_time: _.lte(endTs) }
-			  ])
-			: null;
+		const tradeRangeExtra = [{ create_time: _.gte(startTs) }, { create_time: _.lte(endTs) }];
 		const tradeRowField = {
 			create_time: true,
 			amount: true,
@@ -2815,21 +2921,33 @@ async function adminDashboardTrend30d(data = {}) {
 			paychannel: true,
 			paychannel_text: true
 		};
+		/** 只按 bind_time 范围查（走 bind_time 索引）；user_id/device_id 在内存过滤，避免误走 user_id 索引扫大文档 */
+		const fetchBoundMerchantsInRange = async () => {
+			const pageSize = 1000;
+			const all = [];
+			let skip = 0;
+			for (;;) {
+				const r = await merchantCollection
+					.where(_.and([{ bind_time: _.gte(startTs) }, { bind_time: _.lte(endTs) }]))
+					.field({ _id: true, user_id: true, bind_time: true, device_id: true })
+					.orderBy('bind_time', 'asc')
+					.skip(skip)
+					.limit(pageSize)
+					.get();
+				const rows = r.data || [];
+				for (const m of rows) {
+					if (!String(m.user_id || '').trim()) continue;
+					if (!String(m.device_id || '').trim()) continue;
+					all.push(m);
+				}
+				if (rows.length < pageSize) break;
+				skip += pageSize;
+				if (skip >= 50000) break;
+			}
+			return { data: all };
+		};
 		const [bindRes, payRes, logRes, wdRes] = await Promise.all([
-			merchantCollection
-				.where(
-					_.and([
-						{ bind_time: _.gte(startTs) },
-						{ bind_time: _.lte(endTs) },
-						{ user_id: _.exists(true) },
-						{ user_id: _.neq('') },
-						{ device_id: _.exists(true) },
-						{ device_id: _.neq('') }
-					])
-				)
-				.field({ _id: true, user_id: true, bind_time: true })
-				.limit(20000)
-				.get(),
+			fetchBoundMerchantsInRange(),
 			uniPayOrderCollection
 				.where(
 					_.and([
@@ -2907,33 +3025,13 @@ async function adminDashboardTrend30d(data = {}) {
 			return 'other';
 		};
 		try {
-			if (cardBase.ok) {
-				const allAgg = await machineTradeCollection
-					.aggregate()
-					.match(cardBase.baseWhere)
-					.group({
-						_id: null,
-						total: $.sum('$amount')
-					})
-					.end();
-				allTimeTotalFlow = Number((((allAgg.data || [])[0] || {}).total || 0).toFixed(2));
-			} else {
-				allTimeTotalFlow = 0;
-			}
+			allTimeTotalFlow = cardBase.ok ? await adminSumTradeAmountCardAligned(cardBase) : 0;
 		} catch (eAgg) {
 			allTimeTotalFlow = 0;
 		}
 		try {
-			const bindCountRes = await merchantCollection
-				.where(
-					_.and([
-						{ user_id: _.exists(true) },
-						{ user_id: _.neq('') },
-						{ device_id: _.exists(true) },
-						{ device_id: _.neq('') }
-					])
-				)
-				.count();
+			// 有绑定时间即视为已绑定机具商户，走 bind_time 索引，避免 user_id/device_id $exists 误选索引
+			const bindCountRes = await merchantCollection.where({ bind_time: _.gt(0) }).count();
 			allTimeBindMerchantCount = Number(bindCountRes.total || bindCountRes.result?.total || 0);
 		} catch (eAgg) {
 			allTimeBindMerchantCount = 0;
@@ -3032,8 +3130,8 @@ async function adminDashboardTrend30d(data = {}) {
 		}
 		try {
 			if (cardBase.ok) {
-				await adminForEachTradeRowPaged(
-					cardBase.baseWhere,
+				await adminForEachTradeRowPagedCardAligned(
+					cardBase,
 					{ trade_type: true, paychannel: true, amount: true },
 					(rows) => {
 						rows.forEach((row) => {
@@ -3075,8 +3173,8 @@ async function adminDashboardTrend30d(data = {}) {
 			dayTradeTypeAmount[d] = {};
 		});
 
-		if (cardBase.ok && tradeRangeWhere) {
-			await adminForEachTradeRowPaged(tradeRangeWhere, tradeRowField, (rows) => {
+		if (cardBase.ok) {
+			await adminForEachTradeRowPagedCardAligned(cardBase, tradeRowField, (rows) => {
 				rows.forEach((row) => {
 					const d = bucketKeyByRange(row.create_time, range);
 					if (!dayFlow[d] && dayFlow[d] !== 0) return;
@@ -3090,7 +3188,7 @@ async function adminDashboardTrend30d(data = {}) {
 					dayTradeTypeCount[d][typeKey] += 1;
 					dayTradeTypeAmount[d][typeKey] += Number(row.amount || 0);
 				});
-			});
+			}, tradeRangeExtra);
 		}
 
 		const bindSeenByDay = {};
@@ -3197,14 +3295,13 @@ async function adminDashboardTrend30d(data = {}) {
 				};
 			}),
 			summary: {
-				totalFlow:
-					cardBase.ok && tradeRangeWhere
-						? await adminSumTradeAmountWhere(tradeRangeWhere)
-						: Number(
-								Object.values(dayFlow)
-									.reduce((sum, n) => sum + Number(n || 0), 0)
-									.toFixed(2)
-						  ),
+				totalFlow: cardBase.ok
+					? await adminSumTradeAmountCardAligned(cardBase, tradeRangeExtra)
+					: Number(
+							Object.values(dayFlow)
+								.reduce((sum, n) => sum + Number(n || 0), 0)
+								.toFixed(2)
+					  ),
 				allTimeTotalFlow: Number(Number(allTimeTotalFlow || 0).toFixed(2)),
 				totalBindMerchantCount: Number(rangeBindMerchants.size || 0),
 				totalRechargeMerchantCount: Number(rangeRechargeMerchants.size || 0),
@@ -3218,12 +3315,10 @@ async function adminDashboardTrend30d(data = {}) {
 				totalExchangeNetAmount: Number(exchangeNetAmount.reduce((sum, n) => sum + Number(n || 0), 0).toFixed(2)),
 				allTimeExchangeCount: Number(allTimeExchangeCount || 0),
 				allTimeExchangeNetAmount: Number(Number(allTimeExchangeNetAmount || 0).toFixed(2)),
-				totalTradeCount:
-					cardBase.ok && tradeRangeWhere ? await adminCountTradesWhere(tradeRangeWhere) : 0,
-				allTimeTradeCount: cardBase.ok ? await adminCountTradesWhere(cardBase.baseWhere) : 0,
-				totalTradeAmount:
-					cardBase.ok && tradeRangeWhere ? await adminSumTradeAmountWhere(tradeRangeWhere) : 0,
-				allTimeTradeAmount: cardBase.ok ? await adminSumTradeAmountWhere(cardBase.baseWhere) : 0
+				totalTradeCount: cardBase.ok ? await adminCountTradesCardAligned(cardBase, tradeRangeExtra) : 0,
+				allTimeTradeCount: cardBase.ok ? await adminCountTradesCardAligned(cardBase) : 0,
+				totalTradeAmount: cardBase.ok ? await adminSumTradeAmountCardAligned(cardBase, tradeRangeExtra) : 0,
+				allTimeTradeAmount: cardBase.ok ? await adminSumTradeAmountCardAligned(cardBase) : 0
 			},
 			series: {
 				dailyFlow,
@@ -3308,20 +3403,25 @@ async function backfillTradeMemberBucketChunk(limit = 200) {
 	try {
 		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
 		if (!cardBase.ok) return 0;
-		const res = await machineTradeCollection
-			.where(
-				_.and([
-					cardBase.baseWhere,
-					_.or([
-						{ trade_member_bucket: _.exists(false) },
-						{ trade_member_bucket: _.nin(['member', 'non_member']) }
-					])
-				])
-			)
-			.field({ user_id: true })
-			.limit(Math.min(400, Math.max(1, Number(limit) || 200)))
-			.get();
-		const rows = res.data || [];
+		const needLimit = Math.min(400, Math.max(1, Number(limit) || 200));
+		const bucketMissExtra = [
+			_.or([
+				{ trade_member_bucket: _.exists(false) },
+				{ trade_member_bucket: _.nin(['member', 'non_member']) }
+			])
+		];
+		const rows = [];
+		for (const chunk of cardBase.deviceChunks || []) {
+			if (rows.length >= needLimit) break;
+			const where = buildCardAlignedTradeWhereForChunk(_, chunk, bucketMissExtra);
+			if (!where) continue;
+			const res = await machineTradeCollection
+				.where(where)
+				.field({ user_id: true })
+				.limit(needLimit - rows.length)
+				.get();
+			for (const r of res.data || []) rows.push(r);
+		}
 		if (!rows.length) return 0;
 		const uids = [...new Set(rows.map((r) => String(r.user_id || '').trim()).filter(Boolean))];
 		const merchantByUid = {};
@@ -3665,31 +3765,23 @@ async function adminHomeSummary(data = {}) {
 				return { data: [] };
 			});
 
-		const tradeTotalPromise =
-			cardBase.ok ?
-				machineTradeCollection
-					.aggregate()
-					.match(cardBase.baseWhere)
-					.group({ _id: null, total: $.sum('$amount') })
-					.end()
+		const tradeTotalPromise = cardBase.ok
+			? adminSumTradeAmountCardAligned(cardBase)
+					.then((total) => ({ data: [{ total }] }))
 					.catch((e) => {
 						console.error('adminHomeSummary tradeAgg', e);
 						return { data: [] };
 					})
-			:	Promise.resolve({ data: [] });
+			: Promise.resolve({ data: [] });
 
-		const tradeSplitPromise =
-			cardBase.ok ?
-				machineTradeCollection
-					.aggregate()
-					.match(cardBase.baseWhere)
-					.group({ _id: '$trade_member_bucket', total: $.sum('$amount') })
-					.end()
+		const tradeSplitPromise = cardBase.ok
+			? adminSumTradeAmountByBucketCardAligned(cardBase)
+					.then((pack) => ({ data: pack.rows || [] }))
 					.catch((e) => {
 						console.error('adminHomeSummary tradeSplit', e);
 						return { data: [] };
 					})
-			:	Promise.resolve({ data: [] });
+			: Promise.resolve({ data: [] });
 
 		const rechargePromise = uniPayOrderCollection
 			.aggregate()

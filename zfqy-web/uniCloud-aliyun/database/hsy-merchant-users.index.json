@@ -7,6 +7,13 @@
 		}
 	},
 	{
+		"IndexName": "bind_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "bind_time", "Direction": "-1", "Type": "long" }],
+			"MgoIsUnique": false
+		}
+	},
+	{
 		"IndexName": "points_opt_whitelist",
 		"MgoKeySchema": {
 			"MgoIndexKeys": [
