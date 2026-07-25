@@ -1041,7 +1041,7 @@ async function fetchAgreementImageDataUrl(imgUrl) {
 async function merchantAgreementImage(data = {}) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const img = String(merchant.agreement_img || '').trim();
 		if (!img) return { code: 404, message: '该商户未签署协议或签署图片不存在' };
@@ -1083,6 +1083,7 @@ async function merchantAgreementImage(data = {}) {
 async function merchantAgreementClear(data = {}, event = {}) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
+		// 清除签署记录不需要拉协议图内容
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
@@ -8160,12 +8161,19 @@ async function upsertMerchantByAuth(profile) {
 	return { id: addRes.id, userId, created: true };
 }
 
-async function getMerchantByIdOrUserId(key) {
+/**
+ * 按 _id / user_id / mobile / 设备号 查商户。
+ * 默认不返回 agreement_img（签名图常为 base64，单文档可达数 MB，会拖慢几乎所有登录/鉴权查询）。
+ * 需要协议图时传 { includeAgreementImg: true }。
+ */
+async function getMerchantByIdOrUserId(key, options = {}) {
 	const val = safeText(key, 120);
 	if (!val) return null;
+	const includeAgreementImg = options.includeAgreementImg === true;
+	const applyField = (q) => (includeAgreementImg ? q : q.field({ agreement_img: false }));
 	const ors = [{ _id: val }, { user_id: val }];
 	if (isValidCnMobile(val)) ors.push({ mobile: val });
-	const res = await merchantCollection.where(db.command.or(ors)).limit(1).get();
+	const res = await applyField(merchantCollection.where(db.command.or(ors)).limit(1)).get();
 	if (res.data && res.data.length) return res.data[0];
 	const mRes = await machineCollection
 		.where({ device_id: val, is_deleted: false, is_bound: 1 })
@@ -8174,10 +8182,9 @@ async function getMerchantByIdOrUserId(key) {
 		.get();
 	const bindUid = mRes.data && mRes.data[0] && mRes.data[0].bind_user_id ? String(mRes.data[0].bind_user_id).trim() : '';
 	if (!bindUid) return null;
-	const res2 = await merchantCollection
-		.where(db.command.or([{ user_id: bindUid }, { _id: bindUid }]))
-		.limit(1)
-		.get();
+	const res2 = await applyField(
+		merchantCollection.where(db.command.or([{ user_id: bindUid }, { _id: bindUid }])).limit(1)
+	).get();
 	if (res2.data && res2.data.length) return res2.data[0];
 	return null;
 }
@@ -9559,7 +9566,7 @@ async function h5AgreementSignedSnapshot(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		if (!merchantKey) return { code: 400, message: '缺少商户标识' };
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const curAgreement = await getCurrentAgreement();
 		const needSign = !isMerchantAgreementSatisfied(merchant, curAgreement);
