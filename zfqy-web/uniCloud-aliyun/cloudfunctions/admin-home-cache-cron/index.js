@@ -6,7 +6,7 @@
  *   ["cron:0 */3 * * * *"]
  * 超时建议 ≥ 300s
  *
- * 写入 merchant：preview / summary / trend:{today,week,month,30d}
+ * 写入 merchant：preview / summary / withdrawTop / trend:{today,week,month,30d}
  */
 
 async function callMerchant(action, data = {}) {
@@ -28,22 +28,26 @@ exports.main = async (event) => {
 	const summary = {
 		preview: false,
 		summary: false,
+		withdrawTop: false,
+		pendingFrozen: false,
 		trends: {}
 	};
 
 	try {
 		const base = await callMerchant('adminHomeCacheRefresh', {
-			parts: ['preview', 'summary']
+			parts: ['preview', 'summary', 'withdrawTop', 'pendingFrozen']
 		});
 		if (!base || base.code !== 0) {
 			return {
 				code: (base && base.code) || 500,
-				message: (base && base.message) || '预览/汇总刷新失败',
+				message: (base && base.message) || '预览/汇总/提现TOP/待提现冻结刷新失败',
 				data: summary
 			};
 		}
 		summary.preview = !!(base.data && base.data.preview);
 		summary.summary = !!(base.data && base.data.summary);
+		summary.withdrawTop = !!(base.data && base.data.withdrawTop);
+		summary.pendingFrozen = !!(base.data && base.data.pendingFrozen);
 
 		const rangeTypes = ['today', 'week', 'month', '30d'];
 		for (const rangeType of rangeTypes) {
@@ -59,9 +63,15 @@ exports.main = async (event) => {
 		}
 
 		const allTrendOk = rangeTypes.every((t) => summary.trends[t]);
+		const ok =
+			summary.preview &&
+			summary.summary &&
+			summary.withdrawTop &&
+			summary.pendingFrozen &&
+			allTrendOk;
 		return {
-			code: summary.preview && summary.summary && allTrendOk ? 0 : 207,
-			message: allTrendOk ? 'ok' : 'partial',
+			code: ok ? 0 : 207,
+			message: ok ? 'ok' : 'partial',
 			data: summary
 		};
 	} catch (e) {

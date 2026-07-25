@@ -180,6 +180,63 @@
 				</view>
 			</view>
 
+			<view class="panel-wrap pending-frozen-panel">
+				<view class="preview-panel-head">
+					<view class="panel-title mb0">待提现 / 冻结金额</view>
+					<view class="preview-panel-hint">待提现为全平台账号积分；冻结按月为未领分片生效额（含优化后）</view>
+				</view>
+				<view class="pending-frozen-grid">
+					<view class="pending-frozen-card pending-frozen-card--pending">
+						<text class="pending-frozen-label">待提现</text>
+						<text class="pending-frozen-value">{{ toMoney(pendingFrozen.pendingWithdrawTotal) }}</text>
+					</view>
+					<view
+						v-for="m in pendingFrozen.frozenMonths"
+						:key="m.ym"
+						class="pending-frozen-card"
+						:class="m.kind === 'current' ? 'pending-frozen-card--current' : 'pending-frozen-card--future'"
+					>
+						<text class="pending-frozen-label">{{ m.kind === 'current' ? ('本月(' + m.label + ')') : m.label }}</text>
+						<text class="pending-frozen-value">{{ toMoney(m.amount) }}</text>
+					</view>
+				</view>
+			</view>
+
+			<view class="panel-wrap withdraw-top-panel">
+				<view class="preview-panel-head">
+					<view class="panel-title mb0">提现排行 TOP20</view>
+					<!-- <view class="preview-panel-hint">按已到微信零钱金额排名（已打款且已到账）</view> -->
+				</view>
+				<view class="withdraw-top-table-wrap">
+					<view class="withdraw-top-table">
+						<view class="withdraw-top-tr withdraw-top-tr--head">
+							<text class="withdraw-top-td withdraw-top-td--rank">#</text>
+							<text class="withdraw-top-td withdraw-top-td--name">商户名</text>
+							<text class="withdraw-top-td withdraw-top-td--device">机具号</text>
+							<text class="withdraw-top-td withdraw-top-td--amt">提现金额</text>
+							<text class="withdraw-top-td withdraw-top-td--cnt">提现次数</text>
+							<text class="withdraw-top-td withdraw-top-td--mem">会员级别</text>
+						</view>
+						<view
+							v-for="row in withdrawTopList"
+							:key="row.merchantUserId || row.rank"
+							class="withdraw-top-tr"
+						>
+							<text class="withdraw-top-td withdraw-top-td--rank">{{ row.rank }}</text>
+							<text class="withdraw-top-td withdraw-top-td--name">{{ row.merchantName || '-' }}</text>
+							<text class="withdraw-top-td withdraw-top-td--device">{{ row.deviceId || '-' }}</text>
+							<text class="withdraw-top-td withdraw-top-td--amt">{{ toMoney(row.withdrawAmount) }}</text>
+							<text class="withdraw-top-td withdraw-top-td--cnt">{{ row.withdrawCount || 0 }}</text>
+							<text class="withdraw-top-td withdraw-top-td--mem">
+								{{ row.membershipLevel || '普通会员' }}
+								<text class="withdraw-top-mem-time">({{ row.membershipOpenedAtText || '-' }})</text>
+							</text>
+						</view>
+						<view v-if="!withdrawTopList.length" class="withdraw-top-empty">暂无已到账提现排行数据</view>
+					</view>
+				</view>
+			</view>
+
 			<view class="panel-wrap chart-panel">
 				<view class="panel-head">
 					<view class="panel-title mb0">数据统计</view>
@@ -335,7 +392,12 @@
 				_homeStatsRetryTimer: null,
 				homeCacheUpdatedAt: 0,
 				/** 各区间上次成功展示的数据，miss/刷新空窗时继续用（勿用 _ 前缀，Vue2 不会代理到 this） */
-				homeCacheLocal: {}
+				homeCacheLocal: {},
+				withdrawTopList: [],
+				pendingFrozen: {
+					pendingWithdrawTotal: 0,
+					frozenMonths: []
+				}
 			};
 		},
 		onLoad() {
@@ -527,8 +589,38 @@
 				};
 				await this.renderEcharts();
 			},
+			applyWithdrawTop(payload) {
+				const list = payload && Array.isArray(payload.list) ? payload.list : null;
+				if (!list) return;
+				this.withdrawTopList = list.map((row, idx) => ({
+					rank: Number(row.rank || idx + 1),
+					merchantUserId: String(row.merchantUserId || ''),
+					merchantName: String(row.merchantName || '-'),
+					deviceId: String(row.deviceId || '-'),
+					withdrawAmount: Number(row.withdrawAmount || 0),
+					withdrawCount: Number(row.withdrawCount || 0),
+					membershipLevel: String(row.membershipLevel || '普通会员'),
+					membershipOpenedAtText: String(row.membershipOpenedAtText || '-')
+				}));
+			},
+			applyPendingFrozen(payload) {
+				if (!payload || typeof payload !== 'object') return;
+				const months = Array.isArray(payload.frozenMonths) ? payload.frozenMonths : [];
+				this.pendingFrozen = {
+					pendingWithdrawTotal: Number(payload.pendingWithdrawTotal || 0),
+					frozenMonths: months.map((m) => ({
+						ym: String(m.ym || ''),
+						label: String(m.label || m.ym || ''),
+						kind: m.kind === 'current' ? 'current' : 'future',
+						amount: Number(m.amount || 0)
+					}))
+				};
+			},
 			async warmHomeCacheInBackground(rangeType, parts) {
-				const list = Array.isArray(parts) && parts.length ? parts : ['preview', 'summary'];
+				const list =
+					Array.isArray(parts) && parts.length
+						? parts
+						: ['preview', 'summary', 'withdrawTop', 'pendingFrozen'];
 				try {
 					const payload = { parts: list };
 					if (list.indexOf('trend') >= 0) {
@@ -560,28 +652,36 @@
 						console.warn('[home] merchant 云函数未拿到 Redis 客户端，请确认已绑定 uni-cloud-redis 并重新部署');
 					}
 
-					// 冷启动 / Redis 读空：补预热后再读（控制台有 key 但接口 miss 也走这里）
-					const hasRemote = !!(hit.preview || hit.summary || hit.trend);
-					const hasLocal = !!(local.preview || local.summary || local.trend);
+					const hasRemote = !!(
+						hit.preview ||
+						hit.summary ||
+						hit.trend ||
+						hit.withdrawTop ||
+						hit.pendingFrozen
+					);
 					if (!hasRemote) {
-						const needParts = [];
-						if (!hit.preview) needParts.push('preview');
-						if (!hit.summary) needParts.push('summary');
-						if (needParts.length) {
-							await this.warmHomeCacheInBackground(rangeType, needParts);
-						}
-						if (!hit.trend) {
-							await this.warmHomeCacheInBackground(rangeType, ['trend']);
-						}
+						await this.warmHomeCacheInBackground(rangeType, [
+							'preview',
+							'summary',
+							'withdrawTop',
+							'pendingFrozen'
+						]);
+						await this.warmHomeCacheInBackground(rangeType, ['trend']);
 						res = await this.fetchHomeCache(rangeType);
 						d = (res && res.code === 0 && res.data) || {};
 						hit = d.cacheHit || {};
-					} else if (!(hit.preview && hit.summary && hit.trend)) {
-						if (!hit.preview || !hit.summary) {
-							this.warmHomeCacheInBackground(rangeType, [
-								!hit.preview ? 'preview' : null,
-								!hit.summary ? 'summary' : null
-							].filter(Boolean)).then(() => this.scheduleHomeStatsRetryIfStale(true));
+					} else if (
+						!(hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen)
+					) {
+						const baseParts = [];
+						if (!hit.preview) baseParts.push('preview');
+						if (!hit.summary) baseParts.push('summary');
+						if (!hit.withdrawTop) baseParts.push('withdrawTop');
+						if (!hit.pendingFrozen) baseParts.push('pendingFrozen');
+						if (baseParts.length) {
+							this.warmHomeCacheInBackground(rangeType, baseParts).then(() =>
+								this.scheduleHomeStatsRetryIfStale(true)
+							);
 						}
 						if (!hit.trend) {
 							this.warmHomeCacheInBackground(rangeType, ['trend']).then(() =>
@@ -595,9 +695,14 @@
 							this.applyPreviewAndSummary(local.preview, local.summary);
 						}
 						if (local.trend) await this.applyTrendPayload(local.trend);
+						if (local.withdrawTop) this.applyWithdrawTop(local.withdrawTop);
+						if (local.pendingFrozen) this.applyPendingFrozen(local.pendingFrozen);
 						if (local.updatedAt) this.homeCacheUpdatedAt = local.updatedAt;
 						this.scheduleHomeStatsRetryIfStale(true);
-						if (!silent && !(local.preview || local.summary || local.trend)) {
+						if (
+							!silent &&
+							!(local.preview || local.summary || local.trend || local.withdrawTop || local.pendingFrozen)
+						) {
 							uni.showToast({ title: (res && res.message) || '首页缓存读取失败', icon: 'none' });
 						}
 						return;
@@ -607,14 +712,20 @@
 					const preview = d.preview || local.preview || null;
 					const summary = d.summary || local.summary || null;
 					const trend = d.trend || local.trend || null;
+					const withdrawTop = d.withdrawTop || local.withdrawTop || null;
+					const pendingFrozen = d.pendingFrozen || local.pendingFrozen || null;
 					if (preview || summary) this.applyPreviewAndSummary(preview, summary);
 					if (trend) await this.applyTrendPayload(trend);
+					if (withdrawTop) this.applyWithdrawTop(withdrawTop);
+					if (pendingFrozen) this.applyPendingFrozen(pendingFrozen);
 					const updatedAt = Number(d.updatedAt || local.updatedAt || 0) || 0;
 					this.homeCacheUpdatedAt = updatedAt;
 					const nextLocal = {};
 					if (d.preview) nextLocal.preview = d.preview;
 					if (d.summary) nextLocal.summary = d.summary;
 					if (d.trend) nextLocal.trend = d.trend;
+					if (d.withdrawTop) nextLocal.withdrawTop = d.withdrawTop;
+					if (d.pendingFrozen) nextLocal.pendingFrozen = d.pendingFrozen;
 					if (updatedAt) nextLocal.updatedAt = updatedAt;
 					if (Object.keys(nextLocal).length) this.rememberHomeCacheLocal(rangeType, nextLocal);
 
@@ -623,8 +734,14 @@
 					}
 
 					const needRetry =
-						!(hit.preview && hit.summary && hit.trend) ||
-						!!(stale.preview || stale.summary || stale.trend);
+						!(hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen) ||
+						!!(
+							stale.preview ||
+							stale.summary ||
+							stale.trend ||
+							stale.withdrawTop ||
+							stale.pendingFrozen
+						);
 					this.scheduleHomeStatsRetryIfStale(needRetry);
 				} catch (err) {
 					const rangeType = this.trendRangeType || '30d';
@@ -633,8 +750,13 @@
 						this.applyPreviewAndSummary(local.preview, local.summary);
 					}
 					if (local.trend) await this.applyTrendPayload(local.trend);
+					if (local.withdrawTop) this.applyWithdrawTop(local.withdrawTop);
+					if (local.pendingFrozen) this.applyPendingFrozen(local.pendingFrozen);
 					this.scheduleHomeStatsRetryIfStale(true);
-					if (!silent && !(local.preview || local.summary || local.trend)) {
+					if (
+						!silent &&
+						!(local.preview || local.summary || local.trend || local.withdrawTop || local.pendingFrozen)
+					) {
 						uni.showModal({
 							content: err.message || '首页数据加载失败',
 							showCancel: false
@@ -995,6 +1117,173 @@
 
 .preview-panel .mb0 {
 	margin-bottom: 0;
+}
+
+.withdraw-top-panel .mb0 {
+	margin-bottom: 0;
+}
+
+.pending-frozen-panel .mb0 {
+	margin-bottom: 0;
+}
+
+.pending-frozen-grid {
+	margin-top: 14px;
+	display: grid;
+	grid-template-columns: repeat(6, minmax(0, 1fr));
+	gap: 10px;
+}
+
+.pending-frozen-card {
+	padding: 14px 12px;
+	border-radius: 12px;
+	background: #f8fafc;
+	border: 1px solid rgba(148, 163, 184, 0.28);
+	min-width: 0;
+}
+
+.pending-frozen-card--pending {
+	background: linear-gradient(160deg, #eff6ff 0%, #f8fafc 100%);
+	border-color: rgba(37, 99, 235, 0.28);
+}
+
+.pending-frozen-card--current {
+	background: linear-gradient(160deg, #fff7ed 0%, #f8fafc 100%);
+	border-color: rgba(234, 88, 12, 0.28);
+}
+
+.pending-frozen-label {
+	display: block;
+	font-size: 12px;
+	color: #64748b;
+	margin-bottom: 8px;
+	line-height: 1.3;
+}
+
+.pending-frozen-value {
+	display: block;
+	font-size: 18px;
+	font-weight: 700;
+	color: #0f172a;
+	font-variant-numeric: tabular-nums;
+	word-break: break-all;
+}
+
+.pending-frozen-card--pending .pending-frozen-value {
+	color: #1d4ed8;
+}
+
+.pending-frozen-card--current .pending-frozen-value {
+	color: #c2410c;
+}
+
+@media (max-width: 1100px) {
+	.pending-frozen-grid {
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 640px) {
+	.pending-frozen-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+.withdraw-top-table-wrap {
+	margin-top: 14px;
+	overflow-x: auto;
+	-webkit-overflow-scrolling: touch;
+}
+
+.withdraw-top-table {
+	min-width: 920px;
+	border: 1px solid rgba(148, 163, 184, 0.28);
+	border-radius: 10px;
+	overflow: hidden;
+}
+
+.withdraw-top-tr {
+	display: flex;
+	align-items: stretch;
+	border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+	background: #fff;
+}
+
+.withdraw-top-tr:last-child {
+	border-bottom: none;
+}
+
+.withdraw-top-tr--head {
+	background: #f8fafc;
+}
+
+.withdraw-top-tr--head .withdraw-top-td {
+	font-weight: 600;
+	color: #334155;
+	font-size: 13px;
+}
+
+.withdraw-top-td {
+	padding: 10px 12px;
+	font-size: 13px;
+	color: #0f172a;
+	line-height: 1.45;
+	box-sizing: border-box;
+	word-break: break-all;
+}
+
+.withdraw-top-td--rank {
+	width: 48px;
+	flex: 0 0 48px;
+	text-align: center;
+	color: #64748b;
+}
+
+.withdraw-top-td--name {
+	width: 140px;
+	flex: 0 0 140px;
+}
+
+.withdraw-top-td--device {
+	flex: 1 1 180px;
+	min-width: 140px;
+	color: #475569;
+}
+
+.withdraw-top-td--amt {
+	width: 120px;
+	flex: 0 0 120px;
+	text-align: right;
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+	color: #b45309;
+}
+
+.withdraw-top-td--cnt {
+	width: 88px;
+	flex: 0 0 88px;
+	text-align: center;
+}
+
+.withdraw-top-td--mem {
+	width: 220px;
+	flex: 0 0 220px;
+}
+
+.withdraw-top-mem-time {
+	display: block;
+	margin-top: 2px;
+	font-size: 12px;
+	color: #94a3b8;
+	font-weight: 400;
+}
+
+.withdraw-top-empty {
+	padding: 28px 16px;
+	text-align: center;
+	color: #94a3b8;
+	font-size: 13px;
+	background: #fff;
 }
 
 .preview-panel-head {

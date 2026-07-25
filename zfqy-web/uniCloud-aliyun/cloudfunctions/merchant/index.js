@@ -60,12 +60,18 @@ const REDIS_KEY_ADMIN_HOME_PREVIEW = 'hsy:admin:home:preview:v1';
 const REDIS_KEY_ADMIN_HOME_PREVIEW_LAST = 'hsy:admin:home:preview:v1:last';
 const REDIS_KEY_ADMIN_HOME_META = 'hsy:admin:home:meta:v1';
 const REDIS_KEY_ADMIN_HOME_META_LAST = 'hsy:admin:home:meta:v1:last';
+const REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP = 'hsy:admin:home:withdrawTop20:v1';
+const REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP_LAST = 'hsy:admin:home:withdrawTop20:v1:last';
+const REDIS_KEY_ADMIN_HOME_PENDING_FROZEN = 'hsy:admin:home:pendingFrozen:v1';
+const REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST = 'hsy:admin:home:pendingFrozen:v1:last';
 const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
 /** 定时每 3 分钟预热；正式 key TTL 覆盖多轮 cron；last 长留作刷新空窗回退 */
 const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_PREVIEW_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_TREND_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_META_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_WITHDRAW_TOP_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_PENDING_FROZEN_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_LAST_SEC = 7 * 24 * 3600;
 const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 1800;
 const ADMIN_HOME_SUMMARY_CACHE_MS = 45000;
@@ -97,6 +103,19 @@ function isAdminHomeSummaryPayload(s) {
 
 function isAdminHomeTrendPayload(t) {
 	return !!(t && typeof t === 'object' && Array.isArray(t.categories));
+}
+
+function isAdminHomeWithdrawTopPayload(p) {
+	return !!(p && typeof p === 'object' && Array.isArray(p.list));
+}
+
+function isAdminHomePendingFrozenPayload(p) {
+	return !!(
+		p &&
+		typeof p === 'object' &&
+		Array.isArray(p.frozenMonths) &&
+		(p.pendingWithdrawTotal != null || p.pendingWithdrawTotal === 0)
+	);
 }
 
 async function adminHomeRedisGetLiveOrLast(liveKey, lastKey, isValid) {
@@ -3459,6 +3478,8 @@ async function invalidateAdminHomeSummaryCache() {
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_SUMMARY);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PREVIEW);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_META);
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP);
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PENDING_FROZEN);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_MEMBERSHIP_TIER);
 	for (const t of ADMIN_HOME_TREND_RANGE_TYPES) {
 		await redisH5.h5RedisDel(redisKeyAdminHomeTrend(t));
@@ -3911,14 +3932,254 @@ async function refreshAdminHomePreviewCache() {
 }
 
 /**
- * 定时预热：写入 Redis。parts 可选 preview / summary / trend
+ * 提现前 20：按「已打款且已到账」的 payable（实际到微信零钱）汇总排名。
+ */
+async function computeAdminHomeWithdrawTop20() {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const wdPaidMatch = _.and([
+		{ is_deleted: _.neq(true) },
+		{ is_paid: true },
+		{ arrival_status: 'received' }
+	]);
+
+	let ranked = [];
+	try {
+		const agg = await withdrawCollection
+			.aggregate()
+			.match(wdPaidMatch)
+			.group({
+				_id: '$merchant_user_id',
+				withdrawAmount: $.sum('$payable'),
+				withdrawCount: $.sum(1)
+			})
+			.sort({ withdrawAmount: -1 })
+			.limit(20)
+			.end();
+		ranked = (agg.data || [])
+			.map((row) => ({
+				merchantUserId: String(row._id || '').trim(),
+				withdrawAmount: Number(Number(row.withdrawAmount || 0).toFixed(2)),
+				withdrawCount: Number(row.withdrawCount || 0) || 0
+			}))
+			.filter((x) => x.merchantUserId && x.withdrawAmount > 0);
+	} catch (e) {
+		console.error('computeAdminHomeWithdrawTop20 aggregate failed', e);
+		ranked = [];
+	}
+
+	if (!ranked.length) {
+		return { list: [], updatedAt: nowTs() };
+	}
+
+	const uids = ranked.map((x) => x.merchantUserId);
+	const merchantByUid = new Map();
+	try {
+		const mRes = await merchantCollection
+			.where({ user_id: _.in(uids) })
+			.field({
+				_id: true,
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				device_id: true,
+				membership_name: true,
+				member_tier: true,
+				membership_tier: true,
+				h5_member_tier: true,
+				recharge_update_time: true,
+				recharge_cycle_start: true,
+				recharge_package_id: true,
+				recharge_package_price: true,
+				recharge_package_reward: true,
+				estimated_free_quota: true,
+				recharge_package_quota: true,
+				silver_member: true,
+				silver_member_start_at: true,
+				silver_member_end_at: true
+			})
+			.limit(Math.max(40, uids.length * 2))
+			.get();
+		for (const m of mRes.data || []) {
+			const uid = String(m.user_id || '').trim();
+			if (uid) merchantByUid.set(uid, m);
+			const docId = String(m._id || '').trim();
+			if (docId && !merchantByUid.has(docId)) merchantByUid.set(docId, m);
+		}
+	} catch (e) {
+		console.error('computeAdminHomeWithdrawTop20 merchants', e);
+	}
+
+	const bindIds = [];
+	for (const uid of uids) {
+		bindIds.push(uid);
+		const m = merchantByUid.get(uid);
+		if (m && m._id) bindIds.push(String(m._id));
+	}
+	let machineMap = {};
+	try {
+		machineMap = await batchListBoundMachinesByBindUserIds(bindIds);
+	} catch (e) {
+		console.error('computeAdminHomeWithdrawTop20 machines', e);
+		machineMap = {};
+	}
+
+	const list = ranked.map((row, idx) => {
+		const m = merchantByUid.get(row.merchantUserId) || {};
+		const mem = resolveMerchantMembershipForAdmin(m);
+		const machines =
+			machineMap[row.merchantUserId] ||
+			(m._id ? machineMap[String(m._id)] : null) ||
+			[];
+		const deviceIds = (machines || []).map((x) => x.device_id).filter(Boolean);
+		const deviceIdText =
+			deviceIds.length > 0
+				? deviceIds.join('、')
+				: safeText(m.device_id, 80) || '-';
+		const openedAt = Number(mem.openedAt || 0) || 0;
+		return {
+			rank: idx + 1,
+			merchantUserId: row.merchantUserId,
+			merchantName: safeText(m.wx_nickname || m.mobile || row.merchantUserId, 80) || '-',
+			deviceId: deviceIdText,
+			withdrawAmount: row.withdrawAmount,
+			withdrawCount: row.withdrawCount,
+			membershipLevel: safeText(mem.level || '普通会员', 40) || '普通会员',
+			membershipOpenedAt: openedAt,
+			membershipOpenedAtText: openedAt > 0 ? formatTime(openedAt) : '-'
+		};
+	});
+
+	return { list, updatedAt: nowTs() };
+}
+
+async function refreshAdminHomeWithdrawTopCache() {
+	const payload = await computeAdminHomeWithdrawTop20();
+	await adminHomeRedisSetLiveAndLast(
+		REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP,
+		REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP_LAST,
+		payload,
+		REDIS_EX_ADMIN_HOME_WITHDRAW_TOP_SEC
+	);
+	return payload;
+}
+
+/**
+ * 全平台待提现 + 本月起连续 5 个月（本月+后四月）未领待返/冻结。
+ * 待提现 = 各商户账号积分（H5 待提现，已领未提）。
+ * 按月金额 = hsy-points-slice-state 未领片的 effective_amount（已含积分优化后的生效值）。
+ */
+async function computeAdminHomePendingFrozen() {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const now = nowTs();
+	const curYm = shanghaiYearMonthFromTs(now);
+	const monthYms = [];
+	for (let i = 0; i <= 4; i += 1) {
+		monthYms.push(addCalendarMonthsYm(curYm, i));
+	}
+	const maxYm = monthYms[monthYms.length - 1];
+
+	let pendingWithdrawTotal = 0;
+	try {
+		const pendAgg = await merchantCollection
+			.aggregate()
+			.group({
+				_id: null,
+				totalAp: $.sum('$account_points'),
+				totalWpb: $.sum('$withdraw_pending_balance')
+			})
+			.end();
+		const row = ((pendAgg && pendAgg.data) || [])[0] || {};
+		const ap = Number(row.totalAp || 0);
+		const wpb = Number(row.totalWpb || 0);
+		// 优先用 account_points（与 H5 待提现一致）；若库内多为 withdraw_pending_balance 再兜底
+		pendingWithdrawTotal = Number((ap > 0 || wpb <= 0 ? ap : wpb).toFixed(2));
+	} catch (e) {
+		console.error('computeAdminHomePendingFrozen pending agg', e);
+		pendingWithdrawTotal = 0;
+	}
+
+	const byYm = {};
+	monthYms.forEach((ym) => {
+		byYm[ym] = 0;
+	});
+	try {
+		const sliceCol = db.collection('hsy-points-slice-state');
+		const sliceAgg = await sliceCol
+			.aggregate()
+			.match(
+				_.and([
+					{ is_deleted: _.neq(true) },
+					{ is_claimed: _.neq(true) },
+					{ target_ym: _.gte(curYm) },
+					{ target_ym: _.lte(maxYm) }
+				])
+			)
+			.group({
+				_id: '$target_ym',
+				total: $.sum('$effective_amount')
+			})
+			.end();
+		for (const row of (sliceAgg && sliceAgg.data) || []) {
+			const ym = String(row._id || '').trim();
+			if (!ym || !(ym in byYm)) continue;
+			byYm[ym] = Number(Number(row.total || 0).toFixed(2));
+		}
+	} catch (e) {
+		console.error('computeAdminHomePendingFrozen slice agg', e);
+	}
+
+	const frozenMonths = monthYms.map((ym, idx) => {
+		const mon = Number(String(ym).split('-')[1]) || 0;
+		return {
+			ym,
+			label: mon > 0 ? `${mon}月` : ym,
+			labelFull: ymToDisplayLabel(ym),
+			kind: idx === 0 ? 'current' : 'future',
+			amount: Number(byYm[ym] || 0)
+		};
+	});
+	const frozenTotal = Number(
+		frozenMonths.reduce((s, x) => s + Number(x.amount || 0), 0).toFixed(2)
+	);
+	const frozenCurrentMonth = Number((frozenMonths[0] && frozenMonths[0].amount) || 0);
+	const frozenFutureMonths = Number(
+		frozenMonths.slice(1).reduce((s, x) => s + Number(x.amount || 0), 0).toFixed(2)
+	);
+
+	return {
+		pendingWithdrawTotal,
+		currentYm: curYm,
+		frozenMonths,
+		frozenTotal,
+		frozenCurrentMonth,
+		frozenFutureMonths,
+		updatedAt: now,
+		note: '待提现=全平台账号积分合计；按月冻结=未领分片生效额（含积分优化后），本月+后四月'
+	};
+}
+
+async function refreshAdminHomePendingFrozenCache() {
+	const payload = await computeAdminHomePendingFrozen();
+	await adminHomeRedisSetLiveAndLast(
+		REDIS_KEY_ADMIN_HOME_PENDING_FROZEN,
+		REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST,
+		payload,
+		REDIS_EX_ADMIN_HOME_PENDING_FROZEN_SEC
+	);
+	return payload;
+}
+
+/**
+ * 定时预热：写入 Redis。parts 可选 preview / summary / trend / withdrawTop / pendingFrozen
  * rangeTypes 仅对 trend 生效，默认四档全刷（建议 cron 分次调用避免超时）
  */
 async function adminHomeCacheRefresh(data = {}) {
 	const partsRaw = Array.isArray(data.parts) ? data.parts.map((x) => String(x || '').trim()) : [];
 	const parts = partsRaw.length
 		? new Set(partsRaw)
-		: new Set(['preview', 'summary', 'trend']);
+		: new Set(['preview', 'summary', 'trend', 'withdrawTop', 'pendingFrozen']);
 	const rangeTypes = Array.isArray(data.rangeTypes) && data.rangeTypes.length
 		? data.rangeTypes.map((x) => String(x || '').trim()).filter(Boolean)
 		: ADMIN_HOME_TREND_RANGE_TYPES.slice();
@@ -3927,6 +4188,8 @@ async function adminHomeCacheRefresh(data = {}) {
 		updatedAt: nowTs(),
 		preview: false,
 		summary: false,
+		withdrawTop: false,
+		pendingFrozen: false,
 		trends: {}
 	};
 
@@ -3941,6 +4204,14 @@ async function adminHomeCacheRefresh(data = {}) {
 			if (!out.summary) {
 				return { code: sumRes?.code || 500, message: sumRes?.message || '汇总刷新失败', data: out };
 			}
+		}
+		if (parts.has('withdrawTop')) {
+			await refreshAdminHomeWithdrawTopCache();
+			out.withdrawTop = true;
+		}
+		if (parts.has('pendingFrozen')) {
+			await refreshAdminHomePendingFrozenCache();
+			out.pendingFrozen = true;
 		}
 		if (parts.has('trend')) {
 			for (const rangeType of rangeTypes) {
@@ -3968,44 +4239,68 @@ async function adminHomeCacheRefresh(data = {}) {
 	}
 }
 
-/** 前端只读 Redis：预览 + 资金汇总 + 指定区间趋势；正式 key miss 时回退 :last */
+/** 前端只读 Redis：预览 + 汇总 + 趋势 + 提现TOP + 待提现/冻结；miss 回退 :last */
 async function adminHomeCacheGet(data = {}) {
 	try {
 		const rangeType = String(data.rangeType || '30d').trim() || '30d';
-		const [previewPack, summaryPack, trendPack, metaPack] = await Promise.all([
-			adminHomeRedisGetLiveOrLast(
-				REDIS_KEY_ADMIN_HOME_PREVIEW,
-				REDIS_KEY_ADMIN_HOME_PREVIEW_LAST,
-				isAdminHomePreviewPayload
-			),
-			adminHomeRedisGetLiveOrLast(
-				REDIS_KEY_ADMIN_HOME_SUMMARY,
-				REDIS_KEY_ADMIN_HOME_SUMMARY_LAST,
-				isAdminHomeSummaryPayload
-			),
-			adminHomeRedisGetLiveOrLast(
-				redisKeyAdminHomeTrend(rangeType),
-				redisKeyAdminHomeTrendLast(rangeType),
-				isAdminHomeTrendPayload
-			),
-			adminHomeRedisGetLiveOrLast(REDIS_KEY_ADMIN_HOME_META, REDIS_KEY_ADMIN_HOME_META_LAST)
-		]);
+		const [previewPack, summaryPack, trendPack, withdrawTopPack, pendingFrozenPack, metaPack] =
+			await Promise.all([
+				adminHomeRedisGetLiveOrLast(
+					REDIS_KEY_ADMIN_HOME_PREVIEW,
+					REDIS_KEY_ADMIN_HOME_PREVIEW_LAST,
+					isAdminHomePreviewPayload
+				),
+				adminHomeRedisGetLiveOrLast(
+					REDIS_KEY_ADMIN_HOME_SUMMARY,
+					REDIS_KEY_ADMIN_HOME_SUMMARY_LAST,
+					isAdminHomeSummaryPayload
+				),
+				adminHomeRedisGetLiveOrLast(
+					redisKeyAdminHomeTrend(rangeType),
+					redisKeyAdminHomeTrendLast(rangeType),
+					isAdminHomeTrendPayload
+				),
+				adminHomeRedisGetLiveOrLast(
+					REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP,
+					REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP_LAST,
+					isAdminHomeWithdrawTopPayload
+				),
+				adminHomeRedisGetLiveOrLast(
+					REDIS_KEY_ADMIN_HOME_PENDING_FROZEN,
+					REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST,
+					isAdminHomePendingFrozenPayload
+				),
+				adminHomeRedisGetLiveOrLast(REDIS_KEY_ADMIN_HOME_META, REDIS_KEY_ADMIN_HOME_META_LAST)
+			]);
 		const preview = previewPack.data;
 		const summary = summaryPack.data;
 		const trend = trendPack.data;
+		const withdrawTop = withdrawTopPack.data;
+		const pendingFrozen = pendingFrozenPack.data;
 		const meta = metaPack.data;
 		const hit = {
 			preview: isAdminHomePreviewPayload(preview),
 			summary: isAdminHomeSummaryPayload(summary),
-			trend: isAdminHomeTrendPayload(trend)
+			trend: isAdminHomeTrendPayload(trend),
+			withdrawTop: isAdminHomeWithdrawTopPayload(withdrawTop),
+			pendingFrozen: isAdminHomePendingFrozenPayload(pendingFrozen)
 		};
 		const stale = {
 			preview: hit.preview && previewPack.from === 'last',
 			summary: hit.summary && summaryPack.from === 'last',
-			trend: hit.trend && trendPack.from === 'last'
+			trend: hit.trend && trendPack.from === 'last',
+			withdrawTop: hit.withdrawTop && withdrawTopPack.from === 'last',
+			pendingFrozen: hit.pendingFrozen && pendingFrozenPack.from === 'last'
 		};
-		const allHit = hit.preview && hit.summary && hit.trend;
-		const anyStale = !!(stale.preview || stale.summary || stale.trend);
+		const allHit =
+			hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen;
+		const anyStale = !!(
+			stale.preview ||
+			stale.summary ||
+			stale.trend ||
+			stale.withdrawTop ||
+			stale.pendingFrozen
+		);
 		const redisAlive = !!(redisH5.h5RedisAlive && redisH5.h5RedisAlive());
 		return {
 			code: 0,
@@ -4014,6 +4309,8 @@ async function adminHomeCacheGet(data = {}) {
 				preview: hit.preview ? preview : null,
 				summary: hit.summary ? summary : null,
 				trend: hit.trend ? trend : null,
+				withdrawTop: hit.withdrawTop ? withdrawTop : null,
+				pendingFrozen: hit.pendingFrozen ? pendingFrozen : null,
 				rangeType,
 				updatedAt: Number((meta && meta.updatedAt) || 0) || 0,
 				cacheHit: hit,
@@ -4022,6 +4319,8 @@ async function adminHomeCacheGet(data = {}) {
 					preview: previewPack.from,
 					summary: summaryPack.from,
 					trend: trendPack.from,
+					withdrawTop: withdrawTopPack.from,
+					pendingFrozen: pendingFrozenPack.from,
 					meta: metaPack.from
 				},
 				redisAlive
