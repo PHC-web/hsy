@@ -332,7 +332,10 @@
 				_resizeHandler: null,
 				_chartResizeObserver: null,
 				_homeStatsTimer: null,
-				homeCacheUpdatedAt: 0
+				_homeStatsRetryTimer: null,
+				homeCacheUpdatedAt: 0,
+				/** 各区间上次成功展示的数据，miss/刷新空窗时继续用（勿用 _ 前缀，Vue2 不会代理到 this） */
+				homeCacheLocal: {}
 			};
 		},
 		onLoad() {
@@ -407,35 +410,67 @@
 					clearInterval(this._homeStatsTimer);
 					this._homeStatsTimer = null;
 				}
+				if (this._homeStatsRetryTimer) {
+					clearTimeout(this._homeStatsRetryTimer);
+					this._homeStatsRetryTimer = null;
+				}
+			},
+			scheduleHomeStatsRetryIfStale(staleOrPartial) {
+				if (!staleOrPartial) return;
+				if (this._homeStatsRetryTimer) return;
+				// 后台预热中：约 45s 后再静默拉一次新数据
+				this._homeStatsRetryTimer = setTimeout(() => {
+					this._homeStatsRetryTimer = null;
+					this.loadHomeStats({ silent: true });
+				}, 45 * 1000);
+			},
+			rememberHomeCacheLocal(rangeType, patch) {
+				if (!this.homeCacheLocal || typeof this.homeCacheLocal !== 'object') {
+					this.homeCacheLocal = {};
+				}
+				const key = String(rangeType || '30d');
+				const prev = this.homeCacheLocal[key] || {};
+				this.$set
+					? this.$set(this.homeCacheLocal, key, Object.assign({}, prev, patch || {}))
+					: (this.homeCacheLocal[key] = Object.assign({}, prev, patch || {}));
+			},
+			getHomeCacheLocal(rangeType) {
+				const store = this.homeCacheLocal;
+				if (!store || typeof store !== 'object') return {};
+				return store[String(rangeType || '30d')] || {};
 			},
 			applyPreviewAndSummary(preview, summary) {
-				const p = preview && typeof preview === 'object' ? preview : {};
-				const sum = summary && typeof summary === 'object' ? summary : {};
-				this.dashboard = {
-					brandCount: Number(p.brandCount || 0),
-					machineCount: Number(p.machineCount || 0),
-					activatedCount: Number(p.activatedCount || 0),
-					boundCount: Number(p.boundCount || 0),
-					withdrawCount: Number(p.withdrawCount || 0),
-					withdrawAmount: Number(p.withdrawAmount || 0),
-					todayActivatedCount: Number(p.todayActivatedCount || 0),
-					userCount: Number(p.userCount || 0),
-					memberCount: Number(p.memberCount || 0),
-					memberRate: p.memberRate != null ? String(p.memberRate) : '0.00',
-					returnPaid: Number(p.returnPaid || 0),
-					returnDue: Number(p.returnDue || 0),
-					returnRate: p.returnRate != null ? String(p.returnRate) : '0.00',
-					arrivedWithdrawAmount: Number(sum.arrivedWithdrawAmount || 0),
-					arrivedWithdrawAmountMember: Number(sum.arrivedWithdrawAmountMember || 0),
-					arrivedWithdrawAmountNonMember: Number(sum.arrivedWithdrawAmountNonMember || 0),
-					pendingWithdrawAmountMember: Number(sum.pendingWithdrawAmountMember || 0),
-					pendingWithdrawAmountNonMember: Number(sum.pendingWithdrawAmountNonMember || 0),
-					boundMerchantTradeAmount: Number(sum.boundMerchantTradeAmount || 0),
-					boundMerchantTradeAmountMember: Number(sum.boundMerchantTradeAmountMember || 0),
-					boundMerchantTradeAmountNonMember: Number(sum.boundMerchantTradeAmountNonMember || 0),
-					totalRechargeAmount: Number(sum.totalRechargeAmount || 0),
-					totalRefundAmount: Number(sum.totalRefundAmount || 0),
-					membershipCounts: Object.assign(
+				const p = preview && typeof preview === 'object' ? preview : null;
+				const sum = summary && typeof summary === 'object' ? summary : null;
+				if (!p && !sum) return;
+				const d = Object.assign({}, this.dashboard);
+				if (p) {
+					d.brandCount = Number(p.brandCount || 0);
+					d.machineCount = Number(p.machineCount || 0);
+					d.activatedCount = Number(p.activatedCount || 0);
+					d.boundCount = Number(p.boundCount || 0);
+					d.withdrawCount = Number(p.withdrawCount || 0);
+					d.withdrawAmount = Number(p.withdrawAmount || 0);
+					d.todayActivatedCount = Number(p.todayActivatedCount || 0);
+					d.userCount = Number(p.userCount || 0);
+					d.memberCount = Number(p.memberCount || 0);
+					d.memberRate = p.memberRate != null ? String(p.memberRate) : '0.00';
+					d.returnPaid = Number(p.returnPaid || 0);
+					d.returnDue = Number(p.returnDue || 0);
+					d.returnRate = p.returnRate != null ? String(p.returnRate) : '0.00';
+				}
+				if (sum) {
+					d.arrivedWithdrawAmount = Number(sum.arrivedWithdrawAmount || 0);
+					d.arrivedWithdrawAmountMember = Number(sum.arrivedWithdrawAmountMember || 0);
+					d.arrivedWithdrawAmountNonMember = Number(sum.arrivedWithdrawAmountNonMember || 0);
+					d.pendingWithdrawAmountMember = Number(sum.pendingWithdrawAmountMember || 0);
+					d.pendingWithdrawAmountNonMember = Number(sum.pendingWithdrawAmountNonMember || 0);
+					d.boundMerchantTradeAmount = Number(sum.boundMerchantTradeAmount || 0);
+					d.boundMerchantTradeAmountMember = Number(sum.boundMerchantTradeAmountMember || 0);
+					d.boundMerchantTradeAmountNonMember = Number(sum.boundMerchantTradeAmountNonMember || 0);
+					d.totalRechargeAmount = Number(sum.totalRechargeAmount || 0);
+					d.totalRefundAmount = Number(sum.totalRefundAmount || 0);
+					d.membershipCounts = Object.assign(
 						{
 							normal: 0,
 							silver: 0,
@@ -445,11 +480,12 @@
 							other: 0
 						},
 						sum.membershipCounts || {}
-					)
-				};
+					);
+				}
+				this.dashboard = d;
 			},
 			async applyTrendPayload(d) {
-				if (!d || typeof d !== 'object') return;
+				if (!d || typeof d !== 'object' || !Array.isArray(d.categories)) return;
 				const categories = d.categories || [];
 				const s = d.series || {};
 				this.trendSummary = Object.assign({ totalFlow: 0 }, d.summary || {});
@@ -491,6 +527,18 @@
 				};
 				await this.renderEcharts();
 			},
+			async warmHomeCacheInBackground(rangeType, parts) {
+				const list = Array.isArray(parts) && parts.length ? parts : ['preview', 'summary'];
+				try {
+					const payload = { parts: list };
+					if (list.indexOf('trend') >= 0) {
+						payload.rangeTypes = [rangeType || '30d'];
+					}
+					await this.$request('adminHomeCacheRefresh', payload, { functionName: 'merchant' });
+				} catch (e) {
+					console.error('warmHomeCacheInBackground', e);
+				}
+			},
 			async fetchHomeCache(rangeType) {
 				return this.$request(
 					'adminHomeCacheGet',
@@ -498,61 +546,95 @@
 					{ functionName: 'merchant' }
 				);
 			},
-			async warmHomeCacheIfMiss(hit, rangeType) {
-				const h = hit || {};
-				const tasks = [];
-				const baseParts = [];
-				if (!h.preview) baseParts.push('preview');
-				if (!h.summary) baseParts.push('summary');
-				if (baseParts.length) {
-					tasks.push(
-						this.$request(
-							'adminHomeCacheRefresh',
-							{ parts: baseParts },
-							{ functionName: 'merchant' }
-						)
-					);
-				}
-				if (!h.trend) {
-					tasks.push(
-						this.$request(
-							'adminHomeCacheRefresh',
-							{ parts: ['trend'], rangeTypes: [rangeType] },
-							{ functionName: 'merchant' }
-						)
-					);
-				}
-				if (!tasks.length) return;
-				await Promise.all(tasks);
-			},
 			async loadHomeStats(options = {}) {
 				const silent = !!(options && options.silent);
 				if (!silent) this.loading = true;
 				try {
 					const rangeType = this.trendRangeType || '30d';
+					const local = this.getHomeCacheLocal(rangeType);
 					let res = await this.fetchHomeCache(rangeType);
+					let d = (res && res.code === 0 && res.data) || {};
+					let hit = d.cacheHit || {};
+
+					if (d.redisAlive === false && !silent) {
+						console.warn('[home] merchant 云函数未拿到 Redis 客户端，请确认已绑定 uni-cloud-redis 并重新部署');
+					}
+
+					// 冷启动 / Redis 读空：补预热后再读（控制台有 key 但接口 miss 也走这里）
+					const hasRemote = !!(hit.preview || hit.summary || hit.trend);
+					const hasLocal = !!(local.preview || local.summary || local.trend);
+					if (!hasRemote) {
+						const needParts = [];
+						if (!hit.preview) needParts.push('preview');
+						if (!hit.summary) needParts.push('summary');
+						if (needParts.length) {
+							await this.warmHomeCacheInBackground(rangeType, needParts);
+						}
+						if (!hit.trend) {
+							await this.warmHomeCacheInBackground(rangeType, ['trend']);
+						}
+						res = await this.fetchHomeCache(rangeType);
+						d = (res && res.code === 0 && res.data) || {};
+						hit = d.cacheHit || {};
+					} else if (!(hit.preview && hit.summary && hit.trend)) {
+						if (!hit.preview || !hit.summary) {
+							this.warmHomeCacheInBackground(rangeType, [
+								!hit.preview ? 'preview' : null,
+								!hit.summary ? 'summary' : null
+							].filter(Boolean)).then(() => this.scheduleHomeStatsRetryIfStale(true));
+						}
+						if (!hit.trend) {
+							this.warmHomeCacheInBackground(rangeType, ['trend']).then(() =>
+								this.scheduleHomeStatsRetryIfStale(true)
+							);
+						}
+					}
+
 					if (!res || res.code !== 0) {
-						if (!silent) {
+						if (local.preview || local.summary) {
+							this.applyPreviewAndSummary(local.preview, local.summary);
+						}
+						if (local.trend) await this.applyTrendPayload(local.trend);
+						if (local.updatedAt) this.homeCacheUpdatedAt = local.updatedAt;
+						this.scheduleHomeStatsRetryIfStale(true);
+						if (!silent && !(local.preview || local.summary || local.trend)) {
 							uni.showToast({ title: (res && res.message) || '首页缓存读取失败', icon: 'none' });
 						}
 						return;
 					}
-					let hit = (res.data && res.data.cacheHit) || {};
-					if (!(hit.preview && hit.summary && hit.trend)) {
-						await this.warmHomeCacheIfMiss(hit, rangeType);
-						res = await this.fetchHomeCache(rangeType);
-						if (!res || res.code !== 0) return;
-						hit = (res.data && res.data.cacheHit) || {};
-					}
-					const d = res.data || {};
-					if (d.preview || d.summary) this.applyPreviewAndSummary(d.preview, d.summary);
-					if (d.trend) await this.applyTrendPayload(d.trend);
-					this.homeCacheUpdatedAt = Number(d.updatedAt || 0) || 0;
-					if (!(hit.preview && hit.summary && hit.trend) && !silent) {
-						uni.showToast({ title: '部分首页数据尚未预热完成', icon: 'none' });
-					}
-				} catch (err) {
+
+					const stale = d.cacheStale || {};
+					const preview = d.preview || local.preview || null;
+					const summary = d.summary || local.summary || null;
+					const trend = d.trend || local.trend || null;
+					if (preview || summary) this.applyPreviewAndSummary(preview, summary);
+					if (trend) await this.applyTrendPayload(trend);
+					const updatedAt = Number(d.updatedAt || local.updatedAt || 0) || 0;
+					this.homeCacheUpdatedAt = updatedAt;
+					const nextLocal = {};
+					if (d.preview) nextLocal.preview = d.preview;
+					if (d.summary) nextLocal.summary = d.summary;
+					if (d.trend) nextLocal.trend = d.trend;
+					if (updatedAt) nextLocal.updatedAt = updatedAt;
+					if (Object.keys(nextLocal).length) this.rememberHomeCacheLocal(rangeType, nextLocal);
+
 					if (!silent) {
+						console.log('[home] cacheHit', hit, 'from', d.cacheFrom, 'redisAlive', d.redisAlive);
+					}
+
+					const needRetry =
+						!(hit.preview && hit.summary && hit.trend) ||
+						!!(stale.preview || stale.summary || stale.trend);
+					this.scheduleHomeStatsRetryIfStale(needRetry);
+				} catch (err) {
+					const rangeType = this.trendRangeType || '30d';
+					const local = this.getHomeCacheLocal(rangeType);
+					if (local.preview || local.summary) {
+						this.applyPreviewAndSummary(local.preview, local.summary);
+					}
+					if (local.trend) await this.applyTrendPayload(local.trend);
+					this.scheduleHomeStatsRetryIfStale(true);
+					if (!silent && !(local.preview || local.summary || local.trend)) {
 						uni.showModal({
 							content: err.message || '首页数据加载失败',
 							showCancel: false

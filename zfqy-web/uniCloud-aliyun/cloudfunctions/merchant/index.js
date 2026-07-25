@@ -55,15 +55,19 @@ const REDIS_EX_H5_RECHARGE_HINT_SEC = 25;
 /** 管理端交易账单列表缓存（秒），减轻重复筛选下的云函数+DB 压力 */
 const REDIS_EX_TRADE_BILL_SEC = 22;
 const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v4';
+const REDIS_KEY_ADMIN_HOME_SUMMARY_LAST = 'hsy:admin:home:summary:v4:last';
 const REDIS_KEY_ADMIN_HOME_PREVIEW = 'hsy:admin:home:preview:v1';
+const REDIS_KEY_ADMIN_HOME_PREVIEW_LAST = 'hsy:admin:home:preview:v1:last';
 const REDIS_KEY_ADMIN_HOME_META = 'hsy:admin:home:meta:v1';
+const REDIS_KEY_ADMIN_HOME_META_LAST = 'hsy:admin:home:meta:v1:last';
 const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
-/** 定时每 3 分钟预热；TTL 略长于两轮 cron，避免偶发失败空窗 */
-const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 600;
-const REDIS_EX_ADMIN_HOME_PREVIEW_SEC = 600;
-const REDIS_EX_ADMIN_HOME_TREND_SEC = 600;
-const REDIS_EX_ADMIN_HOME_META_SEC = 600;
-const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 600;
+/** 定时每 3 分钟预热；正式 key TTL 覆盖多轮 cron；last 长留作刷新空窗回退 */
+const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_PREVIEW_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_TREND_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_META_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_LAST_SEC = 7 * 24 * 3600;
+const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 1800;
 const ADMIN_HOME_SUMMARY_CACHE_MS = 45000;
 const ADMIN_MEMBERSHIP_TIER_CACHE_MS = 180000;
 const ADMIN_HOME_TREND_RANGE_TYPES = ['today', 'week', 'month', '30d'];
@@ -71,6 +75,44 @@ const ADMIN_HOME_TREND_RANGE_TYPES = ['today', 'week', 'month', '30d'];
 function redisKeyAdminHomeTrend(rangeType) {
 	const t = String(rangeType || '30d').trim() || '30d';
 	return `hsy:admin:home:trend:v1:${t}`;
+}
+
+function redisKeyAdminHomeTrendLast(rangeType) {
+	return `${redisKeyAdminHomeTrend(rangeType)}:last`;
+}
+
+/** 读正式 key，miss 则回退 last（刷新/过期空窗仍可返回旧数据） */
+function isAdminHomePreviewPayload(p) {
+	return !!(
+		p &&
+		typeof p === 'object' &&
+		!Array.isArray(p) &&
+		('brandCount' in p || 'userCount' in p || 'machineCount' in p || 'boundCount' in p)
+	);
+}
+
+function isAdminHomeSummaryPayload(s) {
+	return !!(s && typeof s === 'object' && !Array.isArray(s) && s.membershipCounts);
+}
+
+function isAdminHomeTrendPayload(t) {
+	return !!(t && typeof t === 'object' && Array.isArray(t.categories));
+}
+
+async function adminHomeRedisGetLiveOrLast(liveKey, lastKey, isValid) {
+	const check = typeof isValid === 'function' ? isValid : (x) => x != null;
+	const live = await redisH5.h5RedisGetJson(liveKey);
+	if (check(live)) return { data: live, from: 'live' };
+	const last = await redisH5.h5RedisGetJson(lastKey);
+	if (check(last)) return { data: last, from: 'last' };
+	return { data: null, from: 'miss' };
+}
+
+/** 成功算出新数据后同时写 live + last；计算过程中不删旧 key，前端一直可读旧值 */
+async function adminHomeRedisSetLiveAndLast(liveKey, lastKey, obj, liveExSec) {
+	const okLive = await redisH5.h5RedisSetJson(liveKey, obj, liveExSec);
+	await redisH5.h5RedisSetJson(lastKey, obj, REDIS_EX_ADMIN_HOME_LAST_SEC);
+	return okLive;
 }
 /** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
@@ -2725,6 +2767,11 @@ async function adminDashboardTrend30d(data = {}) {
 				adminDashboardTrendCache = { at: now, key: cacheKey, data: redisHit };
 				return { code: 0, message: 'ok', data: redisHit, cache: 'redis' };
 			}
+			const lastHit = await redisH5.h5RedisGetJson(redisKeyAdminHomeTrendLast(range.type));
+			if (lastHit && Array.isArray(lastHit.categories)) {
+				adminDashboardTrendCache = { at: now, key: cacheKey, data: lastHit };
+				return { code: 0, message: 'ok', data: lastHit, cache: 'redis_last' };
+			}
 			if (cacheOnly) {
 				return { code: 0, message: 'cache_miss', data: null, cache: 'miss' };
 			}
@@ -3171,7 +3218,12 @@ async function adminDashboardTrend30d(data = {}) {
 			}
 		};
 		adminDashboardTrendCache = { at: now, key: cacheKey, data: payload };
-		await redisH5.h5RedisSetJson(redisTrendKey, payload, REDIS_EX_ADMIN_HOME_TREND_SEC);
+		await adminHomeRedisSetLiveAndLast(
+			redisTrendKey,
+			redisKeyAdminHomeTrendLast(range.type),
+			payload,
+			REDIS_EX_ADMIN_HOME_TREND_SEC
+		);
 		return { code: 0, message: 'ok', data: payload, cache: 'fresh' };
 	} catch (e) {
 		console.error('adminDashboardTrend30d failed', e);
@@ -3403,6 +3455,7 @@ async function invalidateAdminHomeSummaryCache() {
 	adminHomeSummaryCache = { at: 0, data: null };
 	adminMembershipTierCache = { at: 0, data: null };
 	adminDashboardTrendCache = { at: 0, key: '', data: null };
+	// 只清正式 key，保留 :last，刷新空窗前端仍可读旧数据
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_SUMMARY);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PREVIEW);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_META);
@@ -3507,8 +3560,12 @@ async function adminHomeSummary(data = {}) {
 			const redisHit = await redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_SUMMARY);
 			if (redisHit && redisHit.membershipCounts) {
 				adminHomeSummaryCache = { at: now, data: redisHit };
-				adminMembershipTierCache = { at: now, data: redisHit.membershipCounts || null };
 				return { code: 0, message: 'ok', data: redisHit, cache: 'redis' };
+			}
+			const lastHit = await redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_SUMMARY_LAST);
+			if (lastHit && lastHit.membershipCounts) {
+				adminHomeSummaryCache = { at: now, data: lastHit };
+				return { code: 0, message: 'ok', data: lastHit, cache: 'redis_last' };
 			}
 			if (cacheOnly) {
 				return { code: 0, message: 'cache_miss', data: null, cache: 'miss' };
@@ -3743,7 +3800,12 @@ async function adminHomeSummary(data = {}) {
 			}
 		};
 		adminHomeSummaryCache = { at: now, data: payload };
-		await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_HOME_SUMMARY, payload, REDIS_EX_ADMIN_HOME_SUMMARY_SEC);
+		await adminHomeRedisSetLiveAndLast(
+			REDIS_KEY_ADMIN_HOME_SUMMARY,
+			REDIS_KEY_ADMIN_HOME_SUMMARY_LAST,
+			payload,
+			REDIS_EX_ADMIN_HOME_SUMMARY_SEC
+		);
 		return { code: 0, message: 'ok', data: payload, cache: 'fresh' };
 	} catch (e) {
 		console.error('adminHomeSummary failed', e);
@@ -3839,7 +3901,12 @@ async function computeAdminHomePreviewCounts() {
 
 async function refreshAdminHomePreviewCache() {
 	const preview = await computeAdminHomePreviewCounts();
-	await redisH5.h5RedisSetJson(REDIS_KEY_ADMIN_HOME_PREVIEW, preview, REDIS_EX_ADMIN_HOME_PREVIEW_SEC);
+	await adminHomeRedisSetLiveAndLast(
+		REDIS_KEY_ADMIN_HOME_PREVIEW,
+		REDIS_KEY_ADMIN_HOME_PREVIEW_LAST,
+		preview,
+		REDIS_EX_ADMIN_HOME_PREVIEW_SEC
+	);
 	return preview;
 }
 
@@ -3888,8 +3955,9 @@ async function adminHomeCacheRefresh(data = {}) {
 				}
 			}
 		}
-		await redisH5.h5RedisSetJson(
+		await adminHomeRedisSetLiveAndLast(
 			REDIS_KEY_ADMIN_HOME_META,
+			REDIS_KEY_ADMIN_HOME_META_LAST,
 			{ updatedAt: out.updatedAt },
 			REDIS_EX_ADMIN_HOME_META_SEC
 		);
@@ -3900,32 +3968,63 @@ async function adminHomeCacheRefresh(data = {}) {
 	}
 }
 
-/** 前端只读 Redis：预览 + 资金汇总 + 指定区间趋势 */
+/** 前端只读 Redis：预览 + 资金汇总 + 指定区间趋势；正式 key miss 时回退 :last */
 async function adminHomeCacheGet(data = {}) {
 	try {
 		const rangeType = String(data.rangeType || '30d').trim() || '30d';
-		const [preview, summary, trend, meta] = await Promise.all([
-			redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_PREVIEW),
-			redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_SUMMARY),
-			redisH5.h5RedisGetJson(redisKeyAdminHomeTrend(rangeType)),
-			redisH5.h5RedisGetJson(REDIS_KEY_ADMIN_HOME_META)
+		const [previewPack, summaryPack, trendPack, metaPack] = await Promise.all([
+			adminHomeRedisGetLiveOrLast(
+				REDIS_KEY_ADMIN_HOME_PREVIEW,
+				REDIS_KEY_ADMIN_HOME_PREVIEW_LAST,
+				isAdminHomePreviewPayload
+			),
+			adminHomeRedisGetLiveOrLast(
+				REDIS_KEY_ADMIN_HOME_SUMMARY,
+				REDIS_KEY_ADMIN_HOME_SUMMARY_LAST,
+				isAdminHomeSummaryPayload
+			),
+			adminHomeRedisGetLiveOrLast(
+				redisKeyAdminHomeTrend(rangeType),
+				redisKeyAdminHomeTrendLast(rangeType),
+				isAdminHomeTrendPayload
+			),
+			adminHomeRedisGetLiveOrLast(REDIS_KEY_ADMIN_HOME_META, REDIS_KEY_ADMIN_HOME_META_LAST)
 		]);
+		const preview = previewPack.data;
+		const summary = summaryPack.data;
+		const trend = trendPack.data;
+		const meta = metaPack.data;
 		const hit = {
-			preview: !!(preview && typeof preview === 'object'),
-			summary: !!(summary && summary.membershipCounts),
-			trend: !!(trend && Array.isArray(trend.categories))
+			preview: isAdminHomePreviewPayload(preview),
+			summary: isAdminHomeSummaryPayload(summary),
+			trend: isAdminHomeTrendPayload(trend)
+		};
+		const stale = {
+			preview: hit.preview && previewPack.from === 'last',
+			summary: hit.summary && summaryPack.from === 'last',
+			trend: hit.trend && trendPack.from === 'last'
 		};
 		const allHit = hit.preview && hit.summary && hit.trend;
+		const anyStale = !!(stale.preview || stale.summary || stale.trend);
+		const redisAlive = !!(redisH5.h5RedisAlive && redisH5.h5RedisAlive());
 		return {
 			code: 0,
-			message: allHit ? 'ok' : 'partial',
+			message: allHit ? (anyStale ? 'stale' : 'ok') : 'partial',
 			data: {
 				preview: hit.preview ? preview : null,
 				summary: hit.summary ? summary : null,
 				trend: hit.trend ? trend : null,
 				rangeType,
 				updatedAt: Number((meta && meta.updatedAt) || 0) || 0,
-				cacheHit: hit
+				cacheHit: hit,
+				cacheStale: stale,
+				cacheFrom: {
+					preview: previewPack.from,
+					summary: summaryPack.from,
+					trend: trendPack.from,
+					meta: metaPack.from
+				},
+				redisAlive
 			}
 		};
 	} catch (e) {

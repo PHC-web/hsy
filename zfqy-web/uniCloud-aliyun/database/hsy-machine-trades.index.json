@@ -57,7 +57,7 @@
 					"Direction": "-1",
 					"Type": "long"
 				}
-			],
+			], 
 			"MgoIsUnique": false
 		}
 	},

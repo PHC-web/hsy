@@ -6,19 +6,36 @@
 'use strict';
 
 let _redis = null;
-let _redisChecked = false;
 
 function getRedis() {
-	if (_redisChecked) {
-		return _redis;
-	}
-	_redisChecked = true;
+	// 成功才缓存；失败不永久钉死，避免冷启动偶发失败后整实例一直读不到
+	if (_redis) return _redis;
 	try {
-		_redis = typeof uniCloud !== 'undefined' && typeof uniCloud.redis === 'function' ? uniCloud.redis() : null;
+		if (typeof uniCloud !== 'undefined' && typeof uniCloud.redis === 'function') {
+			_redis = uniCloud.redis();
+		}
 	} catch (e) {
 		_redis = null;
 	}
 	return _redis;
+}
+
+function normalizeRedisString(s) {
+	if (s == null || s === '') return null;
+	if (typeof Buffer !== 'undefined' && Buffer.isBuffer(s)) {
+		const t = s.toString('utf8');
+		return t === '' ? null : t;
+	}
+	if (typeof s === 'object') {
+		// 部分客户端可能已反序列化
+		try {
+			return JSON.stringify(s);
+		} catch (e) {
+			return null;
+		}
+	}
+	const t = String(s);
+	return t === '' ? null : t;
 }
 
 async function h5RedisGetString(key) {
@@ -26,19 +43,28 @@ async function h5RedisGetString(key) {
 	if (!r || !key) return null;
 	try {
 		const s = await r.get(key);
-		if (s == null || s === '') return null;
-		return s;
+		return normalizeRedisString(s);
 	} catch (e) {
+		console.error('h5RedisGetString', key, e && e.message);
 		return null;
 	}
 }
 
 async function h5RedisGetJson(key) {
-	const s = await h5RedisGetString(key);
-	if (s == null) return null;
+	const r = getRedis();
+	if (!r || !key) return null;
 	try {
-		return JSON.parse(s);
+		const s = await r.get(key);
+		if (s == null || s === '') return null;
+		const isBuf = typeof Buffer !== 'undefined' && Buffer.isBuffer(s);
+		if (typeof s === 'object' && !isBuf) {
+			return s;
+		}
+		const text = normalizeRedisString(s);
+		if (text == null) return null;
+		return JSON.parse(text);
 	} catch (e) {
+		console.error('h5RedisGetJson', key, e && e.message);
 		return null;
 	}
 }
@@ -50,7 +76,6 @@ async function h5RedisSetJson(key, obj, exSec) {
 		const str = JSON.stringify(obj);
 		const n = Math.max(0, Number(exSec) || 0);
 		if (n > 0) {
-			// 兼容不同 Redis 客户端签名
 			try {
 				await r.set(key, str, 'EX', n);
 			} catch (e1) {
@@ -68,6 +93,7 @@ async function h5RedisSetJson(key, obj, exSec) {
 		}
 		return true;
 	} catch (e) {
+		console.error('h5RedisSetJson', key, e && e.message);
 		return false;
 	}
 }
@@ -82,8 +108,13 @@ async function h5RedisDel(key) {
 	}
 }
 
+function h5RedisAlive() {
+	return !!getRedis();
+}
+
 module.exports = {
 	getRedis,
+	h5RedisAlive,
 	h5RedisGetString,
 	h5RedisGetJson,
 	h5RedisSetJson,
