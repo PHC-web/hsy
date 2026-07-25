@@ -1,13 +1,8 @@
 'use strict';
 
-/**
- * 管理端首页统计 Redis 预热。
- * 建议定时触发器（阿里云控制台粘贴）：
- *   ["cron:0 */3 * * * *"]
- * 超时建议 ≥ 300s
- *
- * 写入 merchant：preview / summary / withdrawTop / trend:{today,week,month,30d}
- */
+// 管理端首页统计 Redis 预热。
+// 阿里云定时触发器（控制台粘贴整段）：["cron:0 */3 * * * *"]
+// 超时建议 ≥ 300s；写入 merchant：preview / summary / withdrawTop / pendingFrozen / trend
 
 async function callMerchant(action, data = {}) {
 	const res = await uniCloud.callFunction({

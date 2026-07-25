@@ -3,7 +3,9 @@
 	<view v-else class="fix-top-window">
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
-			<view class="uni-group"></view>
+			<view class="uni-group">
+				<text class="home-cache-updated">更新时间：{{ homeCacheUpdatedAtText }}</text>
+			</view>
 		</view>
 		<view class="uni-container dashboard-page">
 			<view class="title-wrap">
@@ -1005,6 +1007,16 @@
 			}
 		},
 		computed: {
+			homeCacheUpdatedAtText() {
+				const n = Number(this.homeCacheUpdatedAt || 0);
+				if (!n) return '暂无';
+				const d = new Date(n);
+				if (Number.isNaN(d.getTime())) return '暂无';
+				const p = (x) => String(x).padStart(2, '0');
+				return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(
+					d.getMinutes()
+				)}:${p(d.getSeconds())}`;
+			},
 			membershipTierItems() {
 				const c = this.dashboard.membershipCounts || {};
 				return [
@@ -1052,6 +1064,13 @@
 </script>
 
 <style>
+.home-cache-updated {
+	font-size: 13px;
+	color: #64748b;
+	white-space: nowrap;
+	line-height: 1.4;
+}
+
 .h5-entry-placeholder {
 	width: 100vw;
 	height: 100vh;
