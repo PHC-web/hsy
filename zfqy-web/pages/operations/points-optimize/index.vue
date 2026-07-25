@@ -164,7 +164,9 @@
 						<uni-tr>
 							<uni-th width="150">时间</uni-th>
 							<uni-th width="120">动作</uni-th>
+							<uni-th width="100">商户名称</uni-th>
 							<uni-th width="140">商户编号</uni-th>
+							<uni-th width="140">机具号</uni-th>
 							<uni-th width="80">砍额</uni-th>
 							<uni-th width="80">周</uni-th>
 							<uni-th>备注</uni-th>
@@ -172,12 +174,26 @@
 					<uni-tr v-for="item in logList" :key="item._id">
 						<uni-td>{{ fmtTs(item.create_time) }}</uni-td>
 						<uni-td>{{ logActionLabel(item.action) }}</uni-td>
+						<uni-td>{{ item.merchant_name || '-' }}</uni-td>
 						<uni-td class="tiny">{{ item.merchant_user_id || '-' }}</uni-td>
+						<uni-td class="tiny">{{ item.device_ids || '-' }}</uni-td>
 						<uni-td>{{ formatLogAmount(item) }}</uni-td>
 						<uni-td>{{ formatLogWeek(item) }}</uni-td>
 						<uni-td class="tiny">{{ item.remark || item.batch_id || '' }}</uni-td>
 					</uni-tr>
 					</uni-table>
+					<view class="uni-pagination-box">
+						<uni-pagination
+							show-icon
+							show-page-size
+							:page-size="logPage.pageSize"
+							:page-size-range="logPageSizeRange"
+							v-model="logPage.currentPage"
+							:total="logPage.total"
+							@change="onLogPageChanged"
+							@pageSizeChange="onLogPageSizeChange"
+						/>
+					</view>
 				</view>
 			</template>
 
@@ -261,6 +277,8 @@ export default {
 			wlList: [],
 			wlPage: { currentPage: 1, pageSize: 20, total: 0 },
 			logList: [],
+			logPage: { currentPage: 1, pageSize: 20, total: 0 },
+			logPageSizeRange: [20, 50, 100],
 			sliceMerchant: {},
 			sliceList: []
 		};
@@ -656,13 +674,39 @@ export default {
 			try {
 				const res = await this.$request(
 					'pointsOptimizeLogsList',
-					{ page: 1, pageSize: 50 },
+					{
+						page: this.logPage.currentPage,
+						pageSize: this.logPage.pageSize
+					},
 					{ functionName: 'points-optimize-admin' }
 				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+					return;
+				}
 				this.logList = (res.data && res.data.list) || [];
+				this.logPage.total = Number((res.data && res.data.total) || 0);
+				syncOpsListPageSize(this.logPage, res.data);
 			} finally {
 				this.loading = false;
 			}
+		},
+		onLogPageChanged(page) {
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.logPage.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
+			this.loadLogs();
+		},
+		onLogPageSizeChange(size) {
+			let s = 20;
+			if (typeof size === 'number' && Number.isFinite(size)) s = size;
+			else if (size && typeof size === 'object') {
+				s = Number(size.pageSize != null ? size.pageSize : size.size);
+			} else {
+				s = Number(size);
+			}
+			this.logPage.pageSize = Number.isFinite(s) && s > 0 ? Math.min(100, s) : 20;
+			this.logPage.currentPage = 1;
+			this.loadLogs();
 		},
 		async openSlices(item) {
 			const uid = item.userId || item.id;

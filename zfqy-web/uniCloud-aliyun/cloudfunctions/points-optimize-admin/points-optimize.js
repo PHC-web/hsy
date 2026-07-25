@@ -922,6 +922,94 @@ function createPointsOptimizeApi(deps) {
 		return { code: 0, message: 'ok', data: task };
 	}
 
+	/** 日志列表补齐商户昵称 + 绑定机具号（按页批量查，避免 N+1） */
+	async function enrichLogsWithMerchantInfo(rows) {
+		const list = Array.isArray(rows) ? rows : [];
+		if (!list.length) return list;
+		const uidKeys = [
+			...new Set(list.map((x) => String(x.merchant_user_id || '').trim()).filter(Boolean))
+		];
+		const merchantByKey = new Map();
+		if (uidKeys.length) {
+			try {
+				const mRes = await merchantCollection
+					.where(_.or([{ user_id: _.in(uidKeys) }, { _id: _.in(uidKeys) }]))
+					.field({ _id: true, user_id: true, wx_nickname: true, mobile: true, device_id: true })
+					.limit(Math.min(500, uidKeys.length * 2))
+					.get();
+				for (const m of mRes.data || []) {
+					const info = {
+						id: String(m._id || ''),
+						userId: String(m.user_id || m._id || ''),
+						name: safeText(m.wx_nickname || m.mobile || '', 60) || '-',
+						snapshotDeviceId: safeText(m.device_id, 80)
+					};
+					if (info.id) merchantByKey.set(info.id, info);
+					if (info.userId) merchantByKey.set(info.userId, info);
+				}
+			} catch (e) {
+				console.error('enrichLogsWithMerchantInfo merchants', e);
+			}
+		}
+		const bindIds = [
+			...new Set(
+				[...merchantByKey.values()]
+					.flatMap((m) => [m.userId, m.id])
+					.map((x) => String(x || '').trim())
+					.filter(Boolean)
+			)
+		];
+		const devicesByBind = new Map();
+		if (bindIds.length) {
+			try {
+				const machineCol = db.collection('hsy-machine');
+				const CHUNK = 200;
+				for (let i = 0; i < bindIds.length; i += CHUNK) {
+					const part = bindIds.slice(i, i + CHUNK);
+					const mr = await machineCol
+						.where(
+							_.and([
+								{ is_deleted: _.neq(true) },
+								{ is_bound: 1 },
+								{ bind_user_id: _.in(part) }
+							])
+						)
+						.field({ device_id: true, bind_user_id: true })
+						.limit(1000)
+						.get();
+					for (const row of mr.data || []) {
+						const uid = String(row.bind_user_id || '').trim();
+						const did = safeText(row.device_id, 80);
+						if (!uid || !did) continue;
+						if (!devicesByBind.has(uid)) devicesByBind.set(uid, []);
+						const arr = devicesByBind.get(uid);
+						if (!arr.includes(did)) arr.push(did);
+					}
+				}
+			} catch (e) {
+				console.error('enrichLogsWithMerchantInfo machines', e);
+			}
+		}
+		const deviceTextFor = (info) => {
+			if (!info) return '';
+			const fromBind = [
+				...(devicesByBind.get(info.userId) || []),
+				...(devicesByBind.get(info.id) || [])
+			];
+			const uniq = [...new Set(fromBind.filter(Boolean))];
+			if (uniq.length) return uniq.join('、');
+			return info.snapshotDeviceId || '';
+		};
+		return list.map((row) => {
+			const key = String(row.merchant_user_id || '').trim();
+			const info = key ? merchantByKey.get(key) : null;
+			return Object.assign({}, row, {
+				merchant_name: info ? info.name : '',
+				device_ids: info ? deviceTextFor(info) : ''
+			});
+		});
+	}
+
 	async function pointsOptimizeLogsList(data = {}) {
 		const page = Math.max(1, Number(data.page) || 1);
 		const pageSize = Math.min(100, Math.max(1, Number(data.pageSize) || 20));
@@ -939,11 +1027,12 @@ function createPointsOptimizeApi(deps) {
 			.skip((page - 1) * pageSize)
 			.limit(pageSize)
 			.get();
+		const list = await enrichLogsWithMerchantInfo(listRes.data || []);
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
-				list: listRes.data || [],
+				list,
 				total: countRes.total || 0,
 				page,
 				pageSize
