@@ -1,0 +1,12 @@
+{
+	"name": "xingyi-async-notify",
+	"version": "1.0.0",
+	"description": "星驿付生产环境异步通知收件箱（只落库，不业务处理；与 TYY 推送无关）",
+	"main": "index.js",
+	"cloudfunction-config": {
+		"memorySize": 256,
+		"timeout": 30,
+		"url": true
+	},
+	"dependencies": {}
+}

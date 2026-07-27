@@ -12,6 +12,8 @@ const DEFAULT_ABOVE_INSTALLMENTS = 5;
 /** 与历史产品一致：阈值以下默认 1 期；实际以参数配置 optimizeConfig 为准 */
 const DEFAULT_BELOW_INSTALLMENTS = 1;
 const MIN_PACKET_AMOUNT = 0.01;
+/** H5 权益页未领取气泡上限；超出后失效 create_time 最早的 pending */
+const MAX_PENDING_INCOME_PACKETS = 50;
 /** 两位小数向上取整（例：13.1501 → 13.16） */
 function ceilYuan2(raw) {
 	const n = Number(raw || 0);
@@ -313,6 +315,51 @@ function buildIncomePacketClaimWindow(anchorTs, claimValidMs) {
 	};
 }
 
+/**
+ * 保持可展示的未领取气泡 ≤ MAX_PENDING_INCOME_PACKETS：
+ * 按 create_time 升序，超出部分将最早的标为 expired（先进先失效）。
+ */
+async function enforceMaxPendingIncomePackets(db, merchantUserId, nowTs) {
+	const allPending = await fetchAllQueryPages(
+		db,
+		'hsy-income-packets',
+		{ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false },
+		{
+			field: {
+				_id: true,
+				create_time: true,
+				subsidy_kind: true,
+				expire_time: true,
+				claim_open_time: true,
+				amount: true
+			},
+			orderBy: { field: 'create_time', direction: 'asc' }
+		}
+	);
+	const claimable = (allPending || []).filter((x) => {
+		if (x.expire_time && x.expire_time < nowTs) return false;
+		if (!Number(x.claim_open_time || 0)) return false;
+		if (x.claim_open_time && x.claim_open_time > nowTs) return false;
+		if (roundPacketAmountYuan(x.amount) < MIN_PACKET_AMOUNT) return false;
+		return true;
+	});
+	claimable.sort((a, b) => Number(a.create_time || 0) - Number(b.create_time || 0));
+	if (claimable.length <= MAX_PENDING_INCOME_PACKETS) {
+		return { expiredTradeFirst: 0, expiredByCap: 0 };
+	}
+	const overflow = claimable.length - MAX_PENDING_INCOME_PACKETS;
+	const toExpire = claimable.slice(0, overflow);
+	let expiredTradeFirst = 0;
+	for (const row of toExpire) {
+		await db.collection('hsy-income-packets').doc(row._id).update({
+			status: 'expired',
+			update_time: nowTs
+		});
+		if (String(row.subsidy_kind || '') === 'trade_first') expiredTradeFirst += 1;
+	}
+	return { expiredTradeFirst, expiredByCap: toExpire.length };
+}
+
 async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 	const claimValidMs = resolveIncomePacketClaimValidMs(options);
 	const optimizeConfig = normalizeOptimizeConfig(options.optimizeConfig);
@@ -352,6 +399,8 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 				}
 			}
 		);
+		const capRet = await enforceMaxPendingIncomePackets(db, merchantUserId, nowTs);
+		expiredTradeFirst += Number(capRet.expiredTradeFirst || 0);
 		return { expiredTradeFirst };
 	}
 
@@ -477,6 +526,8 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 			}
 		}
 	);
+	const capRet = await enforceMaxPendingIncomePackets(db, merchantUserId, nowTs);
+	expiredTradeFirst += Number(capRet.expiredTradeFirst || 0);
 	return { expiredTradeFirst };
 }
 
@@ -488,6 +539,7 @@ module.exports = {
 	DEFAULT_ABOVE_INSTALLMENTS,
 	DEFAULT_BELOW_INSTALLMENTS,
 	MIN_PACKET_AMOUNT,
+	MAX_PENDING_INCOME_PACKETS,
 	MIN_SUBSIDY_TRADE_YUAN,
 	DB_PAGE_SIZE,
 	DB_MAX_ROWS,
@@ -510,5 +562,6 @@ module.exports = {
 	fetchAllQueryPages,
 	sumEligibleRealFlowYuan,
 	sumEligibleReleasePoints,
-	syncSubsidyPackets
+	syncSubsidyPackets,
+	enforceMaxPendingIncomePackets
 };

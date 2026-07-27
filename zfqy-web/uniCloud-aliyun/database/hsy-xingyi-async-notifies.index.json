@@ -1,0 +1,19 @@
+[
+	{
+		"IndexName": "create_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "create_time", "Direction": "-1", "Type": "long" }],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "notify_type_create_time_desc",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "notify_type", "Direction": "1", "Type": "string" },
+				{ "Name": "create_time", "Direction": "-1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	}
+]

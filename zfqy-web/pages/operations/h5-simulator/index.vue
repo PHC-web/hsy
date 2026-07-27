@@ -28,8 +28,14 @@
 					:key="tab.key"
 					class="tab-item"
 					:class="{ active: activeTab === tab.key }"
-					@click="activeTab = tab.key"
+					@click="selectTab(tab)"
 				>{{ tab.name }}</view>
+			</view>
+
+			<view class="route-bar">
+				<text class="route-bar-label">当前页路由</text>
+				<text class="route-bar-path" selectable>{{ activeTabRoute }}</text>
+				<button size="mini" class="route-copy-btn" @click="copyActiveRoute">复制</button>
 			</view>
 
 			<view class="content-card">
@@ -72,18 +78,18 @@ export default {
 			merchantId: '',
 			activeTab: 'home',
 			tabs: [
-				{ key: 'home', name: 'H5首页', action: 'h5HomeDashboard', params: {} },
-				{ key: 'mine', name: 'H5我的', action: 'h5MineInfo', params: {} },
-				{ key: 'income', name: 'H5收益', action: 'h5IncomeList', params: {} },
-				{ key: 'finance', name: 'H5财务', action: 'h5FinanceRecords', params: toDayRange(30) },
-				{ key: 'withdraw', name: 'H5提现页', action: 'h5WithdrawInfo', params: {} },
-				{ key: 'pending', name: 'H5待返积分', action: 'h5PendingReturnPoints', params: {} },
-				{ key: 'coupons', name: 'H5优惠券', action: 'h5CouponMyList', params: {} },
-				{ key: 'recharge', name: 'H5充值页', action: 'h5RechargeOptions', params: {} },
-				{ key: 'device', name: 'H5码牌绑定', action: 'h5MachineBindingList', params: { page: 1, pageSize: 50 } },
-				{ key: 'bindLog', name: 'H5绑定日志', action: 'h5MachineBindLogList', params: { page: 1, pageSize: 50 } },
-				{ key: 'feedback', name: 'H5客服摘要', action: 'h5FeedbackSummary', params: {} },
-				{ key: 'feedbackTicket', name: 'H5当前工单', action: 'h5FeedbackGetOpen', params: {} }
+				{ key: 'home', name: 'H5首页', route: '/pages/h5/home/index', action: 'h5HomeDashboard', params: {} },
+				{ key: 'mine', name: 'H5我的', route: '/pages/h5/mine/index', action: 'h5MineInfo', params: {} },
+				{ key: 'income', name: 'H5收益', route: '/pages/h5/income/index', action: 'h5IncomeList', params: {} },
+				{ key: 'finance', name: 'H5财务', route: '/pages/h5/finance/index', action: 'h5FinanceRecords', params: toDayRange(30) },
+				{ key: 'withdraw', name: 'H5提现页', route: '/pages/h5/withdraw/index', action: 'h5WithdrawInfo', params: {} },
+				{ key: 'pending', name: 'H5待返积分', route: '/pages/h5/pending-return/index', action: 'h5PendingReturnPoints', params: {} },
+				{ key: 'coupons', name: 'H5优惠券', route: '/pages/h5/coupons/index', action: 'h5CouponMyList', params: {} },
+				{ key: 'recharge', name: 'H5充值页', route: '/pages/h5/recharge/index', action: 'h5RechargeOptions', params: {} },
+				{ key: 'device', name: 'H5码牌绑定', route: '/pages/h5/device/index', action: 'h5MachineBindingList', params: { page: 1, pageSize: 50 } },
+				{ key: 'bindLog', name: 'H5绑定日志', route: '/pages/h5/device/index', action: 'h5MachineBindLogList', params: { page: 1, pageSize: 50 } },
+				{ key: 'feedback', name: 'H5客服摘要', route: '/pages/h5/feedback/index', action: 'h5FeedbackSummary', params: {} },
+				{ key: 'feedbackTicket', name: 'H5当前工单', route: '/pages/h5/feedback/index', action: 'h5FeedbackGetOpen', params: {} }
 			],
 			payloadMap: {
 				home: initPayload(),
@@ -108,9 +114,41 @@ export default {
 		activeTabName() {
 			const hit = this.tabs.find((x) => x.key === this.activeTab);
 			return hit ? hit.name : '-';
+		},
+		activeTabRoute() {
+			const hit = this.tabs.find((x) => x.key === this.activeTab);
+			return hit && hit.route ? hit.route : '-';
 		}
 	},
 	methods: {
+		selectTab(tab) {
+			if (!tab || !tab.key) return;
+			this.activeTab = tab.key;
+		},
+		copyActiveRoute() {
+			const text = this.activeTabRoute;
+			if (!text || text === '-') {
+				uni.showToast({ title: '无路由可复制', icon: 'none' });
+				return;
+			}
+			// #ifdef H5
+			if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+				navigator.clipboard.writeText(text).then(
+					() => uni.showToast({ title: '已复制路由', icon: 'success' }),
+					() => this.fallbackCopy(text)
+				);
+				return;
+			}
+			// #endif
+			this.fallbackCopy(text);
+		},
+		fallbackCopy(text) {
+			uni.setClipboardData({
+				data: text,
+				success: () => uni.showToast({ title: '已复制路由', icon: 'success' }),
+				fail: () => uni.showToast({ title: '复制失败', icon: 'none' })
+			});
+		},
 		pretty(v) {
 			try {
 				return JSON.stringify(v || {}, null, 2);
@@ -217,6 +255,34 @@ export default {
 .tab-item.active {
 	background: #ecf5ff;
 	color: #409eff;
+}
+.route-bar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-bottom: 12px;
+	padding: 10px 12px;
+	background: #f4f9ff;
+	border: 1px solid #d9ecff;
+	border-radius: 8px;
+}
+.route-bar-label {
+	flex-shrink: 0;
+	font-size: 12px;
+	color: #606266;
+	font-weight: 600;
+}
+.route-bar-path {
+	flex: 1;
+	min-width: 180px;
+	font-family: Menlo, Monaco, Consolas, 'Courier New', monospace;
+	font-size: 13px;
+	color: #303133;
+	word-break: break-all;
+}
+.route-copy-btn {
+	flex-shrink: 0;
 }
 .content-card {
 	background: #fff;

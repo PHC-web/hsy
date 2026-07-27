@@ -37,7 +37,10 @@
 							confirm-type="done"
 						/>
 					</view>
-					<text class="field-hint">本次范围：{{ info.minPoints }}～{{ info.maxPoints }} 分 / 笔</text>
+					<view class="field-hint-row">
+						<text class="field-hint">本次范围：{{ info.minPoints }}～{{ info.maxPoints }} 分 / 笔</text>
+						<text v-if="periodLimitTip" class="period-limit-tip">{{ periodLimitTip }}</text>
+					</view>
 				</view>
 
 				<view class="card h5-glass-panel rules">
@@ -77,6 +80,7 @@ export default {
 				membershipName: '-',
 				minPoints: 30,
 				maxPoints: 200,
+				periodLimitHit: '',
 				feePerOrderYuan: 3,
 				inBusinessHours: true
 			}
@@ -88,6 +92,12 @@ export default {
 		},
 		nonMemberMin() {
 			return 30;
+		},
+		periodLimitTip() {
+			const hit = String(this.info.periodLimitHit || '');
+			if (hit === 'day') return '今日提现金额已达上限';
+			if (hit === 'week') return '本周提现金额已达上限';
+			return '';
 		},
 		offHoursHint() {
 			return '当前非提现办理时间。请在周一至周五 9:00–18:00（北京时间）提交。';
@@ -135,9 +145,14 @@ export default {
 					membershipName: d.membershipName || '-',
 					minPoints: Number(d.minPoints != null ? d.minPoints : 30),
 					maxPoints: Number(d.maxPoints != null ? d.maxPoints : 200),
+					periodLimitHit: String(d.periodLimitHit || ''),
 					feePerOrderYuan: Number(d.feePerOrderYuan != null ? d.feePerOrderYuan : 3),
 					inBusinessHours: !!d.inBusinessHours
 				});
+				// 兜底：max 已为 0 但未带回 hit 时，仍按 0～0 展示，避免「10～0」
+				if (this.info.maxPoints <= 0 && this.info.minPoints > 0) {
+					this.info.minPoints = 0;
+				}
 			} finally {
 				this.loading = false;
 			}
@@ -289,11 +304,24 @@ export default {
 	color: #94a3b8;
 	-webkit-text-fill-color: #94a3b8;
 }
-.field-hint {
-	display: block;
+.field-hint-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 8px;
 	margin-top: 10px;
+}
+.field-hint {
+	display: inline;
+	margin-top: 0;
 	font-size: 11px;
 	color: #64748b;
+}
+.period-limit-tip {
+	font-size: 11px;
+	color: #ef4444;
+	font-weight: 600;
+	line-height: 1.4;
 }
 
 .summary .sum-line {

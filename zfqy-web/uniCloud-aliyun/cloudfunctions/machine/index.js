@@ -957,14 +957,38 @@ async function getFreezeBillList(data) {
 
 /** get() 默认最多 100 条，必须分页否则「已绑定机具」列表不全，刷卡记录会漏数据 */
 const CARD_LIST_BOUND_MACHINE_PAGE = 1000;
-/** MongoDB in 列表过长时拆成 $or，降低单次查询体积 */
-const CARD_LIST_IN_CHUNK = 450;
+/** 单次 $in 机具数；禁止再用 $or 拼多段 $in（会慢查） */
+const CARD_LIST_IN_CHUNK = 300;
+const CARD_LIST_QUERY_CONCURRENCY = 3;
 
 function chunkIdsForIn(arr, chunkSize) {
 	const out = [];
 	const a = Array.isArray(arr) ? arr : [];
 	for (let i = 0; i < a.length; i += chunkSize) out.push(a.slice(i, i + chunkSize));
 	return out;
+}
+
+async function mapCardListChunks(chunks, worker, concurrency = CARD_LIST_QUERY_CONCURRENCY) {
+	const list = (Array.isArray(chunks) ? chunks : []).filter((c) => Array.isArray(c) && c.length);
+	if (!list.length) return [];
+	const results = new Array(list.length);
+	let cursor = 0;
+	const limit = Math.max(1, Math.min(Number(concurrency) || 1, list.length));
+	const runners = [];
+	for (let c = 0; c < limit; c += 1) {
+		runners.push(
+			(async () => {
+				for (;;) {
+					const idx = cursor;
+					cursor += 1;
+					if (idx >= list.length) break;
+					results[idx] = await worker(list[idx], idx);
+				}
+			})()
+		);
+	}
+	await Promise.all(runners);
+	return results;
 }
 
 /**
@@ -1084,16 +1108,8 @@ async function getCardRecordList(data) {
 		if (!boundDeviceIds.length || !boundUserIds.length) {
 			return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
 		}
-		const pushIdIn = (field, ids) => {
-			if (!ids || !ids.length) return;
-			if (ids.length <= CARD_LIST_IN_CHUNK) {
-				pushWhere({ [field]: _.in(ids) });
-				return;
-			}
-			pushWhere(_.or(chunkIdsForIn(ids, CARD_LIST_IN_CHUNK).map((c) => ({ [field]: _.in(c) }))));
-		};
-		pushIdIn('device_id', boundDeviceIds);
-		pushIdIn('user_id', boundUserIds);
+		// 仅按已绑定机具 device_id 分片；不再叠加巨型 user_id $in / $or（user_id 非空条件已在下方）
+		const deviceChunks = chunkIdsForIn(boundDeviceIds, CARD_LIST_IN_CHUNK);
 		const actArr = Array.isArray(isActivatedList)
 			? [...new Set(isActivatedList.map((x) => String(x)))]
 			: [];
@@ -1207,20 +1223,42 @@ async function getCardRecordList(data) {
 			])
 		);
 
-		const finalWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
-		const query = tradeCollection.where(finalWhere);
+		const baseWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
+		const whereForDeviceChunk = (chunk) => {
+			const ids = (chunk || []).map((x) => String(x || '').trim()).filter(Boolean);
+			if (!ids.length) return null;
+			// stats_eligible 已在 baseWhere；此处补 device_id $in(单片)
+			return _.and([baseWhere, { device_id: _.in(ids) }]);
+		};
 
-		const countRes = await query.count();
-		const total = countRes.total;
+		const countParts = await mapCardListChunks(deviceChunks, async (chunk) => {
+			const w = whereForDeviceChunk(chunk);
+			if (!w) return 0;
+			const countRes = await tradeCollection.where(w).count();
+			return Number(countRes.total || 0);
+		});
+		const total = (countParts || []).reduce((s, n) => s + Number(n || 0), 0);
 
-		const res = await query
-			.orderBy('create_time', 'desc')
-			.skip((page - 1) * pageSize)
-			.limit(pageSize)
-			.get();
+		const pageNum = Math.max(1, Number(page) || 1);
+		const size = Math.max(1, Math.min(500, Number(pageSize) || 10));
+		const skip = (pageNum - 1) * size;
+		const perChunkLimit = Math.min(1000, skip + size);
+		const chunkRows = await mapCardListChunks(deviceChunks, async (chunk) => {
+			const w = whereForDeviceChunk(chunk);
+			if (!w) return [];
+			const r = await tradeCollection
+				.where(w)
+				.orderBy('create_time', 'desc')
+				.limit(perChunkLimit)
+				.get();
+			return r.data || [];
+		});
+		const merged = (chunkRows || [])
+			.flat()
+			.sort((a, b) => Number(b.create_time || 0) - Number(a.create_time || 0));
+		const trades = merged.slice(skip, skip + size);
 
-		const trades = res.data || [];
-		const deviceIds = [...new Set(trades.map(t => t.device_id))];
+		const deviceIds = [...new Set(trades.map((t) => t.device_id))];
 		let brandMap = {};
 		if (deviceIds.length > 0) {
 			const machines = await machineCollection.where({ device_id: db.command.in(deviceIds), is_deleted: false }).field({ device_id: true, brand_name: true }).get();
@@ -1284,26 +1322,29 @@ async function getCardRecordList(data) {
 			};
 		});
 
-		// 用与列表完全一致的 where 条件分批求和，避免聚合 match 在部分环境下口径不一致。
-		let totalAmount = 0;
-		const sumPageSize = 500;
-		for (let offset = 0; offset < total; offset += sumPageSize) {
-			const sumChunkRes = await tradeCollection
-				.where(finalWhere)
-				.field({ amount: true })
-				.skip(offset)
-				.limit(sumPageSize)
-				.get();
-			const rows = sumChunkRes.data || [];
-			totalAmount += rows.reduce((s, r) => s + Number(r.amount || 0), 0);
-			if (rows.length < sumPageSize) break;
-		}
-		totalAmount = Number(totalAmount.toFixed(2));
+		// 分 chunk 聚合求和，避免巨型 where + skip 扫全表
+		const $ = db.command.aggregate;
+		const sumParts = await mapCardListChunks(deviceChunks, async (chunk) => {
+			const w = whereForDeviceChunk(chunk);
+			if (!w) return 0;
+			try {
+				const agg = await tradeCollection
+					.aggregate()
+					.match(w)
+					.group({ _id: null, total: $.sum('$amount') })
+					.end();
+				return Number((((agg.data || [])[0] || {}).total || 0));
+			} catch (e) {
+				console.error('getCardRecordList sum chunk', e);
+				return 0;
+			}
+		});
+		const totalAmount = Number((sumParts || []).reduce((s, n) => s + Number(n || 0), 0).toFixed(2));
 
 		return {
 			code: 0,
 			message: '获取成功',
-			data: { list, total, totalAmount, page, pageSize }
+			data: { list, total, totalAmount, page: pageNum, pageSize: size }
 		};
 	} catch (error) {
 		console.error('刷卡记录列表失败:', error);

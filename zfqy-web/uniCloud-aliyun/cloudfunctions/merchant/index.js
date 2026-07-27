@@ -2817,40 +2817,246 @@ async function adminForEachTradeRowPagedCardAligned(cardBase, field, onBatch, ex
 	const _ = db.command;
 	if (!cardBase || !cardBase.ok || typeof onBatch !== 'function') return 0;
 	let total = 0;
-	// 分页扫行串行按 chunk，避免并发 skip 放大压力
+	// 按机具逐个 + create_time 游标（走 device_id+create_time）；禁止大 $in + skip 深分页
 	for (const chunk of cardBase.deviceChunks || []) {
-		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
-		if (!where) continue;
-		total += await adminForEachTradeRowPaged(where, field, onBatch);
+		for (const deviceId of chunk || []) {
+			const where = buildCardAlignedTradeWhereForChunk(_, [deviceId], extraAnd);
+			if (!where) continue;
+			total += await adminForEachTradeRowPaged(where, field, onBatch);
+		}
 	}
 	return total;
 }
 
-/** 首页趋势：分页拉全量刷卡记录（规避单次 get 默认/上限约 1000 条） */
+/** 首页趋势：游标分页拉行（禁止 skip 深分页；单次 get 上限 1000） */
 const ADMIN_TREND_TRADE_PAGE = 1000;
 const ADMIN_TREND_TRADE_MAX_ROWS = 2000000;
 
 async function adminForEachTradeRowPaged(where, field, onBatch) {
 	if (!where || typeof onBatch !== 'function') return 0;
-	let skip = 0;
+	const _ = db.command;
 	let total = 0;
+	let cursorTs = null;
+	let cursorId = '';
+	const fieldWithMeta = Object.assign({ _id: true, create_time: true }, field || {});
 	for (;;) {
+		const pageWhere =
+			cursorTs == null
+				? where
+				: _.and([
+						where,
+						_.or([
+							{ create_time: _.gt(cursorTs) },
+							_.and([{ create_time: cursorTs }, { _id: _.gt(cursorId) }])
+						])
+					]);
 		const r = await machineTradeCollection
-			.where(where)
-			.field(field)
-			.skip(skip)
+			.where(pageWhere)
+			.field(fieldWithMeta)
+			.orderBy('create_time', 'asc')
 			.limit(ADMIN_TREND_TRADE_PAGE)
 			.get();
 		const rows = r.data || [];
 		if (rows.length) {
 			onBatch(rows);
 			total += rows.length;
+			const last = rows[rows.length - 1];
+			cursorTs = Number(last.create_time || 0);
+			cursorId = String(last._id || '');
 		}
 		if (rows.length < ADMIN_TREND_TRADE_PAGE) break;
-		skip += ADMIN_TREND_TRADE_PAGE;
-		if (skip >= ADMIN_TREND_TRADE_MAX_ROWS) break;
+		if (total >= ADMIN_TREND_TRADE_MAX_ROWS) break;
 	}
 	return total;
+}
+
+/**
+ * 按 trade_type + paychannel 聚合（分 device chunk），供首页趋势 allTime / 区间统计，避免拉全量行。
+ * @returns {{ totalAmount: number, totalCount: number, rows: Array<{trade_type, paychannel, count, amount}> }}
+ */
+async function adminAggregateTradeTypeStatsCardAligned(cardBase, extraAnd = []) {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const empty = { totalAmount: 0, totalCount: 0, rows: [] };
+	if (!cardBase || !cardBase.ok) return empty;
+	const chunkRows = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
+		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
+		if (!where) return [];
+		try {
+			const agg = await machineTradeCollection
+				.aggregate()
+				.match(where)
+				.group({
+					_id: { trade_type: '$trade_type', paychannel: '$paychannel' },
+					count: $.sum(1),
+					amount: $.sum('$amount')
+				})
+				.end();
+			return agg.data || [];
+		} catch (e) {
+			console.error('adminAggregateTradeTypeStatsCardAligned chunk', e);
+			return [];
+		}
+	});
+	const merged = new Map();
+	for (const rows of chunkRows || []) {
+		for (const row of rows || []) {
+			const tradeType = row._id && row._id.trade_type != null ? row._id.trade_type : '';
+			const paychannel = row._id && row._id.paychannel != null ? row._id.paychannel : '';
+			const key = `${tradeType}\0${paychannel}`;
+			const prev = merged.get(key) || { trade_type: tradeType, paychannel, count: 0, amount: 0 };
+			prev.count += Number(row.count || 0);
+			prev.amount = Number((prev.amount + Number(row.amount || 0)).toFixed(4));
+			merged.set(key, prev);
+		}
+	}
+	const rows = [...merged.values()];
+	const totalCount = rows.reduce((s, r) => s + Number(r.count || 0), 0);
+	const totalAmount = Number(rows.reduce((s, r) => s + Number(r.amount || 0), 0).toFixed(2));
+	return { totalAmount, totalCount, rows };
+}
+
+function adminTrendBucketTimeBounds(bucketKey, range) {
+	const endCap = Number(range && range.endTs != null ? range.endTs : Date.now());
+	if (range && range.bucket === 'hour') {
+		const m = String(bucketKey || '').match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2})$/);
+		if (!m) return null;
+		const start = new Date(`${m[1]}T${m[2]}:00:00+08:00`).getTime();
+		if (!Number.isFinite(start)) return null;
+		return { start, end: Math.min(start + 3600 * 1000 - 1, endCap) };
+	}
+	const day = String(bucketKey || '').slice(0, 10);
+	if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+	const start = new Date(`${day}T00:00:00+08:00`).getTime();
+	if (!Number.isFinite(start)) return null;
+	return { start, end: Math.min(start + 24 * 3600 * 1000 - 1, endCap) };
+}
+
+/**
+ * 区间趋势：按日/小时桶 + 交易类型聚合，避免大 $in + skip 扫行。
+ * 优先整段 match 后 $dateToString 分组；失败则按桶循环聚合。
+ */
+async function adminAggregateTrendBucketTradeStatsCardAligned(cardBase, range, normalizeTrendTradeType) {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const dayFlow = {};
+	const dayTradeTypeCount = {};
+	const dayTradeTypeAmount = {};
+	const rangeTradeTypeStats = {};
+	let rangeTradeCount = 0;
+	let rangeTradeAmount = 0;
+	const keys = Array.isArray(range && range.keys) ? range.keys : [];
+	keys.forEach((d) => {
+		dayFlow[d] = 0;
+		dayTradeTypeCount[d] = {};
+		dayTradeTypeAmount[d] = {};
+	});
+	const applyTypeRow = (bucketKey, row) => {
+		if (!(bucketKey in dayFlow)) return;
+		const amt = Number(row.amount || 0);
+		const cnt = Number(row.count || 0);
+		dayFlow[bucketKey] += amt;
+		rangeTradeAmount += amt;
+		rangeTradeCount += cnt;
+		const typeKey = normalizeTrendTradeType(row);
+		if (!rangeTradeTypeStats[typeKey]) rangeTradeTypeStats[typeKey] = { count: 0, amount: 0 };
+		rangeTradeTypeStats[typeKey].count += cnt;
+		rangeTradeTypeStats[typeKey].amount += amt;
+		if (!dayTradeTypeCount[bucketKey][typeKey]) dayTradeTypeCount[bucketKey][typeKey] = 0;
+		if (!dayTradeTypeAmount[bucketKey][typeKey]) dayTradeTypeAmount[bucketKey][typeKey] = 0;
+		dayTradeTypeCount[bucketKey][typeKey] += cnt;
+		dayTradeTypeAmount[bucketKey][typeKey] += amt;
+	};
+
+	const startTs = Number(range.startTs || 0);
+	const endTs = Number(range.endTs || Date.now());
+	const rangeExtra = [{ create_time: _.gte(startTs) }, { create_time: _.lte(endTs) }];
+	const isHour = range && range.bucket === 'hour';
+	const dateFormat = isHour ? '%Y-%m-%d %H' : '%Y-%m-%d';
+
+	let usedDateGroup = false;
+	if (cardBase && cardBase.ok && keys.length) {
+		try {
+			const chunkRows = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
+				const where = buildCardAlignedTradeWhereForChunk(_, chunk, rangeExtra);
+				if (!where) return [];
+				const agg = await machineTradeCollection
+					.aggregate()
+					.match(where)
+					.group({
+						_id: {
+							bucket: $.dateToString({
+								format: dateFormat,
+								date: $.toDate('$create_time'),
+								timezone: 'Asia/Shanghai'
+							}),
+							trade_type: '$trade_type',
+							paychannel: '$paychannel'
+						},
+						count: $.sum(1),
+						amount: $.sum('$amount')
+					})
+					.end();
+				return agg.data || [];
+			});
+			for (const rows of chunkRows || []) {
+				for (const row of rows || []) {
+					const bucketRaw = row._id && row._id.bucket != null ? String(row._id.bucket) : '';
+					const bucketKey = isHour ? bucketRaw : bucketRaw.slice(0, 10);
+					applyTypeRow(bucketKey, {
+						trade_type: row._id && row._id.trade_type,
+						paychannel: row._id && row._id.paychannel,
+						count: row.count,
+						amount: row.amount
+					});
+				}
+			}
+			usedDateGroup = true;
+		} catch (e) {
+			console.error('adminAggregateTrendBucketTradeStatsCardAligned dateGroup', e);
+			usedDateGroup = false;
+			keys.forEach((d) => {
+				dayFlow[d] = 0;
+				dayTradeTypeCount[d] = {};
+				dayTradeTypeAmount[d] = {};
+			});
+			rangeTradeCount = 0;
+			rangeTradeAmount = 0;
+			Object.keys(rangeTradeTypeStats).forEach((k) => delete rangeTradeTypeStats[k]);
+		}
+	}
+
+	if (!usedDateGroup && cardBase && cardBase.ok) {
+		for (const bucketKey of keys) {
+			const bounds = adminTrendBucketTimeBounds(bucketKey, range);
+			if (!bounds) continue;
+			const extra = [{ create_time: _.gte(bounds.start) }, { create_time: _.lte(bounds.end) }];
+			const part = await adminAggregateTradeTypeStatsCardAligned(cardBase, extra);
+			for (const row of part.rows || []) {
+				applyTypeRow(bucketKey, row);
+			}
+		}
+	}
+
+	Object.keys(dayFlow).forEach((d) => {
+		dayFlow[d] = Number(Number(dayFlow[d] || 0).toFixed(2));
+	});
+	Object.keys(dayTradeTypeAmount).forEach((d) => {
+		Object.keys(dayTradeTypeAmount[d] || {}).forEach((k) => {
+			dayTradeTypeAmount[d][k] = Number(Number(dayTradeTypeAmount[d][k] || 0).toFixed(2));
+		});
+	});
+	Object.keys(rangeTradeTypeStats).forEach((k) => {
+		rangeTradeTypeStats[k].amount = Number(Number(rangeTradeTypeStats[k].amount || 0).toFixed(2));
+	});
+	return {
+		dayFlow,
+		dayTradeTypeCount,
+		dayTradeTypeAmount,
+		rangeTradeTypeStats,
+		rangeTradeCount,
+		rangeTradeAmount: Number(Number(rangeTradeAmount || 0).toFixed(2))
+	};
 }
 
 async function adminCountTradesWhere(where) {
@@ -2913,14 +3119,6 @@ async function adminDashboardTrend30d(data = {}) {
 		const _ = db.command;
 		const $ = db.command.aggregate;
 		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
-		const tradeRangeExtra = [{ create_time: _.gte(startTs) }, { create_time: _.lte(endTs) }];
-		const tradeRowField = {
-			create_time: true,
-			amount: true,
-			trade_type: true,
-			paychannel: true,
-			paychannel_text: true
-		};
 		/** 只按 bind_time 范围查（走 bind_time 索引）；user_id/device_id 在内存过滤，避免误走 user_id 索引扫大文档 */
 		const fetchBoundMerchantsInRange = async () => {
 			const pageSize = 1000;
@@ -3126,23 +3324,23 @@ async function adminDashboardTrend30d(data = {}) {
 		}
 		try {
 			if (cardBase.ok) {
-				// 一次扫全量：同时累计 allTime 金额/笔数/交易类型，避免再单独 aggregate sum/count
-				await adminForEachTradeRowPagedCardAligned(
-					cardBase,
-					{ trade_type: true, paychannel: true, amount: true },
-					(rows) => {
-						rows.forEach((row) => {
-							const amt = Number(row.amount || 0);
-							allTimeTotalFlow += amt;
-							allTimeTradeCount += 1;
-							const k = normalizeTrendTradeType(row);
-							if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
-							allTimeTradeTypeStats[k].count += 1;
-							allTimeTradeTypeStats[k].amount += amt;
-						});
-					}
-				);
-				allTimeTotalFlow = Number(Number(allTimeTotalFlow || 0).toFixed(2));
+				// 聚合按类型汇总，避免全量扫行 + skip 深分页
+				const allTimeAgg = await adminAggregateTradeTypeStatsCardAligned(cardBase);
+				allTimeTotalFlow = allTimeAgg.totalAmount;
+				allTimeTradeCount = allTimeAgg.totalCount;
+				(allTimeAgg.rows || []).forEach((row) => {
+					const amt = Number(row.amount || 0);
+					const cnt = Number(row.count || 0);
+					const k = normalizeTrendTradeType(row);
+					if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
+					allTimeTradeTypeStats[k].count += cnt;
+					allTimeTradeTypeStats[k].amount += amt;
+				});
+				Object.keys(allTimeTradeTypeStats).forEach((k) => {
+					allTimeTradeTypeStats[k].amount = Number(
+						Number(allTimeTradeTypeStats[k].amount || 0).toFixed(2)
+					);
+				});
 			} else {
 				allTimeTradeTypeStats = {};
 				allTimeTotalFlow = 0;
@@ -3163,9 +3361,9 @@ async function adminDashboardTrend30d(data = {}) {
 		const dayRefundAmount = {};
 		const dayExchangeCount = {};
 		const dayExchangeAmount = {};
-		const dayTradeTypeCount = {};
-		const dayTradeTypeAmount = {};
-		const rangeTradeTypeStats = {};
+		let dayTradeTypeCount = {};
+		let dayTradeTypeAmount = {};
+		let rangeTradeTypeStats = {};
 		let rangeTradeCount = 0;
 		let rangeTradeAmount = 0;
 		range.keys.forEach((d) => {
@@ -3181,25 +3379,19 @@ async function adminDashboardTrend30d(data = {}) {
 		});
 
 		if (cardBase.ok) {
-			await adminForEachTradeRowPagedCardAligned(cardBase, tradeRowField, (rows) => {
-				rows.forEach((row) => {
-					const d = bucketKeyByRange(row.create_time, range);
-					if (!dayFlow[d] && dayFlow[d] !== 0) return;
-					const amt = Number(row.amount || 0);
-					dayFlow[d] += amt;
-					rangeTradeAmount += amt;
-					rangeTradeCount += 1;
-					const typeKey = normalizeTrendTradeType(row);
-					if (!rangeTradeTypeStats[typeKey]) rangeTradeTypeStats[typeKey] = { count: 0, amount: 0 };
-					rangeTradeTypeStats[typeKey].count += 1;
-					rangeTradeTypeStats[typeKey].amount += amt;
-					if (!dayTradeTypeCount[d][typeKey]) dayTradeTypeCount[d][typeKey] = 0;
-					if (!dayTradeTypeAmount[d][typeKey]) dayTradeTypeAmount[d][typeKey] = 0;
-					dayTradeTypeCount[d][typeKey] += 1;
-					dayTradeTypeAmount[d][typeKey] += amt;
-				});
-			}, tradeRangeExtra);
-			rangeTradeAmount = Number(Number(rangeTradeAmount || 0).toFixed(2));
+			const bucketStats = await adminAggregateTrendBucketTradeStatsCardAligned(
+				cardBase,
+				range,
+				normalizeTrendTradeType
+			);
+			Object.keys(bucketStats.dayFlow || {}).forEach((d) => {
+				if (d in dayFlow) dayFlow[d] = bucketStats.dayFlow[d];
+			});
+			dayTradeTypeCount = bucketStats.dayTradeTypeCount || dayTradeTypeCount;
+			dayTradeTypeAmount = bucketStats.dayTradeTypeAmount || dayTradeTypeAmount;
+			rangeTradeTypeStats = bucketStats.rangeTradeTypeStats || {};
+			rangeTradeCount = Number(bucketStats.rangeTradeCount || 0);
+			rangeTradeAmount = Number(bucketStats.rangeTradeAmount || 0);
 		}
 
 		const bindSeenByDay = {};
@@ -10861,14 +11053,27 @@ async function h5WithdrawInfo(data) {
 		const ap = normalizePendingBalance(merchant);
 		const redeemable = Math.max(0, Math.floor(Math.min(ar, ap)));
 		const withdrawTimes = await countMerchantWithdrawTimes(String(merchant.user_id || merchant._id || ''));
-		const minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(isRechargeMember, biz, withdrawTimes);
+		let minPoints = testMerchant ? 1 : resolveWithdrawMinPoints(isRechargeMember, biz, withdrawTimes);
 		let maxPoints = isRechargeMember
 			? Number(biz.withdrawRange.memberMax || H5_WITHDRAW_MAX_POINTS)
 			: Number(biz.withdrawRange.nonMemberMax || H5_WITHDRAW_MAX_POINTS);
+		/** day | week | ''：日/周额度用尽时供 H5 展示红字提示 */
+		let periodLimitHit = '';
 		const periodEval = await evaluateH5WithdrawPeriodLimits(merchant, biz, 0, now, { skip: testMerchant });
 		if (periodEval.periodCap > 0 || periodEval.dayMax > 0 || periodEval.weekMax > 0) {
 			const cap = Math.max(0, Number(periodEval.periodCap || 0));
 			maxPoints = Math.max(0, Math.min(maxPoints, cap));
+			if (cap <= 0) {
+				// 避免「10～0」误导：额度用尽时展示 0～0
+				minPoints = 0;
+				maxPoints = 0;
+				const dayRemain = Number(periodEval.dayRemain);
+				const weekRemain = Number(periodEval.weekRemain);
+				if (periodEval.dayMax > 0 && !(dayRemain > 0)) periodLimitHit = 'day';
+				else if (periodEval.weekMax > 0 && !(weekRemain > 0)) periodLimitHit = 'week';
+				else if (periodEval.dayMax > 0) periodLimitHit = 'day';
+				else if (periodEval.weekMax > 0) periodLimitHit = 'week';
+			}
 		}
 		const rechargePackages = await loadRechargePackagesFromQuota();
 		const mship = h5MembershipInfo(merchant, rechargePackages);
@@ -10888,6 +11093,7 @@ async function h5WithdrawInfo(data) {
 				withdrawTimes,
 				minPoints,
 				maxPoints,
+				periodLimitHit,
 				feePerOrderYuan: H5_WITHDRAW_FEE_YUAN,
 				inBusinessHours: testMerchant ? true : isH5WithdrawBusinessHours(now),
 				pointEqualsYuan: true
@@ -15276,8 +15482,14 @@ async function h5IncomeList(data) {
 			if (subsidyEngine.roundPacketAmountYuan(x.amount) < 0.01) return false;
 			return true;
 		});
+		// syncSubsidyPackets 已按上限失效最早的；此处再截断，保证气泡最多 50 个
+		const maxPending =
+			Number(subsidyEngine.MAX_PENDING_INCOME_PACKETS) > 0
+				? Number(subsidyEngine.MAX_PENDING_INCOME_PACKETS)
+				: 50;
+		const displayPendingRows = pendingRows.slice(0, maxPending);
 		let pendingTotal = 0;
-		const packets = pendingRows.map((x) => {
+		const packets = displayPendingRows.map((x) => {
 			const displayAmt = subsidyEngine.roundPacketAmountYuan(x.amount);
 			pendingTotal += displayAmt;
 			return {
@@ -15349,7 +15561,7 @@ async function h5IncomeList(data) {
 			data: {
 				packets,
 				pendingTotal: pendingTotal.toFixed(2),
-				pendingCount: pendingRows.length,
+				pendingCount: packets.length,
 				detailList,
 				subsidyTicker,
 				servicePhone: safeText(biz?.servicePhone || DEFAULT_BIZ_SETTINGS.servicePhone, 30),

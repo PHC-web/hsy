@@ -1,0 +1,31 @@
+{
+	"bsonType": "object",
+	"description": "星驿付异步通知原始收件箱（仅落库，暂不业务处理）",
+	"required": ["notify_type", "create_time"],
+	"permission": {
+		"read": true,
+		"create": true,
+		"update": false,
+		"delete": false
+	},
+	"properties": {
+		"_id": { "description": "主键" },
+		"notify_type": {
+			"bsonType": "string",
+			"description": "通知类型（路径末段）：trade / withdraw_realtime / account_balance / merchant_onboard 等"
+		},
+		"notify_label": {
+			"bsonType": "string",
+			"description": "中文说明（便于后台查看）"
+		},
+		"path": { "bsonType": "string", "description": "请求 path" },
+		"http_method": { "bsonType": "string", "description": "HTTP 方法" },
+		"content_type": { "bsonType": "string", "description": "Content-Type" },
+		"query": { "bsonType": "object", "description": "URL query" },
+		"headers": { "bsonType": "object", "description": "请求头（截断）" },
+		"body": { "description": "解析后的 body（JSON 对象或键值）；解析失败则为 null" },
+		"body_raw": { "bsonType": "string", "description": "原始 body 文本（截断）" },
+		"client_ip": { "bsonType": "string", "description": "来源 IP" },
+		"create_time": { "bsonType": "timestamp", "description": "入库时间（毫秒）" }
+	}
+}
