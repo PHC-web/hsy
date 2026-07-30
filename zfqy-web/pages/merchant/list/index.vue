@@ -243,7 +243,7 @@
 				<view class="points-insight-title">{{ pointsInsight.title || '商户积分明细' }}</view>
 				<scroll-view class="points-insight-scroll" scroll-y>
 					<view class="points-rule-tip">
-						<text>规则说明：当月每满 1 万有 1 个档位；该档位会对每个来源月独立生效（即每个来源月最多释放当月档位数的分片），未释放分片当月流失不顺延。</text>
+						<text>规则说明：当月每满 1 万有 1 个档位；该档位会对每个来源月独立生效（即每个来源月最多释放当月档位数的分片），未释放分片当月流失不顺延。「生成积分」仅统计已领取（不含过期/未领）；片积分预览为生效值（含积分优化）。</text>
 					</view>
 					<view class="points-section">
 						<view class="points-section-hd">A. 月度总览</view>

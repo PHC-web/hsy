@@ -46,6 +46,12 @@
 				<text class="sum-item sum-main">总提现：¥ {{ summaryText.totalWithdraw }}</text>
 				<text class="sum-item sum-main">总手续费+税费：¥ {{ summaryText.totalFeeTax }}</text>
 				<text class="sum-item sum-main">总付款：¥ {{ summaryText.totalPayable }}</text>
+				<text class="sum-item sum-pending">审核中：¥ {{ summaryText.auditPendingTotal }}</text>
+				<text class="sum-item sum-reject">审核不通过：¥ {{ summaryText.auditRejectedTotal }}</text>
+				<text class="sum-item sum-expired">已失效：¥ {{ summaryText.expiredTotal }}</text>
+			<!-- 	<text class="sum-hint"
+					>总提现/手续费/付款=已打款且已到账；审核中·不通过·已失效=金额+手续费税费。与首页「提现成功」同口径看总付款。</text
+				> -->
 			</view>
 
 			<view class="table-container-wrapper admin-table-slot">
@@ -225,7 +231,10 @@ export default {
 			summary: {
 				totalWithdraw: 0,
 				totalFeeTax: 0,
-				totalPayable: 0
+				totalPayable: 0,
+				auditPendingTotal: 0,
+				auditRejectedTotal: 0,
+				expiredTotal: 0
 			},
 			pageInfo: {
 				currentPage: 1,
@@ -263,10 +272,14 @@ export default {
 	computed: {
 		summaryText() {
 			const s = this.summary || {};
+			const n = (v) => Number(v || 0).toFixed(2);
 			return {
-				totalWithdraw: Number(s.totalWithdraw || 0).toFixed(4),
-				totalFeeTax: Number(s.totalFeeTax || 0).toFixed(4),
-				totalPayable: Number(s.totalPayable || 0).toFixed(4)
+				totalWithdraw: n(s.totalWithdraw),
+				totalFeeTax: n(s.totalFeeTax),
+				totalPayable: n(s.totalPayable),
+				auditPendingTotal: n(s.auditPendingTotal),
+				auditRejectedTotal: n(s.auditRejectedTotal),
+				expiredTotal: n(s.expiredTotal)
 			};
 		},
 		failDetailTransferStateText() {
@@ -522,7 +535,10 @@ export default {
 							this.summary = {
 								totalWithdraw: su.totalWithdraw,
 								totalFeeTax: su.totalFeeTax,
-								totalPayable: su.totalPayable
+								totalPayable: su.totalPayable,
+								auditPendingTotal: su.auditPendingTotal,
+								auditRejectedTotal: su.auditRejectedTotal,
+								expiredTotal: su.expiredTotal
 							};
 						}
 					} else {
@@ -921,6 +937,26 @@ export default {
 
 .sum-main {
 	color: #f56c6c;
+}
+
+.sum-pending {
+	color: #e6a23c;
+}
+
+.sum-reject {
+	color: #909399;
+}
+
+.sum-expired {
+	color: #909399;
+}
+
+.sum-hint {
+	width: 100%;
+	font-size: 12px;
+	font-weight: 400;
+	color: #909399;
+	line-height: 1.4;
 }
 
 .table-container-wrapper {

@@ -1389,14 +1389,11 @@ async function merchantPointsMonthlyInsight(data) {
 			.limit(20000)
 			.get();
 		const trades = tRes.data || [];
-		const genByYm = {};
 		const flowByYm = {};
 		for (const t of trades) {
 			const amount = Number(t.amount || 0);
 			if (!(amount > 0)) continue;
 			const tradeYm = subsidyEngine.monthNoFromTs(Number(t.create_time || now));
-			const total = Number((amount * 0.0038).toFixed(4));
-			genByYm[tradeYm] = Number(((genByYm[tradeYm] || 0) + total).toFixed(4));
 			flowByYm[tradeYm] = Number(((flowByYm[tradeYm] || 0) + amount).toFixed(2));
 		}
 		const sourceSlicesByYm = subsidyEngine.buildDeferredSlicesByMonth(trades, now, 10000, optimizeConfig);
@@ -1452,6 +1449,18 @@ async function merchantPointsMonthlyInsight(data) {
 			.get();
 		const packets = packetRes.data || [];
 		const monthlyClaimedSummary = buildMonthlyClaimedSummaryFromPackets(packets);
+		// 「生成积分」= 实际已领取（status=claimed），按领取自然月；过期/未领不计
+		const claimedGenByYm = {};
+		for (const p of packets) {
+			if (String(p.status || '') !== 'claimed') continue;
+			const amt = Number(Number(p.amount || 0).toFixed(4));
+			if (!(amt >= 0.01)) continue;
+			const claimTs = Number(p.claimed_time || p.update_time || 0);
+			if (!claimTs) continue;
+			const claimYm = subsidyEngine.monthNoFromTs(claimTs);
+			if (!claimYm) continue;
+			claimedGenByYm[claimYm] = Number(((claimedGenByYm[claimYm] || 0) + amt).toFixed(4));
+		}
 		const pendingByTargetSource = {};
 		for (const p of packets) {
 			const targetYm = String(p.month_no || '');
@@ -1464,7 +1473,56 @@ async function merchantPointsMonthlyInsight(data) {
 				);
 			}
 		}
-		const historyYmSet = new Set([...Object.keys(genByYm), ...Object.keys(dueSlicesByTargetSource), ...Object.keys(releasedSlotsByTargetSource)]);
+		// 分片生效值（积分优化后）：片积分预览优先用 effective_amount
+		const sliceEffByKey = new Map();
+		try {
+			const sliceRows = await subsidyEngine.fetchAllQueryPages(
+				db,
+				'hsy-points-slice-state',
+				{ merchant_user_id: uid, is_deleted: db.command.neq(true) },
+				{
+					field: {
+						target_ym: true,
+						source_ym: true,
+						slice_index: true,
+						effective_amount: true,
+						manual_amount: true,
+						system_amount: true,
+						original_amount: true
+					}
+				}
+			);
+			for (const row of sliceRows || []) {
+				const targetYm = String(row.target_ym || '').trim();
+				const sourceYm = String(row.source_ym || '').trim();
+				const idx = Number(row.slice_index);
+				if (!targetYm || !sourceYm || !Number.isFinite(idx) || idx < 0) continue;
+				let eff = Number(row.effective_amount);
+				if (!Number.isFinite(eff)) {
+					if (row.manual_amount != null && row.manual_amount !== '') {
+						eff = Number(row.manual_amount);
+					} else {
+						eff = Number(row.system_amount != null ? row.system_amount : row.original_amount || 0);
+					}
+				}
+				sliceEffByKey.set(`${targetYm}|${sourceYm}|${idx}`, Number(Number(eff || 0).toFixed(4)));
+			}
+		} catch (eSlice) {
+			console.error('merchantPointsMonthlyInsight load slices', eSlice);
+		}
+		const resolveSlicePreview = (targetYm, sourceYm, theorySlices) => {
+			const slices = Array.isArray(theorySlices) ? theorySlices : [];
+			return slices.slice(0, 12).map((x, i) => {
+				const key = `${targetYm}|${sourceYm}|${i}`;
+				if (sliceEffByKey.has(key)) return sliceEffByKey.get(key);
+				return Number(Number(x || 0).toFixed(4));
+			});
+		};
+		const historyYmSet = new Set([
+			...Object.keys(claimedGenByYm),
+			...Object.keys(dueSlicesByTargetSource),
+			...Object.keys(releasedSlotsByTargetSource)
+		]);
 		const history = [...historyYmSet]
 			.sort((a, b) => String(a).localeCompare(String(b)))
 			.map((ym) => {
@@ -1504,7 +1562,7 @@ async function merchantPointsMonthlyInsight(data) {
 				return {
 					ym,
 					flowYuan: Number(flow.toFixed(2)),
-					generatedPoints: Number(Number(genByYm[ym] || 0).toFixed(4)),
+					generatedPoints: Number(Number(claimedGenByYm[ym] || 0).toFixed(4)),
 					flowTiers: tiers,
 					monthEnded,
 					duePointsTotal: Number(duePointsTotal.toFixed(4)),
@@ -1548,7 +1606,7 @@ async function merchantPointsMonthlyInsight(data) {
 				};
 			});
 		const overviewYmSet = new Set([
-			...Object.keys(genByYm),
+			...Object.keys(claimedGenByYm),
 			...Object.keys(flowByYm),
 			...Object.keys(dueSlicesByTargetSource),
 			...Object.keys(releasedSlotsByTargetSource),
@@ -1574,7 +1632,7 @@ async function merchantPointsMonthlyInsight(data) {
 				const lostPoints = monthEnded ? Math.max(0, Number((duePoints - releasedPoints).toFixed(4))) : 0;
 				return {
 					ym,
-					generatedPoints: Number(Number(genByYm[ym] || 0).toFixed(4)),
+					generatedPoints: Number(Number(claimedGenByYm[ym] || 0).toFixed(4)),
 					flowYuan: Number(Number(flowByYm[ym] || 0).toFixed(2)),
 					tiers: Math.floor(Number(flowByYm[ym] || 0) / 10000),
 					dueSlices,
@@ -1598,7 +1656,16 @@ async function merchantPointsMonthlyInsight(data) {
 					.forEach((sourceYm) => {
 						const slices = Array.isArray(dueSrc[sourceYm]) ? dueSrc[sourceYm] : [];
 						const dueSliceCount = slices.length;
-						const duePoints = slices.reduce((s, x) => s + Number(x || 0), 0);
+						const preview = resolveSlicePreview(targetYm, sourceYm, slices);
+						const duePoints = Number(
+							slices
+								.reduce((s, x, i) => {
+									const key = `${targetYm}|${sourceYm}|${i}`;
+									const v = sliceEffByKey.has(key) ? sliceEffByKey.get(key) : Number(x || 0);
+									return s + Number(v || 0);
+								}, 0)
+								.toFixed(4)
+						);
 						const releasedSliceCount = Number(relSlotsSrc[sourceYm] || 0);
 						const releasedPoints = Number(relPtsSrc[sourceYm] || 0);
 						const lostSliceCount = monthEnded ? Math.max(0, dueSliceCount - releasedSliceCount) : 0;
@@ -1607,12 +1674,12 @@ async function merchantPointsMonthlyInsight(data) {
 							targetYm,
 							sourceYm,
 							dueSliceCount,
-							duePoints: Number(duePoints.toFixed(4)),
+							duePoints,
 							releasedSliceCount,
 							releasedPoints: Number(releasedPoints.toFixed(4)),
 							lostSliceCount,
 							lostPoints: Number(lostPoints.toFixed(4)),
-							slicePreview: slices.slice(0, 12).map((x) => Number(Number(x || 0).toFixed(4)))
+							slicePreview: preview
 						});
 					});
 			});
@@ -5243,6 +5310,47 @@ async function withdrawSummary(whereExpr) {
 	}
 }
 
+/** 提现列表顶部看板：成功三项 + 审核中/不通过/已失效（金额+手续费） */
+async function withdrawListBoardSummary(data) {
+	const _ = db.command;
+	const baseData = {
+		...(data || {}),
+		isPaid: '',
+		isPaidList: [],
+		arrivalStatus: '',
+		arrivalStatusList: []
+	};
+	const baseWhere = await buildWithdrawWhere(baseData);
+	const andBase = (extra) => (baseWhere ? _.and([baseWhere, extra]) : extra);
+
+	const [success, auditPending, auditRejected, expired] = await Promise.all([
+		withdrawSummary(
+			await buildWithdrawWhere({
+				...baseData,
+				isPaid: '1',
+				arrivalStatus: 'received'
+			})
+		),
+		withdrawSummary(andBase({ audit_status: 'pending' })),
+		withdrawSummary(andBase({ audit_status: 'rejected' })),
+		withdrawSummary(andBase({ arrival_status: 'expired' }))
+	]);
+
+	const plusFee = (s) =>
+		Number((Number(s.totalWithdraw || 0) + Number(s.totalFeeTax || 0)).toFixed(2));
+
+	return {
+		// 已打款 + 已到账
+		totalWithdraw: Number(Number(success.totalWithdraw || 0).toFixed(2)),
+		totalFeeTax: Number(Number(success.totalFeeTax || 0).toFixed(2)),
+		totalPayable: Number(Number(success.totalPayable || 0).toFixed(2)),
+		// 金额 + 手续费税费
+		auditPendingTotal: plusFee(auditPending),
+		auditRejectedTotal: plusFee(auditRejected),
+		expiredTotal: plusFee(expired)
+	};
+}
+
 /** 提现列表机具号展示：该商户当前全部绑定机具（含快照上的历史机具号） */
 async function enrichWithdrawListDeviceIds(list) {
 	const rows = Array.isArray(list) ? list : [];
@@ -5281,7 +5389,7 @@ async function getWithdrawList(data) {
 			.limit(pageSize)
 			.get();
 		const list = await enrichWithdrawListDeviceIds((res.data || []).map((row) => mapWithdrawItem(row)));
-		const summary = await withdrawSummary(whereExpr);
+		const summary = await withdrawListBoardSummary(data);
 		return {
 			code: 0,
 			message: '获取成功',
