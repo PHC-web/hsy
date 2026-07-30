@@ -55,7 +55,7 @@
 							<uni-th align="center" width="130" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">提现用户</uni-th>
 							<!-- <uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'companyKeyword')">分公司</uni-th> -->
 							<!-- <uni-th align="center" width="100" filter-type="search" @filter-change="headerFilterChange($event, 'salesmanKeyword')">业务员</uni-th> -->
-							<uni-th align="center" width="110" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具号</uni-th>
+							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'deviceId')">机具号</uni-th>
 							<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'withdrawNo')">提现单号</uni-th>
 							<uni-th align="center" width="100">提现金额(元)</uni-th>
 							<uni-th align="center" width="110">税费+手续费(元)</uni-th>
@@ -72,7 +72,7 @@
 							<uni-td class="cell-user">{{ item.userDisplay }}</uni-td>
 							<!-- <uni-td align="center">{{ item.company }}</uni-td> -->
 							<!-- <uni-td align="center">{{ item.salesman }}</uni-td> -->
-							<uni-td align="center">{{ item.deviceId }}</uni-td>
+							<uni-td align="center" class="cell-device">{{ item.deviceId }}</uni-td>
 							<uni-td align="center">{{ item.withdrawNo }}</uni-td>
 							<uni-td align="right" class="cell-money">{{ item.amountText }}</uni-td>
 							<uni-td align="right" class="cell-money">{{ item.feeTaxText }}</uni-td>
@@ -949,6 +949,13 @@ export default {
 	white-space: pre-line;
 	font-size: 13px;
 	line-height: 1.45;
+}
+
+.cell-device {
+	font-size: 12px;
+	line-height: 1.4;
+	word-break: break-all;
+	max-width: 200px;
 }
 
 .cell-money {

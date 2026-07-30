@@ -926,7 +926,7 @@ async function listMerchants(data) {
 			const deviceNo = boundMachines.length
 				? boundMachines.map((m) => safeText(m.device_id, 80)).filter(Boolean).join('、')
 				: safeText(item.device_id, 80) || '-';
-			// 冻结：仅首期已领流水的后几期；列表即时重算并回写，避免旧「流水即冻」脏数据
+			// 冻结：未来月未领待返合计；有分片账本用 effective（含积分优化），否则回退流水理论
 			const frozenYuan = Number(frozenByUid.has(uid) ? frozenByUid.get(uid) : item.frozen_amount || 0) || 0;
 			const curFrozen = Number(Number(item.frozen_amount || 0).toFixed(4));
 			if (Math.abs(frozenYuan - curFrozen) > 0.0001 && item._id) {
@@ -5073,7 +5073,7 @@ function mapWithdrawItem(item) {
 	};
 }
 
-function buildWithdrawWhere(data) {
+async function buildWithdrawWhere(data) {
 	const {
 		userKeyword = '',
 		merchantUserId = '',
@@ -5112,8 +5112,25 @@ function buildWithdrawWhere(data) {
 	if (withdrawNo) {
 		parts.push({ withdraw_no: new RegExp(escapeReg(withdrawNo), 'i') });
 	}
+	// 机具号：提现单只存快照主码牌；需按机具表 bind_user_id 扩到该商户全部提现
 	if (deviceId) {
-		parts.push({ device_id: new RegExp(escapeReg(deviceId), 'i') });
+		const deviceCond = buildDeviceIdFieldCond(deviceId);
+		const bindUserIds = await listBindUserIdsByBoundDeviceKeyword(deviceId);
+		const orParts = [];
+		if (deviceCond) orParts.push(deviceCond);
+		const ids = [
+			...new Set(
+				(Array.isArray(bindUserIds) ? bindUserIds : [])
+					.map((x) => String(x || '').trim())
+					.filter(Boolean)
+			)
+		];
+		const CHUNK = 450;
+		for (let i = 0; i < ids.length; i += CHUNK) {
+			orParts.push({ merchant_user_id: db.command.in(ids.slice(i, i + CHUNK)) });
+		}
+		if (orParts.length === 1) parts.push(orParts[0]);
+		else if (orParts.length > 1) parts.push(db.command.or(orParts));
 	}
 	if (companyKeyword) {
 		parts.push({ company: new RegExp(escapeReg(companyKeyword), 'i') });
@@ -5226,10 +5243,35 @@ async function withdrawSummary(whereExpr) {
 	}
 }
 
+/** 提现列表机具号展示：该商户当前全部绑定机具（含快照上的历史机具号） */
+async function enrichWithdrawListDeviceIds(list) {
+	const rows = Array.isArray(list) ? list : [];
+	if (!rows.length) return rows;
+	const uids = [
+		...new Set(rows.map((x) => safeText(x.merchantUserId, 80)).filter(Boolean))
+	];
+	const deviceIdsByBindUser = await batchListBoundDeviceIdsByBindUserIds(uids);
+	for (const item of rows) {
+		const uid = safeText(item.merchantUserId, 80);
+		const ids = [];
+		const seen = new Set();
+		const add = (d) => {
+			const v = safeText(d, 80);
+			if (!v || seen.has(v)) return;
+			seen.add(v);
+			ids.push(v);
+		};
+		for (const d of deviceIdsByBindUser[uid] || []) add(d);
+		add(item.deviceId);
+		item.deviceId = ids.length ? ids.join('、') : item.deviceId || '-';
+	}
+	return rows;
+}
+
 async function getWithdrawList(data) {
 	try {
 		const { page = 1, pageSize = 10 } = data || {};
-		const whereExpr = buildWithdrawWhere(data);
+		const whereExpr = await buildWithdrawWhere(data);
 		const countRes = await withdrawCollection.where(whereExpr).count();
 		const total = countRes.total;
 		const res = await withdrawCollection
@@ -5238,7 +5280,7 @@ async function getWithdrawList(data) {
 			.skip((page - 1) * pageSize)
 			.limit(pageSize)
 			.get();
-		const list = (res.data || []).map((row) => mapWithdrawItem(row));
+		const list = await enrichWithdrawListDeviceIds((res.data || []).map((row) => mapWithdrawItem(row)));
 		const summary = await withdrawSummary(whereExpr);
 		return {
 			code: 0,
@@ -7456,7 +7498,7 @@ function csvEscape(val) {
 
 async function exportWithdrawCsv(data) {
 	try {
-		const whereExpr = buildWithdrawWhere(data);
+		const whereExpr = await buildWithdrawWhere(data);
 		const MAX = 10000;
 		const BATCH = 500;
 		const raw = [];
@@ -7489,8 +7531,8 @@ async function exportWithdrawCsv(data) {
 			'是否到账'
 		];
 		const lines = [headers.join(',')];
-		raw.forEach((item) => {
-			const m = mapWithdrawItem(item);
+		const mapped = await enrichWithdrawListDeviceIds(raw.map((item) => mapWithdrawItem(item)));
+		mapped.forEach((m) => {
 			lines.push(
 				[
 					csvEscape(m.userDisplay.replace(/\n/g, ' ')),
@@ -14958,10 +15000,10 @@ async function loadClaimedTradeFirstTradeNosByUids(uids) {
 }
 
 /**
- * 商户列表批量：按账号 user_id 计算「未来月待返」冻结额。
- * 口径：仅「首期已领取」的流水才计入后几期冻结；首期 pending/expired 不计。
+ * 商户列表批量：按流水理论计算「未来月待返」冻结额（不含积分优化）。
+ * 仅「首期已领取」的流水才计入后几期；无分片账本时作为回退。
  */
-async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs) {
+async function batchComputeFutureDeferredFrozenFromTrades(merchantDocs, nowTsVal) {
 	const frozenByUid = new Map();
 	const rows = Array.isArray(merchantDocs) ? merchantDocs : [];
 	if (!rows.length) return frozenByUid;
@@ -15053,8 +15095,80 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTs)
 			frozenByUid.set(uid, 0);
 			continue;
 		}
-		const { buckets, curYm } = computePendingReturnBucketsForTrades(userRows, nowTs, optimizeConfig);
+		const { buckets, curYm } = computePendingReturnBucketsForTrades(userRows, nowTsVal, optimizeConfig);
 		frozenByUid.set(uid, sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm));
+	}
+	return frozenByUid;
+}
+
+/**
+ * 商户列表批量：「未来月」冻结额。
+ * 优先用 hsy-points-slice-state 未领片的 effective_amount（含积分优化后生效值）；
+ * 无分片账本的商户回退流水理论口径。
+ */
+async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTsVal) {
+	const frozenByUid = new Map();
+	const rows = Array.isArray(merchantDocs) ? merchantDocs : [];
+	if (!rows.length) return frozenByUid;
+
+	const uids = [...new Set(rows.map((m) => String(m.user_id || m._id || '')).filter(Boolean))];
+	for (const uid of uids) frozenByUid.set(uid, 0);
+	if (!uids.length) return frozenByUid;
+
+	const curYm = shanghaiYearMonthFromTs(nowTsVal || nowTs());
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const sliceCol = db.collection('hsy-points-slice-state');
+	const hasLedger = new Set();
+	const CHUNK = 100;
+
+	for (let i = 0; i < uids.length; i += CHUNK) {
+		const part = uids.slice(i, i + CHUNK);
+		try {
+			const anyAgg = await sliceCol
+				.aggregate()
+				.match(_.and([{ merchant_user_id: _.in(part) }, { is_deleted: _.neq(true) }]))
+				.group({ _id: '$merchant_user_id', n: $.sum(1) })
+				.end();
+			for (const r of (anyAgg && anyAgg.data) || []) {
+				const uid = String(r._id || '').trim();
+				if (uid) hasLedger.add(uid);
+			}
+
+			const sumAgg = await sliceCol
+				.aggregate()
+				.match(
+					_.and([
+						{ merchant_user_id: _.in(part) },
+						{ is_deleted: _.neq(true) },
+						{ is_claimed: _.neq(true) },
+						{ target_ym: _.gt(curYm) }
+					])
+				)
+				.group({
+					_id: '$merchant_user_id',
+					total: $.sum('$effective_amount')
+				})
+				.end();
+			for (const r of (sumAgg && sumAgg.data) || []) {
+				const uid = String(r._id || '').trim();
+				if (!uid) continue;
+				frozenByUid.set(uid, Number(Number(r.total || 0).toFixed(2)));
+			}
+		} catch (e) {
+			console.error('batchComputeFutureDeferredFrozenForMerchants slice', e);
+		}
+	}
+
+	const needFallback = rows.filter((m) => {
+		const uid = String(m.user_id || m._id || '').trim();
+		return uid && !hasLedger.has(uid);
+	});
+	if (needFallback.length) {
+		const fb = await batchComputeFutureDeferredFrozenFromTrades(needFallback, nowTsVal);
+		for (const [uid, amt] of fb.entries()) {
+			frozenByUid.set(uid, Number(amt || 0));
+		}
 	}
 	return frozenByUid;
 }
