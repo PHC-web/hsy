@@ -3,7 +3,26 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
-				<button size="mini" type="primary" :loading="loading" @click="search">刷新</button>
+				<view class="header-actions">
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button class="uni-button export-trigger" size="mini" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view
+								v-for="opt in exportTypeOptions"
+								:key="opt.value"
+								class="export-menu-item"
+								@click="selectAndExport(opt.value)"
+							>
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button size="mini" type="primary" :loading="loading" @click="search">刷新</button>
+				</view>
 			</view>
 		</view>
 		<view class="uni-container page-wrap">
@@ -296,6 +315,11 @@
 
 <script>
 import { syncOpsListPageSize } from '../utils/sync-page-size.js';
+import {
+	EXPORT_TYPE_OPTIONS,
+	fetchPagedExportRows,
+	runListExport
+} from '../utils/list-export.js';
 
 /** TYY0001 paychannel 展示（与星驿枚举一致） */
 const PAYCHANNEL_LABELS = {
@@ -402,7 +426,9 @@ export default {
 				pageSize: 15,
 				total: 0
 			},
-			detailJson: null
+			detailJson: null,
+			showExportMenu: false,
+			exportTypeOptions: EXPORT_TYPE_OPTIONS
 		};
 	},
 	computed: {
@@ -425,6 +451,9 @@ export default {
 		},
 		tyy0003AllinoneFilterData() {
 			return this.mergeSelectFilterChecked(this.allinoneFilterData, this.filtersByType.TYY0003.allinone);
+		},
+		exportFilePrefix() {
+			return `第三方推送_${this.activeType}`;
 		}
 	},
 	mounted() {
@@ -499,6 +528,7 @@ export default {
 			if (this.activeType === key) return;
 			this.activeType = key;
 			this.pageInfo.currentPage = 1;
+			this.showExportMenu = false;
 			this.tableKey += 1;
 			this.search();
 		},
@@ -539,7 +569,7 @@ export default {
 				return;
 			}
 		},
-		buildPayload() {
+		buildPayload(pageOverride, pageSizeOverride) {
 			const r = this.range;
 			let timeStart = '';
 			let timeEnd = '';
@@ -551,8 +581,8 @@ export default {
 			const f = this.filtersByType[t] || {};
 			return {
 				type: t,
-				page: this.pageInfo.currentPage,
-				pageSize: this.pageInfo.pageSize,
+				page: pageOverride != null ? pageOverride : this.pageInfo.currentPage,
+				pageSize: pageSizeOverride != null ? pageSizeOverride : this.pageInfo.pageSize,
 				firstagentid: f.firstagentid || '',
 				mercid: f.mercid || '',
 				logno: t === 'TYY0001' ? f.logno || '' : '',
@@ -623,12 +653,138 @@ export default {
 		closeDetail() {
 			this.$refs.detailPopup.close();
 			this.detailJson = null;
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		mapExportRow(item) {
+			const t = this.activeType;
+			if (t === 'TYY0001') {
+				return {
+					接收时间: this.fmtTs(item.receive_time),
+					代理商编号: item.firstagentid || '',
+					商户号: item.mercid || '',
+					码牌号: item.termphyno || '',
+					交易日期: item.orderdat || '',
+					交易时间: item.ordertime || '',
+					支付方式: this.fmtPaychannelRow(item),
+					交易金额: item.txnamt != null ? item.txnamt : '',
+					是否退款: this.fmtRefund(item.refund),
+					已录入系统: item.machine_in_system ? '是' : '否',
+					记录ID: item._id || ''
+				};
+			}
+			if (t === 'TYY0002') {
+				return {
+					接收时间: this.fmtTs(item.receive_time),
+					代理商编号: item.firstagentid || '',
+					商户号: item.mercid || '',
+					商户名称: item.mercname || '',
+					注册日期: item.applydat || '',
+					商户状态: item.status_text || '',
+					商户类型: item.mertype || '',
+					省份: item.provid || '',
+					城市: item.cityid || '',
+					记录ID: item._id || ''
+				};
+			}
+			if (t === 'TYY0003') {
+				return {
+					接收时间: this.fmtTs(item.receive_time),
+					代理商编号: item.firstagentid || '',
+					终端号: item.termno || '',
+					终端机身号: item.termphyno || '',
+					绑定商户号: item.mercid || '',
+					政策ID: item.policyid || '',
+					设备类型: this.fmtTyy0003Equiptype(item),
+					是否一体机: this.fmtTyy0003Allinone(item),
+					绑定日期: item.merextdat || '',
+					绑定时间: item.merexttime || '',
+					绑定音箱号: item.spno || '',
+					记录ID: item._id || ''
+				};
+			}
+			return {
+				接收时间: this.fmtTs(item.receive_time),
+				一级代理商编号: item.firstagentid || '',
+				商户号: item.mercid || '',
+				政策ID: item.policyid || '',
+				通讯费ID: item.feeid || '',
+				缴费完成时间: item.feetime || '',
+				已收取金额: item.receivefee != null ? item.receivefee : '',
+				代理商编号: item.agentid || '',
+				终端机身号: item.sn || '',
+				记录ID: item._id || ''
+			};
+		},
+		exportData(type) {
+			return runListExport({
+				type,
+				filenamePrefix: this.exportFilePrefix,
+				xmlRoot: this.activeType,
+				fetchRows: () =>
+					fetchPagedExportRows({
+						request: this.$request.bind(this),
+						action: 'thirdPartyPushList',
+						functionName: 'third-party-push-admin',
+						buildPayload: (page, pageSize) => this.buildPayload(page, pageSize),
+						mapRow: (item) => this.mapExportRow(item)
+					})
+			});
 		}
 	}
 };
 </script>
 
 <style scoped>
+.header-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-left: auto;
+}
+.export-dropdown {
+	position: relative;
+}
+.export-trigger {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.export-icon {
+	font-size: 12px;
+}
+.export-caret {
+	font-size: 12px;
+	opacity: 0.8;
+}
+.export-menu {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 6px);
+	min-width: 130px;
+	background: #fff;
+	border: 1px solid #ebeef5;
+	border-radius: 8px;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+	z-index: 20;
+	padding: 6px;
+}
+.export-menu-item {
+	line-height: 32px;
+	padding: 0 10px;
+	font-size: 13px;
+	color: #303133;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.export-menu-item:hover {
+	background: #f5f7fa;
+}
 .page-wrap {
 	padding-bottom: 24px;
 }

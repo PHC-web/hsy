@@ -3,7 +3,26 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
-				<button size="mini" type="primary" :loading="loading" @click="search">刷新</button>
+				<view class="header-actions">
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button class="uni-button export-trigger" size="mini" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view
+								v-for="opt in exportTypeOptions"
+								:key="opt.value"
+								class="export-menu-item"
+								@click="selectAndExport(opt.value)"
+							>
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button size="mini" type="primary" :loading="loading" @click="search">刷新</button>
+				</view>
 			</view>
 		</view>
 		<view class="uni-container page-wrap">
@@ -79,6 +98,11 @@
 
 <script>
 import { syncOpsListPageSize } from '../utils/sync-page-size.js';
+import {
+	EXPORT_TYPE_OPTIONS,
+	fetchPagedExportRows,
+	runListExport
+} from '../utils/list-export.js';
 
 function defaultRange() {
 	const end = new Date();
@@ -106,6 +130,12 @@ const INTROS = {
 		'记录商户发起提现、管理员审核与同意打款、自动/手动轮询微信、用户确认收款、到账回调与本地到账确认等（hsy-transfer-logs）。'
 };
 
+const FLOW_EXPORT_PREFIX = {
+	recharge: '充值日志',
+	refund: '退款日志',
+	withdraw: '提现日志'
+};
+
 export default {
 	name: 'OpsFinanceFlowPage',
 	props: {
@@ -126,7 +156,9 @@ export default {
 				pageSize: 15,
 				total: 0
 			},
-			detailJson: null
+			detailJson: null,
+			showExportMenu: false,
+			exportTypeOptions: EXPORT_TYPE_OPTIONS
 		};
 	},
 	computed: {
@@ -139,6 +171,9 @@ export default {
 			} catch (e) {
 				return '';
 			}
+		},
+		exportFilePrefix() {
+			return FLOW_EXPORT_PREFIX[this.flowType] || '财务日志';
 		}
 	},
 	mounted() {
@@ -162,7 +197,7 @@ export default {
 			this.pageInfo.currentPage = 1;
 			this.search();
 		},
-		buildPayload() {
+		buildPayload(pageOverride, pageSizeOverride) {
 			const r = this.range;
 			let timeStart = '';
 			let timeEnd = '';
@@ -174,8 +209,8 @@ export default {
 			}
 			return {
 				flowType: this.flowType,
-				page: this.pageInfo.currentPage,
-				pageSize: this.pageInfo.pageSize,
+				page: pageOverride != null ? pageOverride : this.pageInfo.currentPage,
+				pageSize: pageSizeOverride != null ? pageSizeOverride : this.pageInfo.pageSize,
 				keyword: this.keyword,
 				timeStart,
 				timeEnd
@@ -224,12 +259,90 @@ export default {
 		closeDetail() {
 			this.$refs.detailPopup.close();
 			this.detailJson = null;
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		mapExportRow(item) {
+			return {
+				时间: this.fmtTs(item.time),
+				场景: item.scene || '',
+				环节: item.stage || '',
+				商户userId: item.merchantUserId || '',
+				单号: item.withdrawNo || item.outBillNo || '',
+				转账状态: item.transferState || '',
+				说明: item.message || '',
+				记录ID: item._id || ''
+			};
+		},
+		exportData(type) {
+			return runListExport({
+				type,
+				filenamePrefix: this.exportFilePrefix,
+				xmlRoot: this.flowType + 'Logs',
+				fetchRows: () =>
+					fetchPagedExportRows({
+						request: this.$request.bind(this),
+						action: 'opsFinanceFlowList',
+						functionName: 'ops-logs-admin',
+						buildPayload: (page, pageSize) => this.buildPayload(page, pageSize),
+						mapRow: (item) => this.mapExportRow(item)
+					})
+			});
 		}
 	}
 };
 </script>
 
 <style scoped>
+.header-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-left: auto;
+}
+.export-dropdown {
+	position: relative;
+}
+.export-trigger {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.export-icon {
+	font-size: 12px;
+}
+.export-caret {
+	font-size: 12px;
+	opacity: 0.8;
+}
+.export-menu {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 6px);
+	min-width: 130px;
+	background: #fff;
+	border: 1px solid #ebeef5;
+	border-radius: 8px;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+	z-index: 20;
+	padding: 6px;
+}
+.export-menu-item {
+	line-height: 32px;
+	padding: 0 10px;
+	font-size: 13px;
+	color: #303133;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.export-menu-item:hover {
+	background: #f5f7fa;
+}
 .page-wrap {
 	padding-bottom: 24px;
 }

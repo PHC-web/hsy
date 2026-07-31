@@ -3,7 +3,26 @@
 		<view class="uni-header">
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
-				<button size="mini" type="primary" :loading="loading" @click="search">刷新</button>
+				<view class="header-actions">
+					<view class="export-dropdown" @mouseleave="showExportMenu = false">
+						<button class="uni-button export-trigger" size="mini" @click="toggleExportMenu">
+							<text class="bi bi-download export-icon"></text>
+							<text>导出</text>
+							<text class="bi bi-chevron-down export-caret"></text>
+						</button>
+						<view v-if="showExportMenu" class="export-menu">
+							<view
+								v-for="opt in exportTypeOptions"
+								:key="opt.value"
+								class="export-menu-item"
+								@click="selectAndExport(opt.value)"
+							>
+								{{ opt.text }}
+							</view>
+						</view>
+					</view>
+					<button size="mini" type="primary" :loading="loading" @click="search">刷新</button>
+				</view>
 			</view>
 		</view>
 		<view class="uni-container page-wrap">
@@ -191,7 +210,16 @@ export default {
 				pageSize: 15,
 				total: 0
 			},
-			detailJson: null
+			detailJson: null,
+			showExportMenu: false,
+			exportTypeOptions: [
+				{ text: 'JSON', value: 'json' },
+				{ text: 'XML', value: 'xml' },
+				{ text: 'CSV', value: 'csv' },
+				{ text: 'TXT', value: 'txt' },
+				{ text: 'MS-Word', value: 'word' },
+				{ text: 'MS-Excel', value: 'excel' }
+			]
 		};
 	},
 	computed: {
@@ -213,6 +241,9 @@ export default {
 			} catch (e) {
 				return '';
 			}
+		},
+		exportFilePrefix() {
+			return this.activeTab === 'upgrade_clear' ? '升级清除日志' : '积分红包';
 		}
 	},
 	mounted() {
@@ -223,6 +254,7 @@ export default {
 			if (this.activeTab === tab) return;
 			this.activeTab = tab;
 			this.keyword = '';
+			this.showExportMenu = false;
 			this.pageInfo.currentPage = 1;
 			this.clearPageInfo.currentPage = 1;
 			this.search();
@@ -268,20 +300,20 @@ export default {
 			}
 			return { timeStart, timeEnd };
 		},
-		buildPayload() {
+		buildPayload(pageOverride, pageSizeOverride) {
 			const { timeStart, timeEnd } = this.buildTimeRange();
 			if (this.activeTab === 'upgrade_clear') {
 				return {
-					page: this.clearPageInfo.currentPage,
-					pageSize: this.clearPageInfo.pageSize,
+					page: pageOverride != null ? pageOverride : this.clearPageInfo.currentPage,
+					pageSize: pageSizeOverride != null ? pageSizeOverride : this.clearPageInfo.pageSize,
 					keyword: this.keyword,
 					timeStart,
 					timeEnd
 				};
 			}
 			return {
-				page: this.pageInfo.currentPage,
-				pageSize: this.pageInfo.pageSize,
+				page: pageOverride != null ? pageOverride : this.pageInfo.currentPage,
+				pageSize: pageSizeOverride != null ? pageSizeOverride : this.pageInfo.pageSize,
 				keyword: this.keyword,
 				timeStart,
 				timeEnd,
@@ -354,12 +386,213 @@ export default {
 		closeDetail() {
 			this.$refs.detailPopup.close();
 			this.detailJson = null;
+		},
+		toggleExportMenu() {
+			this.showExportMenu = !this.showExportMenu;
+		},
+		selectAndExport(type) {
+			this.showExportMenu = false;
+			this.exportData(type);
+		},
+		mapPacketExportRow(item) {
+			return {
+				创建时间: this.fmtTs(item.create_time),
+				商户昵称: item.merchant_name || '-',
+				商户ID: item.merchant_user_id || '',
+				手机: item.merchant_mobile || '-',
+				积分元: item.amountText != null ? item.amountText : item.amount,
+				展示状态: item.display_status || '',
+				类型: item.subsidy_kind_label || item.subsidy_kind || '',
+				归属月: item.month_no || '',
+				标题: item.title || '',
+				可领时间: this.fmtTs(item.claim_open_time),
+				过期时间: this.fmtTs(item.expire_time),
+				领取时间: this.fmtTs(item.claimed_time),
+				记录ID: item._id || ''
+			};
+		},
+		mapUpgradeClearExportRow(item) {
+			return {
+				操作时间: this.fmtTs(item.create_time),
+				商户昵称: item.merchant_name || '-',
+				商户ID: item.merchant_user_id || '',
+				手机: item.merchant_mobile || '-',
+				升级方式: item.upgrade_kind_label || '',
+				目标会员: item.target_membership_name || '',
+				清除积分元: item.cleared_account_points_text || '',
+				清除冻结元: item.cleared_frozen_amount_text || '',
+				说明: item.content || '',
+				记录ID: item._id || ''
+			};
+		},
+		async fetchExportRows() {
+			const action =
+				this.activeTab === 'upgrade_clear' ? 'opsMemberUpgradeClearLogsList' : 'opsIncomePacketsList';
+			const pageSize = 1000;
+			const maxRows = 10000;
+			const all = [];
+			let page = 1;
+			let total = Infinity;
+			while (all.length < maxRows && all.length < total) {
+				const res = await this.$request(
+					action,
+					this.buildPayload(page, pageSize),
+					{ functionName: 'ops-points-admin' }
+				);
+				if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
+				const d = res.data || {};
+				const rows = d.list || [];
+				total = Number(d.total);
+				if (!Number.isFinite(total) || total < 0) total = rows.length;
+				all.push(...rows);
+				if (!rows.length || rows.length < pageSize) break;
+				page += 1;
+				if (page > 50) break;
+			}
+			const truncated = all.length >= maxRows && total > maxRows;
+			const slice = all.slice(0, maxRows);
+			const mapped =
+				this.activeTab === 'upgrade_clear'
+					? slice.map((x) => this.mapUpgradeClearExportRow(x))
+					: slice.map((x) => this.mapPacketExportRow(x));
+			return { rows: mapped, truncated };
+		},
+		downloadFile(filename, content, mimeType) {
+			// #ifdef H5
+			const blob = new Blob([content], { type: mimeType });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = filename;
+			a.click();
+			URL.revokeObjectURL(url);
+			// #endif
+			// #ifndef H5
+			uni.setClipboardData({ data: String(content || '') });
+			// #endif
+		},
+		toCsv(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const esc = (s) => {
+				const t = String(s == null ? '' : s);
+				return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+			};
+			const lines = [keys.join(',')];
+			rows.forEach((r) => lines.push(keys.map((k) => esc(r[k])).join(',')));
+			return '\uFEFF' + lines.join('\r\n');
+		},
+		toTxt(rows) {
+			return rows.map((r) => Object.entries(r).map(([k, v]) => `${k}: ${v}`).join(' | ')).join('\n');
+		},
+		toXml(rows) {
+			const esc = (s) =>
+				String(s == null ? '' : s)
+					.replace(/&/g, '&amp;')
+					.replace(/</g, '&lt;')
+					.replace(/>/g, '&gt;');
+			const root = this.activeTab === 'upgrade_clear' ? 'upgradeClearLogs' : 'incomePackets';
+			const items = rows
+				.map((r) => {
+					const fields = Object.entries(r)
+						.map(([k, v]) => {
+							const tag = String(k).replace(/[^\w\u4e00-\u9fa5]/g, '_');
+							return `<${tag}>${esc(v)}</${tag}>`;
+						})
+						.join('');
+					return `<item>${fields}</item>`;
+				})
+				.join('');
+			return `<?xml version="1.0" encoding="UTF-8"?><${root}>${items}</${root}>`;
+		},
+		toHtmlTable(rows) {
+			const keys = Object.keys(rows[0] || {});
+			const th = keys.map((k) => `<th>${k}</th>`).join('');
+			const tr = rows
+				.map((r) => `<tr>${keys.map((k) => `<td>${r[k] == null ? '' : r[k]}</td>`).join('')}</tr>`)
+				.join('');
+			return `<html><head><meta charset="utf-8"></head><body><table border="1"><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></body></html>`;
+		},
+		async exportData(type) {
+			try {
+				uni.showLoading({ title: '导出中...', mask: true });
+				const { rows, truncated } = await this.fetchExportRows();
+				if (!rows.length) {
+					uni.showToast({ title: '暂无可导出数据', icon: 'none' });
+					return;
+				}
+				const ts = Date.now();
+				const prefix = this.exportFilePrefix;
+				if (type === 'json') {
+					this.downloadFile(`${prefix}_${ts}.json`, JSON.stringify(rows, null, 2), 'application/json;charset=utf-8');
+				} else if (type === 'xml') {
+					this.downloadFile(`${prefix}_${ts}.xml`, this.toXml(rows), 'application/xml;charset=utf-8');
+				} else if (type === 'csv') {
+					this.downloadFile(`${prefix}_${ts}.csv`, this.toCsv(rows), 'text/csv;charset=utf-8');
+				} else if (type === 'txt') {
+					this.downloadFile(`${prefix}_${ts}.txt`, this.toTxt(rows), 'text/plain;charset=utf-8');
+				} else if (type === 'word') {
+					this.downloadFile(`${prefix}_${ts}.doc`, this.toHtmlTable(rows), 'application/msword');
+				} else if (type === 'excel') {
+					this.downloadFile(`${prefix}_${ts}.xls`, this.toHtmlTable(rows), 'application/vnd.ms-excel');
+				}
+				if (truncated) {
+					uni.showToast({ title: '数据过多，已截断为前 10000 条', icon: 'none', duration: 2800 });
+				}
+			} catch (e) {
+				uni.showToast({ title: e.message || '导出失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
 		}
 	}
 };
 </script>
 
 <style scoped>
+.header-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-left: auto;
+}
+.export-dropdown {
+	position: relative;
+}
+.export-trigger {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.export-icon {
+	font-size: 12px;
+}
+.export-caret {
+	font-size: 12px;
+	opacity: 0.8;
+}
+.export-menu {
+	position: absolute;
+	right: 0;
+	top: calc(100% + 6px);
+	min-width: 130px;
+	background: #fff;
+	border: 1px solid #ebeef5;
+	border-radius: 8px;
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+	z-index: 20;
+	padding: 6px;
+}
+.export-menu-item {
+	line-height: 32px;
+	padding: 0 10px;
+	font-size: 13px;
+	color: #303133;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.export-menu-item:hover {
+	background: #f5f7fa;
+}
 .page-wrap {
 	padding-bottom: 24px;
 }
