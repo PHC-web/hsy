@@ -29,7 +29,7 @@
 				{ "Name": "merchant_user_id", "Direction": "1", "Type": "string" },
 				{ "Name": "dedup_key", "Direction": "1", "Type": "string" }
 			],
-			"MgoIsUnique": false
+			"MgoIsUnique": true
 		}
 	}
 ]

@@ -51,12 +51,6 @@
 						@change="onRangeChange"
 					/>
 				</view>
-				<view v-if="activeTab === 'packets'" class="row">
-					<text class="label">状态</text>
-					<picker mode="selector" :range="statusLabels" :value="statusIndex" @change="onStatusPick">
-						<view class="picker-val">{{ statusLabels[statusIndex] }}</view>
-					</picker>
-				</view>
 				<view class="row">
 					<text class="label">关键词</text>
 					<uni-easyinput
@@ -69,19 +63,29 @@
 			</view>
 
 			<view v-if="activeTab === 'packets'" class="table-container-wrapper admin-table-slot">
-				<view class="table-container table-scroll">
-					<uni-table border stripe :loading="loading" empty-text="暂无数据">
+				<view class="table-container table-scroll points-table-wrap">
+					<uni-table :key="'pkt-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
 							<uni-th width="152">创建时间</uni-th>
 							<uni-th width="120">商户</uni-th>
 							<uni-th width="104">手机</uni-th>
 							<uni-th width="72">积分(元)</uni-th>
-							<uni-th width="120">展示状态</uni-th>
-							<uni-th width="108">类型</uni-th>
+							<uni-th
+								width="132"
+								filter-type="select"
+								:filter-data="statusHeaderFilterData"
+								@filter-change="headerFilterChange($event, 'status')"
+							>展示状态</uni-th>
+							<uni-th
+								width="140"
+								filter-type="select"
+								:filter-data="kindHeaderFilterData"
+								@filter-change="headerFilterChange($event, 'kind')"
+							>类型</uni-th>
 							<uni-th width="88">归属月</uni-th>
-							<uni-th>标题</uni-th>
+							<uni-th width="148">标题</uni-th>
 							<uni-th width="152">可领 / 过期 / 领取</uni-th>
-							<uni-th width="72">详情</uni-th>
+							<uni-th width="88">详情</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in list" :key="item._id">
 							<uni-td>{{ fmtTs(item.create_time) }}</uni-td>
@@ -95,14 +99,18 @@
 							</uni-td>
 							<uni-td class="cell-tiny">{{ item.subsidy_kind_label }}</uni-td>
 							<uni-td>{{ item.month_no }}</uni-td>
-							<uni-td class="cell-content">{{ item.title }}</uni-td>
-							<uni-td class="cell-tiny">
+							<uni-td class="cell-title" :title="item.title">{{ item.title }}</uni-td>
+							<uni-td class="cell-time-stack">
 								<view>开：{{ fmtTs(item.claim_open_time) }}</view>
 								<view>过：{{ fmtTs(item.expire_time) }}</view>
 								<view>领：{{ fmtTs(item.claimed_time) }}</view>
 							</uni-td>
 							<uni-td>
-								<button size="mini" type="primary" plain @click="openDetail(item._id)">查看</button>
+								<view class="op-cell">
+									<button class="btn-detail" size="mini" type="primary" plain @click="openDetail(item._id)">
+										查看
+									</button>
+								</view>
 							</uni-td>
 						</uni-tr>
 					</uni-table>
@@ -179,14 +187,23 @@ function defaultRange() {
 	return [start.getTime(), end.getTime()];
 }
 
-const STATUS_VALUES = ['all', 'pending_ready', 'pending_locked', 'claimed', 'expired', 'pending'];
-const STATUS_LABELS = [
-	'全部状态',
-	'待领取',
-	'未到时间 / 待开放',
-	'已领取',
-	'过期未领取',
-	'全部待处理 (pending)'
+const STATUS_FILTER_OPTIONS = [
+	{ text: '全部状态', value: 'all' },
+	{ text: '待领取', value: 'pending_ready' },
+	{ text: '未到时间 / 待开放', value: 'pending_locked' },
+	{ text: '已领取', value: 'claimed' },
+	{ text: '过期未领取', value: 'expired' },
+	{ text: '全部待处理 (pending)', value: 'pending' }
+];
+
+const KIND_FILTER_OPTIONS = [
+	{ text: '全部类型', value: '' },
+	{ text: '流水首期补贴', value: 'trade_first' },
+	{ text: '历史池分期返还', value: 'release_pool_history' },
+	{ text: '优惠券达标奖励', value: 'coupon_reward' },
+	{ text: '充值用户分期', value: 'recharge_vesting' },
+	{ text: '非充值5万档', value: 'non_recharge_lump' },
+	{ text: '非充值每满1万', value: 'non_recharge_extra' }
 ];
 
 export default {
@@ -199,7 +216,8 @@ export default {
 			keyword: '',
 			range: defaultRange(),
 			statusFilter: 'all',
-			statusLabels: STATUS_LABELS,
+			kindFilter: '',
+			tableKey: 0,
 			pageInfo: {
 				currentPage: 1,
 				pageSize: 15,
@@ -223,10 +241,6 @@ export default {
 		};
 	},
 	computed: {
-		statusIndex() {
-			const i = STATUS_VALUES.indexOf(this.statusFilter);
-			return i >= 0 ? i : 0;
-		},
 		currentPageInfo() {
 			return this.activeTab === 'upgrade_clear' ? this.clearPageInfo : this.pageInfo;
 		},
@@ -244,12 +258,44 @@ export default {
 		},
 		exportFilePrefix() {
 			return this.activeTab === 'upgrade_clear' ? '升级清除日志' : '积分红包';
+		},
+		statusHeaderFilterData() {
+			return this.mergeSelectFilterChecked(STATUS_FILTER_OPTIONS, this.statusFilter);
+		},
+		kindHeaderFilterData() {
+			return this.mergeSelectFilterChecked(KIND_FILTER_OPTIONS, this.kindFilter);
 		}
 	},
 	mounted() {
 		this.search();
 	},
 	methods: {
+		mergeSelectFilterChecked(baseList, selectedVal) {
+			const sel = String(selectedVal == null ? '' : selectedVal).trim();
+			return (baseList || []).map((item) => ({
+				text: item.text,
+				value: item.value,
+				checked: String(item.value) === sel
+			}));
+		},
+		headerFilterChange(e, field) {
+			const { filterType, filter } = e || {};
+			if (filterType !== 'select') return;
+			const arr = Array.isArray(filter) ? filter.map(String) : [];
+			const picked = arr.length ? String(arr[0]).trim() : '';
+			if (field === 'status') {
+				const next = picked || 'all';
+				if (this.statusFilter === next) return;
+				this.statusFilter = next;
+			} else if (field === 'kind') {
+				if (this.kindFilter === picked) return;
+				this.kindFilter = picked;
+			} else {
+				return;
+			}
+			this.pageInfo.currentPage = 1;
+			this.search();
+		},
 		switchTab(tab) {
 			if (this.activeTab === tab) return;
 			this.activeTab = tab;
@@ -281,15 +327,6 @@ export default {
 			this.clearPageInfo.currentPage = 1;
 			this.search();
 		},
-		onStatusPick(e) {
-			const i = Number(e.detail.value);
-			const v = STATUS_VALUES[i];
-			if (v && this.statusFilter !== v) {
-				this.statusFilter = v;
-				this.pageInfo.currentPage = 1;
-				this.search();
-			}
-		},
 		buildTimeRange() {
 			const r = this.range;
 			let timeStart = '';
@@ -317,7 +354,8 @@ export default {
 				keyword: this.keyword,
 				timeStart,
 				timeEnd,
-				statusFilter: this.statusFilter
+				statusFilter: this.statusFilter,
+				subsidyKindFilter: this.kindFilter
 			};
 		},
 		search() {
@@ -646,16 +684,24 @@ export default {
 	font-size: 13px;
 	min-width: 72px;
 }
-.picker-val {
-	min-width: 200px;
-	padding: 6px 10px;
-	background: #f5f7fa;
-	border-radius: 4px;
-	font-size: 13px;
-	color: #303133;
-}
 .table-scroll {
 	overflow-x: auto;
+}
+.points-table-wrap .op-cell {
+	white-space: nowrap;
+	text-align: center;
+}
+.points-table-wrap .btn-detail {
+	white-space: nowrap !important;
+	display: inline-flex !important;
+	align-items: center;
+	justify-content: center;
+	min-width: 56px;
+	box-sizing: border-box;
+	line-height: 28px !important;
+	height: 28px;
+	padding: 0 12px !important;
+	font-size: 12px;
 }
 .cell-ellipsis {
 	max-width: 120px;
@@ -668,6 +714,19 @@ export default {
 	font-size: 12px;
 	white-space: pre-wrap;
 	word-break: break-all;
+}
+.cell-title {
+	max-width: 148px;
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.cell-time-stack {
+	font-size: 12px;
+	line-height: 1.45;
+	color: #606266;
+	white-space: nowrap;
 }
 .cell-tiny {
 	font-size: 11px;

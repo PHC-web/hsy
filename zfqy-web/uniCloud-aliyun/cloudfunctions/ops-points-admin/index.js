@@ -42,6 +42,7 @@ function buildTimeRangeWhere(field, timeStart, timeEnd) {
 
 function subsidyKindLabel(k) {
 	const map = {
+		trade_first: '流水首期补贴',
 		recharge_vesting: '充值用户分期',
 		non_recharge_lump: '非充值5万档',
 		non_recharge_extra: '非充值每满1万',
@@ -71,6 +72,7 @@ async function opsIncomePacketsList(data = {}) {
 	const pageSize = Math.min(1000, Math.max(1, Number(data.pageSize) || 20));
 	const keyword = safeText(data.keyword, 100);
 	const statusFilter = safeText(data.statusFilter, 28) || 'all';
+	const subsidyKindFilter = safeText(data.subsidyKindFilter, 48);
 	const timeStart = data.timeStart;
 	const timeEnd = data.timeEnd;
 	const now = Date.now();
@@ -94,6 +96,10 @@ async function opsIncomePacketsList(data = {}) {
 			orParts.push({ _id: keyword });
 		}
 		whereParts.push(_.or(orParts));
+	}
+
+	if (subsidyKindFilter) {
+		whereParts.push({ subsidy_kind: subsidyKindFilter });
 	}
 
 	if (statusFilter === 'claimed') {
@@ -191,7 +197,7 @@ async function opsIncomePacketsList(data = {}) {
 	return {
 		code: 0,
 		message: 'ok',
-		data: { list, total, page, pageSize, statusFilter }
+		data: { list, total, page, pageSize, statusFilter, subsidyKindFilter }
 	};
 }
 
@@ -337,6 +343,238 @@ async function opsIncomePacketDetail(data = {}) {
 	}
 }
 
+/**
+ * 分批扫描红包（单次只拉一页，避免云函数超时）。
+ * 浏览器循环调用并在本地按 dedup_key 汇总；同键 ≥2 条视为重复。
+ *
+ * 也可 resolveMerchantsOnly=true + userIds：仅解析商户昵称。
+ * includeAllStatus=true：不限 claimed（清理列表重复时用）。
+ */
+async function opsIncomeClaimedDedupDuplicatesScan(data = {}) {
+	if (data.resolveMerchantsOnly) {
+		const rawIds = Array.isArray(data.userIds) ? data.userIds : [];
+		const userIds = [...new Set(rawIds.map((x) => safeText(x, 80)).filter(Boolean))].slice(0, 500);
+		const merchants = {};
+		for (let i = 0; i < userIds.length; i += 100) {
+			const chunk = userIds.slice(i, i + 100);
+			try {
+				const mr = await merchantCollection
+					.where({ user_id: _.in(chunk) })
+					.field({ user_id: true, wx_nickname: true, mobile: true })
+					.get();
+				(mr.data || []).forEach((m) => {
+					const uid = String(m.user_id || '');
+					if (!uid) return;
+					merchants[uid] = {
+						merchant_name: String(m.wx_nickname || '').trim() || '-',
+						merchant_mobile: String(m.mobile || '').trim() || '-'
+					};
+				});
+			} catch (e) {
+				console.error('opsIncomeClaimedDedupDuplicatesScan resolveMerchants', e);
+			}
+		}
+		return { code: 0, message: 'ok', data: { merchants } };
+	}
+
+	const pageSize = Math.min(500, Math.max(50, Number(data.pageSize) || 300));
+	const cursorId = safeText(data.cursorId, 80);
+	const merchantUserId = safeText(data.merchantUserId, 80);
+	const subsidyKindFilter = safeText(data.subsidyKindFilter, 48);
+	const includeAllStatus = data.includeAllStatus === true;
+
+	const whereParts = [
+		_.or([{ is_deleted: false }, { is_deleted: _.exists(false) }]),
+		{ dedup_key: _.exists(true) },
+		{ dedup_key: _.neq('') }
+	];
+	if (!includeAllStatus) {
+		whereParts.unshift({ status: 'claimed' });
+	}
+	if (merchantUserId) whereParts.push({ merchant_user_id: merchantUserId });
+	if (subsidyKindFilter) whereParts.push({ subsidy_kind: subsidyKindFilter });
+	const tr = buildTimeRangeWhere(
+		includeAllStatus ? 'create_time' : 'claimed_time',
+		includeAllStatus ? data.timeStart : data.claimedTimeStart,
+		includeAllStatus ? data.timeEnd : data.claimedTimeEnd
+	);
+	if (tr) whereParts.push(tr);
+	const where = whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
+	const pageWhere = cursorId ? _.and([where, { _id: _.gt(cursorId) }]) : where;
+
+	let rows = [];
+	try {
+		const listRes = await incomePacketCollection
+			.where(pageWhere)
+			.field({
+				_id: true,
+				merchant_user_id: true,
+				dedup_key: true,
+				title: true,
+				amount: true,
+				status: true,
+				subsidy_kind: true,
+				month_no: true,
+				create_time: true,
+				claimed_time: true
+			})
+			.orderBy('_id', 'asc')
+			.limit(pageSize)
+			.get();
+		rows = listRes.data || [];
+	} catch (e) {
+		console.error('opsIncomeClaimedDedupDuplicatesScan page', e);
+		return { code: 500, message: e.message || '扫描失败' };
+	}
+
+	const nextCursor = rows.length ? String(rows[rows.length - 1]._id || '') : '';
+	const done = rows.length < pageSize;
+	return {
+		code: 0,
+		message: 'ok',
+		data: {
+			rows: rows.map((r) => ({
+				_id: r._id,
+				merchant_user_id: String(r.merchant_user_id || ''),
+				dedup_key: String(r.dedup_key || '').trim(),
+				title: r.title || '',
+				amount: Number(Number(r.amount || 0).toFixed(4)),
+				status: r.status || '',
+				subsidy_kind: r.subsidy_kind || '',
+				subsidy_kind_label: subsidyKindLabel(r.subsidy_kind),
+				month_no: r.month_no || '',
+				create_time: r.create_time || null,
+				claimed_time: r.claimed_time || null
+			})),
+			pageSize,
+			scanned: rows.length,
+			nextCursor,
+			done,
+			includeAllStatus
+		}
+	};
+}
+
+/**
+ * 软删除指定重复红包（不回扣商户积分）。
+ * 单次最多 20 条；并行 update，避免超时。
+ * 会改写 dedup_key，避免与正本冲突，便于后续建唯一索引。
+ */
+async function opsIncomeDedupDuplicatesCleanup(data = {}) {
+	const apply = data.apply === true || data.dryRun === false;
+	const dryRun = !apply;
+	const rawIds = Array.isArray(data.packetIds) ? data.packetIds : [];
+	const packetIds = [...new Set(rawIds.map((x) => safeText(x, 80)).filter(Boolean))].slice(0, 20);
+	if (!packetIds.length) {
+		return { code: 400, message: '缺少 packetIds' };
+	}
+
+	const now = Date.now();
+	const samples = [];
+	let updated = 0;
+	let skipped = 0;
+	const failedIds = [];
+
+	// 一次查出本批，减少往返
+	let rowMap = new Map();
+	try {
+		const got = await incomePacketCollection
+			.where({ _id: _.in(packetIds) })
+			.field({
+				_id: true,
+				merchant_user_id: true,
+				title: true,
+				amount: true,
+				status: true,
+				dedup_key: true,
+				is_deleted: true
+			})
+			.limit(packetIds.length)
+			.get();
+		(got.data || []).forEach((row) => {
+			rowMap.set(String(row._id), row);
+		});
+	} catch (e) {
+		console.error('opsIncomeDedupDuplicatesCleanup batch get', e);
+		return { code: 500, message: e.message || '查询失败' };
+	}
+
+	const toUpdate = [];
+	for (const id of packetIds) {
+		const row = rowMap.get(id);
+		if (!row || row.is_deleted === true) {
+			skipped += 1;
+			continue;
+		}
+		const oldDk = String(row.dedup_key || '').trim();
+		if (samples.length < 20) {
+			samples.push({
+				_id: id,
+				merchant_user_id: row.merchant_user_id || '',
+				title: row.title || '',
+				amount: Number(row.amount || 0),
+				status: row.status || '',
+				dedup_key: oldDk
+			});
+		}
+		toUpdate.push({ id, oldDk });
+	}
+
+	if (dryRun) {
+		return {
+			code: 0,
+			message: 'dryRun ok',
+			data: {
+				dryRun: true,
+				requested: packetIds.length,
+				updated: toUpdate.length,
+				skipped,
+				failedIds: [],
+				samples
+			}
+		};
+	}
+
+	const results = await Promise.all(
+		toUpdate.map(async ({ id, oldDk }) => {
+			try {
+				await incomePacketCollection.doc(id).update({
+					is_deleted: true,
+					update_time: now,
+					dedup_key: `cleared_dup_${id}`,
+					dedup_key_cleared_from: oldDk || '',
+					cleanup_reason: 'dedup_duplicate'
+				});
+				return { id, ok: true };
+			} catch (e) {
+				console.error('opsIncomeDedupDuplicatesCleanup update', id, e);
+				return { id, ok: false };
+			}
+		})
+	);
+
+	for (const r of results) {
+		if (r.ok) updated += 1;
+		else {
+			skipped += 1;
+			failedIds.push(r.id);
+		}
+	}
+
+	return {
+		code: 0,
+		message: 'ok',
+		data: {
+			dryRun: false,
+			requested: packetIds.length,
+			updated,
+			skipped,
+			failedIds,
+			samples
+		}
+	};
+}
+
 exports.main = async (event) => {
 	const { action, params, data } = event || {};
 	const actualData = data || params || {};
@@ -347,6 +585,10 @@ exports.main = async (event) => {
 			return await opsIncomePacketDetail(actualData);
 		case 'opsMemberUpgradeClearLogsList':
 			return await opsMemberUpgradeClearLogsList(actualData);
+		case 'opsIncomeClaimedDedupDuplicatesScan':
+			return await opsIncomeClaimedDedupDuplicatesScan(actualData);
+		case 'opsIncomeDedupDuplicatesCleanup':
+			return await opsIncomeDedupDuplicatesCleanup(actualData);
 		default:
 			return { code: 400, message: '无效操作' };
 	}

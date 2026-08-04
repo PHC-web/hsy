@@ -249,8 +249,32 @@ async function upsertPacket(db, doc, dedupSet) {
 	if (!dk || dedupSet.has(dk)) return;
 	const amt = roundPacketAmountYuan(doc.amount);
 	if (!(amt >= MIN_PACKET_AMOUNT)) return;
-	await db.collection('hsy-income-packets').add(Object.assign({}, doc, { amount: amt }));
-	dedupSet.add(dk);
+	// 并发下仅靠内存 Set 会重复写入；落库前再查一次，并依赖 dedup 唯一索引兜底
+	try {
+		const exist = await db
+			.collection('hsy-income-packets')
+			.where({ merchant_user_id: doc.merchant_user_id, dedup_key: dk })
+			.limit(1)
+			.get();
+		if (exist.data && exist.data.length) {
+			dedupSet.add(dk);
+			return;
+		}
+	} catch (e) {
+		console.error('upsertPacket dedup check', e);
+	}
+	try {
+		await db.collection('hsy-income-packets').add(Object.assign({}, doc, { amount: amt }));
+		dedupSet.add(dk);
+	} catch (e) {
+		const msg = String((e && (e.message || e.errMsg)) || e || '');
+		// 唯一索引冲突：另一并发请求已写入
+		if (/duplicate|E11000|unique|已存在|重复/i.test(msg)) {
+			dedupSet.add(dk);
+			return;
+		}
+		throw e;
+	}
 }
 
 function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000, optimizeConfig) {
