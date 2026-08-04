@@ -5818,8 +5818,8 @@ async function settleWithdrawSuccess(withdrawRow, wxTradeNo = '', transferState 
 			await merchantCollection.doc(merchant._id).update({
 				available_reward: Number(Math.max(0, rawWithdrawQuotaBalance(merchant) - amountPoints).toFixed(4)),
 				withdraw_quota_balance: Number(Math.max(0, rawWithdrawQuotaBalance(merchant) - amountPoints).toFixed(4)),
-				account_points: Number(Math.max(0, rawPendingBalance(merchant) - amountPoints).toFixed(4)),
-				withdraw_pending_balance: Number(Math.max(0, rawPendingBalance(merchant) - amountPoints).toFixed(4)),
+				account_points: floorYuan2(Math.max(0, rawPendingBalance(merchant) - amountPoints)),
+				withdraw_pending_balance: floorYuan2(Math.max(0, rawPendingBalance(merchant) - amountPoints)),
 				withdrawn: Number((Number(merchant.withdrawn || 0) + settleAmt).toFixed(4)),
 				update_time: now
 			});
@@ -6067,8 +6067,8 @@ async function restoreUnpaidWithdrawBalances(row) {
 	await merchantCollection.doc(merchant._id).update({
 		available_reward: Number((rawWithdrawQuotaBalance(merchant) + amountPoints).toFixed(4)),
 		withdraw_quota_balance: Number((rawWithdrawQuotaBalance(merchant) + amountPoints).toFixed(4)),
-		account_points: Number((rawPendingBalance(merchant) + amountPoints).toFixed(4)),
-		withdraw_pending_balance: Number((rawPendingBalance(merchant) + amountPoints).toFixed(4)),
+		account_points: floorYuan2((rawPendingBalance(merchant) + amountPoints)),
+		withdraw_pending_balance: floorYuan2((rawPendingBalance(merchant) + amountPoints)),
 		pending_withdraw: Number(Math.max(0, Number(merchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
 		update_time: now
 	});
@@ -9019,8 +9019,13 @@ function rawPendingBalance(row) {
 	return Number(row.account_points || 0);
 }
 
+/** 积分余额：向下取整到分（与红包金额口径一致） */
+function floorYuan2(raw) {
+	return subsidyEngine.floorYuan2(raw);
+}
+
 function normalizePendingBalance(row) {
-	return Number(Number(rawPendingBalance(row)).toFixed(2));
+	return floorYuan2(rawPendingBalance(row));
 }
 
 const CURRENT_AGREEMENT_CACHE_MS = 30000;
@@ -9887,8 +9892,8 @@ async function h5WithdrawConfirmPackage(data) {
 					await merchantCollection.doc(latestMerchant._id).update({
 						available_reward: Number((rawWithdrawQuotaBalance(latestMerchant) + amountPoints).toFixed(4)),
 						withdraw_quota_balance: Number((rawWithdrawQuotaBalance(latestMerchant) + amountPoints).toFixed(4)),
-						account_points: Number((rawPendingBalance(latestMerchant) + amountPoints).toFixed(4)),
-						withdraw_pending_balance: Number((rawPendingBalance(latestMerchant) + amountPoints).toFixed(4)),
+						account_points: floorYuan2((rawPendingBalance(latestMerchant) + amountPoints)),
+						withdraw_pending_balance: floorYuan2((rawPendingBalance(latestMerchant) + amountPoints)),
 						pending_withdraw: Number(Math.max(0, Number(latestMerchant.pending_withdraw || 0) - settleAmt).toFixed(4)),
 						update_time: nowTs()
 					});
@@ -11670,8 +11675,8 @@ async function h5WithdrawApply(data) {
 			await merchantCollection.doc(merchant._id).update({
 				available_reward: Number(arBase.toFixed(4)),
 				withdraw_quota_balance: Number(arBase.toFixed(4)),
-				account_points: Number(ap.toFixed(4)),
-				withdraw_pending_balance: Number(ap.toFixed(4)),
+				account_points: floorYuan2(ap),
+				withdraw_pending_balance: floorYuan2(ap),
 				pending_withdraw: Number(pendingWithdrawBefore.toFixed(4)),
 				withdrawn: Number(withdrawnBefore.toFixed(4)),
 				update_time: nowTs()
@@ -11684,7 +11689,7 @@ async function h5WithdrawApply(data) {
 			}
 		};
 		const quotaAfterDeduct = Number((arBase - points).toFixed(4));
-		const pointsAfterDeduct = Number((ap - points).toFixed(4));
+		const pointsAfterDeduct = floorYuan2(ap - points);
 		try {
 			// 点击“积分兑换提现”即先冻结并扣除积分与提现额度，防止回执未更新期间重复发起。
 			await merchantCollection.doc(merchant._id).update({
@@ -11880,8 +11885,8 @@ async function h5WithdrawApply(data) {
 				await merchantCollection.doc(merchant._id).update({
 					available_reward: Number(arBase.toFixed(4)),
 					withdraw_quota_balance: Number(arBase.toFixed(4)),
-					account_points: Number(ap.toFixed(4)),
-					withdraw_pending_balance: Number(ap.toFixed(4)),
+					account_points: floorYuan2(ap),
+					withdraw_pending_balance: floorYuan2(ap),
 					pending_withdraw: Number(pendingWithdrawBefore.toFixed(4)),
 					withdrawn: Number(withdrawnBefore.toFixed(4)),
 					update_time: nowTs()
@@ -16208,17 +16213,18 @@ async function claimPackets(merchant, packetIds) {
 		}
 	}
 	if (claimedIds.length) {
+		const nextPending = floorYuan2(Number(rawPendingBalance(merchant) || 0) + claimedAmount);
 		const merchantUpd = {
-			pending_withdraw: Number((Number(merchant.pending_withdraw || 0) + claimedAmount).toFixed(4)),
-			account_points: Number(rawPendingBalance(merchant) || 0) + claimedAmount,
-			withdraw_pending_balance: Number(rawPendingBalance(merchant) || 0) + claimedAmount
+			pending_withdraw: floorYuan2(Number(merchant.pending_withdraw || 0) + claimedAmount),
+			account_points: nextPending,
+			withdraw_pending_balance: nextPending
 		};
 		await merchantCollection.doc(merchant._id).update(merchantUpd);
 		const boundMachines = await listBoundMachinesByMerchant(merchant);
 		const m = pickPrimaryBoundMachine(merchant, boundMachines);
 		if (m) {
 			await machineCollection.doc(m._id).update({
-				pending_amount: Number((Number(m.pending_amount || 0) + claimedAmount).toFixed(4))
+				pending_amount: floorYuan2(Number(m.pending_amount || 0) + claimedAmount)
 			});
 		}
 		await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
@@ -16508,8 +16514,8 @@ async function runDataCorrectTaskChunk(task, chunkSize = 120) {
 		if (Math.abs(Number(row.available_reward || 0) - normalizedRemain) > 0.0001) patch.available_reward = Number(normalizedRemain.toFixed(4));
 		if (Math.abs(Number(row.withdraw_quota_balance || 0) - normalizedRemain) > 0.0001) patch.withdraw_quota_balance = Number(normalizedRemain.toFixed(4));
 		if (Math.abs(Number(rawPendingBalance(row) || 0) - normalizedPending) > 0.0001) {
-			patch.account_points = Number(normalizedPending.toFixed(4));
-			patch.withdraw_pending_balance = Number(normalizedPending.toFixed(4));
+			patch.account_points = normalizedPending;
+			patch.withdraw_pending_balance = normalizedPending;
 		}
 		if (safeText(row.membership_name || '', 40) !== normalizedMembershipName) patch.membership_name = normalizedMembershipName;
 		if (Number(row.recharge_update_time || 0) !== Number(normalizedOpenedAt || 0)) patch.recharge_update_time = Number(normalizedOpenedAt || 0);
@@ -16685,8 +16691,8 @@ async function adminSilverMemberGiftBackfill(data = {}) {
 				await merchantCollection.doc(row._id).update({
 					available_reward: Number(nextQuota.toFixed(4)),
 					withdraw_quota_balance: Number(nextQuota.toFixed(4)),
-					account_points: Number(nextPending.toFixed(4)),
-					withdraw_pending_balance: Number(nextPending.toFixed(4)),
+					account_points: floorYuan2(nextPending),
+					withdraw_pending_balance: floorYuan2(nextPending),
 					update_time: now
 				});
 			}
@@ -16833,8 +16839,8 @@ async function adminMerchantRecoverPendingBalance(data = {}, event = {}) {
 		if (!Number.isFinite(pendingYuan) || pendingYuan < 0) {
 			return { code: 400, message: '待提现积分须为大于等于 0 的数字' };
 		}
-		const v = Number(pendingYuan.toFixed(4));
-		const before = Number(Number(rawPendingBalance(merchant) || 0).toFixed(4));
+		const v = floorYuan2(pendingYuan);
+		const before = floorYuan2(rawPendingBalance(merchant) || 0);
 		const reason = safeText(data?.reason || data?.remark || '管理员修改待提现积分', 200);
 		const now = nowTs();
 		await merchantCollection.doc(merchant._id).update({
@@ -18063,6 +18069,107 @@ async function adminLoginTimeBackfillFromLastClaim(data = {}, event = {}) {
 	} catch (e) {
 		console.error('adminLoginTimeBackfillFromLastClaim failed', e);
 		return { code: 500, message: safeText(e?.message || '回填 login_time 失败', 180) };
+	}
+}
+
+/**
+ * 存量：account_points / withdraw_pending_balance 向下取整到分（清浮点脏值如 97.04999999999997）。
+ * 不回扣业务语义外的积分，仅规范化小数位。
+ */
+async function adminFloorMerchantPointsBalances(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 100), 10), 300);
+		const cursorId = safeText(data?.cursorId || data?.cursor || '', 80);
+		const onlyUid = safeText(data?.merchantUserId || data?.userId || '', 80);
+		const now = nowTs();
+		const _ = db.command;
+
+		let rows = [];
+		if (onlyUid) {
+			const m = await getMerchantByIdOrUserId(onlyUid);
+			if (!m) return { code: 404, message: '商户不存在' };
+			rows = [m];
+		} else {
+			const where = cursorId ? { _id: _.gt(cursorId) } : {};
+			const res = await merchantCollection
+				.where(where)
+				.field({
+					_id: true,
+					user_id: true,
+					wx_nickname: true,
+					mobile: true,
+					account_points: true,
+					withdraw_pending_balance: true
+				})
+				.orderBy('_id', 'asc')
+				.limit(chunkSize)
+				.get();
+			rows = res.data || [];
+		}
+
+		let scanned = 0;
+		let updated = 0;
+		let skippedSame = 0;
+		const samples = [];
+
+		for (const row of rows) {
+			scanned += 1;
+			const beforeApRaw = row.account_points;
+			const beforeWpbRaw = row.withdraw_pending_balance;
+			const beforeAp = Number(beforeApRaw == null || beforeApRaw === '' ? 0 : beforeApRaw);
+			const beforeWpb =
+				beforeWpbRaw != null && beforeWpbRaw !== '' ? Number(beforeWpbRaw) : beforeAp;
+			const next = floorYuan2(rawPendingBalance(row));
+			// 勿用 1e-12：146.57999999999996 与 146.58 差值约 4e-14，会被误判为相同
+			const needAp = !Number.isFinite(beforeAp) || beforeAp !== next;
+			const needWpb = !Number.isFinite(beforeWpb) || beforeWpb !== next;
+			if (!needAp && !needWpb) {
+				skippedSame += 1;
+				continue;
+			}
+			if (samples.length < 30) {
+				samples.push({
+					_id: row._id,
+					user_id: row.user_id || '',
+					name: row.wx_nickname || row.mobile || '',
+					beforeAp,
+					beforeWpb,
+					after: next
+				});
+			}
+			if (apply && !dryRun) {
+				await merchantCollection.doc(row._id).update({
+					account_points: next,
+					withdraw_pending_balance: next,
+					update_time: now
+				});
+			}
+			updated += 1;
+		}
+
+		const nextCursor = onlyUid ? '' : rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = onlyUid ? true : rows.length < chunkSize;
+		return {
+			code: 0,
+			message: apply && !dryRun ? 'ok' : 'dry-run 完成（未写库）',
+			data: {
+				dryRun: !(apply && !dryRun),
+				apply: !!(apply && !dryRun),
+				chunkSize,
+				scanned,
+				updated,
+				skippedSame,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminFloorMerchantPointsBalances failed', e);
+		return { code: 500, message: safeText(e?.message || '积分取整失败', 180) };
 	}
 }
 
@@ -19785,6 +19892,8 @@ exports.main = async (event, context) => {
 			return await adminSilverMembersQuotaRecalcByWithdrawn(actualData, event);
 		case 'adminLoginTimeBackfillFromLastClaim':
 			return await adminLoginTimeBackfillFromLastClaim(actualData, event);
+		case 'adminFloorMerchantPointsBalances':
+			return await adminFloorMerchantPointsBalances(actualData, event);
 		case 'adminAgreementImgMigrateToCloud':
 			return await adminAgreementImgMigrateToCloud(actualData, event);
 		case 'rechargeGiftShipmentList':

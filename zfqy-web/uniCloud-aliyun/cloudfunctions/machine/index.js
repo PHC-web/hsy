@@ -153,7 +153,15 @@ function rawPendingBalance(row) {
 	return Number(row.account_points || 0);
 }
 function normalizePendingBalance(row) {
-	return Math.max(0, Number(Number(rawPendingBalance(row)).toFixed(2)));
+	const n = Number(rawPendingBalance(row) || 0);
+	if (!Number.isFinite(n) || n <= 0) return 0;
+	const s = n.toString();
+	if (/e-/i.test(s)) return 0;
+	if (/e\+/i.test(s)) return Math.floor(n * 100) / 100;
+	const dot = s.indexOf('.');
+	if (dot < 0) return n;
+	if (s.slice(dot + 1).length <= 2) return n;
+	return Number(s.slice(0, dot + 3));
 }
 /**
  * 与商户管理「已提现」、H5 已到账统计一致：arrival_status=received 的 amount 求和

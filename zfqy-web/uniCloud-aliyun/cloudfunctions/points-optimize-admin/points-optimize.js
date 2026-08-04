@@ -30,8 +30,14 @@ const TASK_LOG_ACTION_SET = new Set(TASK_LOG_ACTIONS);
 
 function floor2(n) {
 	const x = Number(n || 0);
-	if (!Number.isFinite(x)) return 0;
-	return Math.floor(x * 100 + 1e-9) / 100;
+	if (!Number.isFinite(x) || x <= 0) return 0;
+	const s = x.toString();
+	if (/e-/i.test(s)) return 0;
+	if (/e\+/i.test(s)) return Math.floor(x * 100) / 100;
+	const dot = s.indexOf('.');
+	if (dot < 0) return x;
+	if (s.slice(dot + 1).length <= 2) return x;
+	return Number(s.slice(0, dot + 3));
 }
 
 function isAutoOptimizableSlice(s) {

@@ -14,17 +14,31 @@ const DEFAULT_BELOW_INSTALLMENTS = 1;
 const MIN_PACKET_AMOUNT = 0.01;
 /** H5 权益页未领取气泡上限；超出后失效 create_time 最早的 pending */
 const MAX_PENDING_INCOME_PACKETS = 50;
-/** 两位小数向上取整（例：13.1501 → 13.16） */
+/** 两位小数向上取整（例：13.1501 → 13.16）；用于最低流水门槛等 */
 function ceilYuan2(raw) {
 	const n = Number(raw || 0);
 	if (!Number.isFinite(n) || n <= 0) return 0;
 	return Math.ceil(n * 100 - 1e-9) / 100;
 }
-/** 权益气泡金额：统一四舍五入到 2 位小数，展示与合计口径一致 */
-function roundPacketAmountYuan(raw) {
+/**
+ * 积分/红包金额：严格向下取整到分（截断，非四舍五入）。
+ * 例：125.22999 → 125.22；0.8189 → 0.81；146.57999999999996 → 146.57
+ */
+function floorYuan2(raw) {
 	const n = Number(raw || 0);
-	if (!Number.isFinite(n)) return 0;
-	return Math.max(0, Math.round(n * 100) / 100);
+	if (!Number.isFinite(n) || n <= 0) return 0;
+	const s = n.toString();
+	if (/e-/i.test(s)) return 0;
+	if (/e\+/i.test(s)) return Math.floor(n * 100) / 100;
+	const dot = s.indexOf('.');
+	if (dot < 0) return n;
+	const dec = s.slice(dot + 1);
+	if (dec.length <= 2) return n;
+	return Number(s.slice(0, dot + 3));
+}
+/** @deprecated 名称保留兼容；口径为向下截断到分，等同 floorYuan2 */
+function roundPacketAmountYuan(raw) {
+	return floorYuan2(raw);
 }
 
 function normalizeOptimizeConfig(oc) {
@@ -83,14 +97,14 @@ function resolveFirstReleaseYuan(amount, releaseAmount, releaseRatio, optimizeCo
 	const installments = resolveInstallmentCount(amt, releaseRatio, optimizeConfig);
 	const minTrade = minSubsidyTradeYuanForInstallments(installments);
 	if (!(amt >= minTrade)) return 0;
-	const expected = Number(((amt * CASHBACK_RATE) / installments).toFixed(4));
+	const expected = floorYuan2((amt * CASHBACK_RATE) / installments);
 	const ra =
 		releaseAmount !== undefined && releaseAmount !== null && releaseAmount !== ''
 			? Number(releaseAmount)
 			: NaN;
-	if (Number.isFinite(ra) && roundPacketAmountYuan(ra) >= MIN_PACKET_AMOUNT) {
+	if (Number.isFinite(ra) && floorYuan2(ra) >= MIN_PACKET_AMOUNT) {
 		if (expected > 0 && ra + 1e-9 < expected * 0.5) return expected;
-		return ra;
+		return floorYuan2(ra);
 	}
 	return expected;
 }
@@ -316,7 +330,7 @@ function buildDeferredSlicesByMonth(trades, nowTs, sliceFlowYuan = 10000, optimi
 				slices[lastIdx] = Number(((slices[lastIdx] || 0) + gap).toFixed(6));
 			}
 		}
-		out[ym] = slices.map((x) => Number(Number(x || 0).toFixed(4)));
+		out[ym] = slices.map((x) => floorYuan2(x));
 	});
 	return out;
 }
@@ -461,7 +475,7 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 				merchant_user_id: merchantUserId,
 				month_no: ym,
 				title: `流水首期补贴 ${tradeNo.slice(-8)}`,
-				amount: Number(firstRelease.toFixed(4)),
+				amount: floorYuan2(firstRelease),
 				status: 'pending',
 				create_time: tradeTs,
 				update_time: nowTs,
@@ -568,6 +582,7 @@ module.exports = {
 	DB_PAGE_SIZE,
 	DB_MAX_ROWS,
 	ceilYuan2,
+	floorYuan2,
 	roundPacketAmountYuan,
 	normalizeOptimizeConfig,
 	minSubsidyTradeYuanForInstallments,
