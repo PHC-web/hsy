@@ -15716,7 +15716,7 @@ async function syncCouponInstancesForMerchant(merchant, now) {
 		}
 		const need = Number(row.monthly_threshold_yuan || 0);
 		if (!(need > 0) || flowThisMonth + 1e-6 < need) continue;
-		const amount = Number(row.reward_yuan || 0);
+		const amount = floorYuan2(row.reward_yuan || 0);
 		if (!(amount >= 0.01)) continue;
 		const dedupKey = `coupon_inst_${row._id}`;
 		const exist = await incomePacketCollection.where({ merchant_user_id: merchantUserId, dedup_key: dedupKey }).limit(1).get();
