@@ -319,7 +319,21 @@ function buildIncomePacketClaimWindow(anchorTs, claimValidMs) {
  * 保持可展示的未领取气泡 ≤ MAX_PENDING_INCOME_PACKETS：
  * 按 create_time 升序，超出部分将最早的标为 expired（先进先失效）。
  */
-async function enforceMaxPendingIncomePackets(db, merchantUserId, nowTs) {
+async function enforceMaxPendingIncomePackets(db, merchantUserId, nowTs, options = {}) {
+	let flowThisMonth = options.flowThisMonth;
+	if (flowThisMonth == null || !Number.isFinite(Number(flowThisMonth))) {
+		flowThisMonth = 0;
+		try {
+			const curYm = monthNoFromTs(nowTs);
+			const { start, end } = monthStartEndTs(curYm);
+			if (start && end) {
+				flowThisMonth = await sumEligibleRealFlowYuan(db, merchantUserId, start, end);
+			}
+		} catch (e) {
+			console.error('enforceMaxPendingIncomePackets flow', e);
+		}
+	}
+	flowThisMonth = Number(flowThisMonth || 0);
 	const allPending = await fetchAllQueryPages(
 		db,
 		'hsy-income-packets',
@@ -331,7 +345,8 @@ async function enforceMaxPendingIncomePackets(db, merchantUserId, nowTs) {
 				subsidy_kind: true,
 				expire_time: true,
 				claim_open_time: true,
-				amount: true
+				amount: true,
+				unlock_flow_yuan: true
 			},
 			orderBy: { field: 'create_time', direction: 'asc' }
 		}
@@ -341,6 +356,8 @@ async function enforceMaxPendingIncomePackets(db, merchantUserId, nowTs) {
 		if (!Number(x.claim_open_time || 0)) return false;
 		if (x.claim_open_time && x.claim_open_time > nowTs) return false;
 		if (roundPacketAmountYuan(x.amount) < MIN_PACKET_AMOUNT) return false;
+		const need = x.unlock_flow_yuan != null ? Number(x.unlock_flow_yuan) : null;
+		if (need != null && Number.isFinite(need) && need > 0 && flowThisMonth + 1e-6 < need) return false;
 		return true;
 	});
 	claimable.sort((a, b) => Number(a.create_time || 0) - Number(b.create_time || 0));

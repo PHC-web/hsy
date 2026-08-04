@@ -987,6 +987,160 @@ async function listMerchants(data) {
 	}
 }
 
+/** 协议图是否为内嵌 base64（会把商户文档撑到数 MB，导致批量查询慢） */
+function isAgreementImgInlineData(raw) {
+	const s = String(raw || '').trim();
+	if (!s) return false;
+	if (/^data:image\//i.test(s)) return true;
+	// 无 data: 前缀的超长 base64（极少见，迁移兜底）
+	if (s.length > 4096 && !/^https?:\/\//i.test(s) && !s.startsWith('cloud://') && /^[A-Za-z0-9+/=\s]+$/.test(s.slice(0, 200))) {
+		return true;
+	}
+	return false;
+}
+
+function isAgreementImgCloudFileId(raw) {
+	return String(raw || '')
+		.trim()
+		.startsWith('cloud://');
+}
+
+function isAgreementImgHttpUrl(raw) {
+	return /^https?:\/\//i.test(String(raw || '').trim());
+}
+
+/**
+ * 解析签署图入参：data URL / 纯 base64 → buffer；cloud:// 或 http(s) → 引用不落库再传。
+ */
+function parseAgreementImageInput(raw) {
+	const s = String(raw || '').trim();
+	if (!s) return { ok: false, message: '协议图片为空' };
+	if (isAgreementImgCloudFileId(s) || isAgreementImgHttpUrl(s)) {
+		return { ok: true, kind: 'ref', ref: s };
+	}
+	let mime = 'image/jpeg';
+	let b64 = '';
+	const dataMatch = s.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]+)$/i);
+	if (dataMatch) {
+		mime = dataMatch[1] || mime;
+		b64 = dataMatch[2] || '';
+	} else if (isAgreementImgInlineData(s)) {
+		b64 = s.replace(/\s+/g, '');
+		mime = 'image/jpeg';
+	} else {
+		return { ok: false, message: '协议图片格式无效，请使用 data URL、云文件或 https 链接' };
+	}
+	b64 = String(b64 || '').replace(/\s+/g, '');
+	if (!b64) return { ok: false, message: '协议图片内容为空' };
+	let buffer;
+	try {
+		buffer = Buffer.from(b64, 'base64');
+	} catch (e) {
+		return { ok: false, message: '协议图片 base64 解码失败' };
+	}
+	if (!buffer || !buffer.length) return { ok: false, message: '协议图片内容为空' };
+	// 防滥用：约 8MB
+	if (buffer.length > 8 * 1024 * 1024) {
+		return { ok: false, message: '协议图片过大（超过 8MB）' };
+	}
+	let ext = 'jpg';
+	if (/png/i.test(mime)) ext = 'png';
+	else if (/webp/i.test(mime)) ext = 'webp';
+	else if (/gif/i.test(mime)) ext = 'gif';
+	return { ok: true, kind: 'buffer', buffer, mime, ext };
+}
+
+async function safeDeleteAgreementCloudFile(fileId) {
+	const id = String(fileId || '').trim();
+	if (!isAgreementImgCloudFileId(id)) return;
+	try {
+		await uniCloud.deleteFile({ fileList: [id] });
+	} catch (e) {
+		console.error('safeDeleteAgreementCloudFile failed', id, e);
+	}
+}
+
+/**
+ * 将签署图落到云存储，库内只存 cloud://fileID（或已有 http(s) URL）。
+ * 避免 agreement_img 内嵌 base64 导致 hsy-merchant-users 文档过大、慢查询。
+ */
+async function persistAgreementImageRef(merchantId, rawImage) {
+	const parsed = parseAgreementImageInput(rawImage);
+	if (!parsed.ok) return { ok: false, message: parsed.message };
+	if (parsed.kind === 'ref') {
+		return { ok: true, ref: parsed.ref, uploaded: false };
+	}
+	const mid = safeText(merchantId, 80) || 'm';
+	const cloudPath = `hsy/agreement/${mid}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${parsed.ext}`;
+	try {
+		const up = await uniCloud.uploadFile({
+			cloudPath,
+			fileContent: parsed.buffer
+		});
+		const fileID = String(up.fileID || up.fileId || '').trim();
+		if (!fileID) return { ok: false, message: '协议图片上传失败（无 fileID）' };
+		return { ok: true, ref: fileID, uploaded: true };
+	} catch (e) {
+		console.error('persistAgreementImageRef upload failed', e);
+		return { ok: false, message: safeText(e?.message || '协议图片上传失败', 160) };
+	}
+}
+
+/** 读路径：cloud:// → 临时 https；data URL / http(s) 原样返回 */
+async function resolveAgreementImgDisplayUrl(raw) {
+	const s = String(raw || '').trim();
+	if (!s) return '';
+	if (/^data:image\//i.test(s) || isAgreementImgHttpUrl(s)) return s;
+	if (!isAgreementImgCloudFileId(s)) return s;
+	try {
+		const tempRes = await uniCloud.getTempFileURL({ fileList: [s] });
+		const item = tempRes.fileList && tempRes.fileList[0];
+		const url = String((item && (item.tempFileURL || item.url)) || '').trim();
+		return url || s;
+	} catch (e) {
+		console.error('resolveAgreementImgDisplayUrl failed', e);
+		return s;
+	}
+}
+
+async function resolveAgreementImgDisplayUrlBatch(rawList) {
+	const list = Array.isArray(rawList) ? rawList : [];
+	const map = new Map();
+	const cloudIds = [];
+	for (const raw of list) {
+		const s = String(raw || '').trim();
+		if (!s) {
+			map.set(raw, '');
+			continue;
+		}
+		if (/^data:image\//i.test(s) || isAgreementImgHttpUrl(s)) {
+			map.set(s, s);
+		} else if (isAgreementImgCloudFileId(s)) {
+			cloudIds.push(s);
+		} else {
+			map.set(s, s);
+		}
+	}
+	const uniq = [...new Set(cloudIds)];
+	for (let i = 0; i < uniq.length; i += 50) {
+		const part = uniq.slice(i, i + 50);
+		try {
+			const tempRes = await uniCloud.getTempFileURL({ fileList: part });
+			for (const item of tempRes.fileList || []) {
+				const fid = String(item.fileID || '').trim();
+				const url = String(item.tempFileURL || item.url || '').trim();
+				if (fid) map.set(fid, url || fid);
+			}
+		} catch (e) {
+			console.error('resolveAgreementImgDisplayUrlBatch failed', e);
+			part.forEach((id) => {
+				if (!map.has(id)) map.set(id, id);
+			});
+		}
+	}
+	return map;
+}
+
 async function fetchAgreementImageDataUrl(imgUrl) {
 	const url = String(imgUrl || '').trim();
 	if (!url) return { ok: false, message: '协议图片地址为空' };
@@ -1010,7 +1164,7 @@ async function fetchAgreementImageDataUrl(imgUrl) {
 		}
 	}
 	if (!/^https?:\/\//i.test(fetchUrl)) {
-		return { ok: false, message: '协议图片地址格式无效，仅支持 https 链接或签署图 data URL' };
+		return { ok: false, message: '协议图片地址格式无效，仅支持 https 链接、云文件或签署图 data URL' };
 	}
 	try {
 		const resp = await uniCloud.httpclient.request(fetchUrl, {
@@ -1045,11 +1199,12 @@ async function merchantAgreementImage(data = {}) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const img = String(merchant.agreement_img || '').trim();
 		if (!img) return { code: 404, message: '该商户未签署协议或签署图片不存在' };
+		const displayUrl = await resolveAgreementImgDisplayUrl(img);
 		const base = {
 			merchantId: merchant._id,
 			wxNickname: safeText(merchant.wx_nickname || '', 60),
 			mobile: safeText(merchant.mobile || '', 20),
-			agreementImg: img,
+			agreementImg: displayUrl || img,
 			agreementSignedAt: formatTime(merchant.agreement_signed_at),
 			agreementSignedIp: safeText(merchant.agreement_signed_ip, 80) || '',
 			agreementSignDevice: safeText(merchant.agreement_sign_device, 320) || ''
@@ -1083,10 +1238,10 @@ async function merchantAgreementImage(data = {}) {
 async function merchantAgreementClear(data = {}, event = {}) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
-		// 清除签署记录不需要拉协议图内容
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
+		const prevImg = String(merchant.agreement_img || '').trim();
 		await merchantCollection.doc(merchant._id).update({
 			agreement_img: '',
 			agreement_signed_at: null,
@@ -1095,6 +1250,7 @@ async function merchantAgreementClear(data = {}, event = {}) {
 			agreement_sign_device: '',
 			update_time: now
 		});
+		await safeDeleteAgreementCloudFile(prevImg);
 		await operationLogCollection.add({
 			user_id: merchant.user_id || merchant._id,
 			user_name: merchant.wx_nickname || merchant.mobile || '商户',
@@ -1767,13 +1923,20 @@ async function simulateRegister(data) {
 		const userId = 'sim_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 		const now = Date.now();
 
+		let agreementImgRef = String(agreement_img || '').trim();
+		if (agreementImgRef && isAgreementImgInlineData(agreementImgRef)) {
+			const persisted = await persistAgreementImageRef(userId, agreementImgRef);
+			if (!persisted.ok) return { code: 500, message: persisted.message || '协议图片上传失败' };
+			agreementImgRef = persisted.ref;
+		}
+
 		const doc = {
 			user_id: userId,
 			device_id: deviceId,
 			mobile: String(mobile || '').trim(),
 			wx_nickname: String(wx_nickname || '').trim() || '模拟用户',
 			wx_avatar: String(wx_avatar || '').trim(),
-			agreement_img: String(agreement_img || '').trim(),
+			agreement_img: agreementImgRef,
 			brand_name: brandName,
 			remaining_quota: 0,
 			pending_withdraw: 0,
@@ -2709,10 +2872,20 @@ function bucketKeyByRange(ts, range) {
 
 /** 与 machine/getCardRecordList 一致：get() 默认仅 100 条，须分页拉全量已绑定机具 */
 const ADMIN_CARD_ALIGN_MACHINE_PAGE = 1000;
-/** 单次 $in 机具数；禁止再用 $or 拼多段 $in（慢查询） */
-const ADMIN_CARD_ALIGN_IN_CHUNK = 300;
-/** 分 chunk 查交易时的并发，避免打爆 DB */
-const ADMIN_CARD_ALIGN_QUERY_CONCURRENCY = 3;
+/** 单次 $in 机具数（非聚合路径）；聚合改为逐机具，避免大 $in 误选 device_id_trade_no */
+const ADMIN_CARD_ALIGN_IN_CHUNK = 80;
+/** 分 chunk 查交易时的并发（非聚合） */
+const ADMIN_CARD_ALIGN_QUERY_CONCURRENCY = 4;
+/** 聚合逐机具并发：单机具等值 + create_time 可稳定走 device_id_create_time */
+const ADMIN_CARD_ALIGN_DEVICE_CONCURRENCY = 12;
+/**
+ * 粉卡对齐优先索引（见 hsy-machine-trades.index.json）。
+ * 大 $in 时优化器仍会选 device_id_trade_no（已建 stats_eligible* 索引也一样），
+ * 故聚合改为单机具等值并行，不依赖 hint。
+ */
+const CARD_ALIGN_TRADE_INDEX_HINT = 'stats_eligible_device_id_create_time';
+/** null | 'chain' | 'none' */
+let _cardAlignTradeHintMode = null;
 
 function adminChunkIdsForIn(arr, chunkSize) {
 	const out = [];
@@ -2758,24 +2931,95 @@ function buildCardAlignTradeCommonParts(_) {
 	];
 }
 
-/** 单 chunk：stats_eligible + device_id $in(chunk) + 公共条件 + extra */
-function buildCardAlignedTradeWhereForChunk(_, deviceChunk, extraAnd = []) {
+/** create_time 条件进索引前缀 match；其余进第二段过滤 match */
+function partitionCardAlignExtras(extraAnd = []) {
+	const timeExtras = [];
+	const otherExtras = [];
+	for (const x of Array.isArray(extraAnd) ? extraAnd : []) {
+		if (!x) continue;
+		if (typeof x === 'object' && x.create_time != null) timeExtras.push(x);
+		else otherExtras.push(x);
+	}
+	return { timeExtras, otherExtras };
+}
+
+/**
+ * 索引前缀：$match 第一段。
+ * - 单机具：stats_eligible + device_id 等值 + create_time → 走 stats_eligible_device_id_create_time
+ * - 多机具 $in：仅作 where/count 兜底（聚合勿用，易误选 device_id_trade_no）
+ */
+function buildCardAlignedTradePrefixWhere(_, deviceChunk, timeExtras = []) {
 	const ids = (Array.isArray(deviceChunk) ? deviceChunk : []).map((x) => String(x || '').trim()).filter(Boolean);
 	if (!ids.length) return null;
-	const parts = [{ stats_eligible: true }, { device_id: _.in(ids) }, ...buildCardAlignTradeCommonParts(_).slice(1)];
-	const extras = (Array.isArray(extraAnd) ? extraAnd : []).filter(Boolean);
-	if (extras.length) parts.push(...extras);
+	const devicePred = ids.length === 1 ? { device_id: ids[0] } : { device_id: _.in(ids) };
+	const parts = [{ stats_eligible: true }, devicePred];
+	let hasCreateTime = false;
+	for (const x of Array.isArray(timeExtras) ? timeExtras : []) {
+		if (!x) continue;
+		parts.push(x);
+		if (x.create_time != null) hasCreateTime = true;
+	}
+	if (!hasCreateTime) {
+		parts.push({ create_time: _.gte(1) });
+	}
 	return parts.length === 1 ? parts[0] : _.and(parts);
 }
 
-async function adminMapCardAlignDeviceChunks(cardBase, worker, concurrency = ADMIN_CARD_ALIGN_QUERY_CONCURRENCY) {
-	const chunks = (cardBase && Array.isArray(cardBase.deviceChunks) ? cardBase.deviceChunks : []).filter(
-		(c) => Array.isArray(c) && c.length
-	);
-	if (!chunks.length) return [];
-	const results = new Array(chunks.length);
+/** 残余过滤（不含 stats_eligible / device_id） */
+function buildCardAlignedTradeFilterWhere(_, otherExtras = []) {
+	const parts = [...buildCardAlignTradeCommonParts(_).slice(1)];
+	for (const x of Array.isArray(otherExtras) ? otherExtras : []) {
+		if (x) parts.push(x);
+	}
+	if (!parts.length) return null;
+	return parts.length === 1 ? parts[0] : _.and(parts);
+}
+
+/** 单 chunk：完整 where（兼容 count/get）；聚合用单机具 + 两段 match */
+function buildCardAlignedTradeWhereForChunk(_, deviceChunk, extraAnd = []) {
+	const { timeExtras, otherExtras } = partitionCardAlignExtras(extraAnd);
+	const prefix = buildCardAlignedTradePrefixWhere(_, deviceChunk, timeExtras);
+	if (!prefix) return null;
+	const filter = buildCardAlignedTradeFilterWhere(_, otherExtras);
+	if (!filter) return prefix;
+	return _.and([prefix, filter]);
+}
+
+function applyCardAlignTradeHintToQuery(query) {
+	if (!query || typeof query.hint !== 'function' || _cardAlignTradeHintMode === 'none') return query;
+	try {
+		const hinted = query.hint(CARD_ALIGN_TRADE_INDEX_HINT);
+		if (_cardAlignTradeHintMode == null) _cardAlignTradeHintMode = 'chain';
+		return hinted || query;
+	} catch (e) {
+		console.warn('[cardAlign] query.hint failed', String(e && e.message ? e.message : e).slice(0, 120));
+		return query;
+	}
+}
+
+/**
+ * 粉卡对齐聚合：两段 $match。
+ * 调用方应传单机具数组 [deviceId]，避免大 $in。
+ */
+async function runMachineTradeAggregateCardAligned(deviceChunk, extraAnd, buildStages) {
+	const _ = db.command;
+	const { timeExtras, otherExtras } = partitionCardAlignExtras(extraAnd);
+	const prefix = buildCardAlignedTradePrefixWhere(_, deviceChunk, timeExtras);
+	if (!prefix) return { data: [] };
+	const filter = buildCardAlignedTradeFilterWhere(_, otherExtras);
+
+	let agg = machineTradeCollection.aggregate().match(prefix);
+	if (filter) agg = agg.match(filter);
+	if (typeof buildStages === 'function') agg = buildStages(agg) || agg;
+	return agg.end();
+}
+
+async function adminMapPool(items, worker, concurrency) {
+	const list = Array.isArray(items) ? items : [];
+	if (!list.length) return [];
+	const results = new Array(list.length);
 	let cursor = 0;
-	const limit = Math.max(1, Math.min(Number(concurrency) || 1, chunks.length));
+	const limit = Math.max(1, Math.min(Number(concurrency) || 1, list.length));
 	const runners = [];
 	for (let c = 0; c < limit; c += 1) {
 		runners.push(
@@ -2783,14 +3027,40 @@ async function adminMapCardAlignDeviceChunks(cardBase, worker, concurrency = ADM
 				for (;;) {
 					const idx = cursor;
 					cursor += 1;
-					if (idx >= chunks.length) break;
-					results[idx] = await worker(chunks[idx], idx);
+					if (idx >= list.length) break;
+					results[idx] = await worker(list[idx], idx);
 				}
 			})()
 		);
 	}
 	await Promise.all(runners);
 	return results;
+}
+
+async function adminMapCardAlignDeviceChunks(cardBase, worker, concurrency = ADMIN_CARD_ALIGN_QUERY_CONCURRENCY) {
+	const chunks = (cardBase && Array.isArray(cardBase.deviceChunks) ? cardBase.deviceChunks : []).filter(
+		(c) => Array.isArray(c) && c.length
+	);
+	return adminMapPool(chunks, worker, concurrency);
+}
+
+/** 展开为单机具列表并并行（聚合专用） */
+function adminFlattenCardAlignDeviceIds(cardBase) {
+	const out = [];
+	const seen = new Set();
+	for (const chunk of (cardBase && cardBase.deviceChunks) || []) {
+		for (const d of chunk || []) {
+			const id = String(d || '').trim();
+			if (!id || seen.has(id)) continue;
+			seen.add(id);
+			out.push(id);
+		}
+	}
+	return out;
+}
+
+async function adminMapCardAlignDevices(cardBase, worker, concurrency = ADMIN_CARD_ALIGN_DEVICE_CONCURRENCY) {
+	return adminMapPool(adminFlattenCardAlignDeviceIds(cardBase), worker, concurrency);
 }
 
 /**
@@ -2825,44 +3095,53 @@ async function buildCardRecordAlignedTradeBaseWhere(_) {
 }
 
 async function adminSumTradeAmountCardAligned(cardBase, extraAnd = []) {
-	const _ = db.command;
+	const $ = db.command.aggregate;
 	if (!cardBase || !cardBase.ok) return 0;
-	const parts = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
-		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
-		return where ? await adminSumTradeAmountWhere(where) : 0;
+	const parts = await adminMapCardAlignDevices(cardBase, async (deviceId) => {
+		try {
+			const agg = await runMachineTradeAggregateCardAligned([deviceId], extraAnd, (pipe) =>
+				pipe.group({ _id: null, total: $.sum('$amount') })
+			);
+			return Number((((agg.data || [])[0] || {}).total || 0));
+		} catch (e) {
+			console.error('adminSumTradeAmountCardAligned device', deviceId, e);
+			return 0;
+		}
 	});
 	const sum = (parts || []).reduce((s, n) => s + Number(n || 0), 0);
 	return Number(sum.toFixed(2));
 }
 
 async function adminCountTradesCardAligned(cardBase, extraAnd = []) {
-	const _ = db.command;
+	const $ = db.command.aggregate;
 	if (!cardBase || !cardBase.ok) return 0;
-	const parts = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
-		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
-		return where ? await adminCountTradesWhere(where) : 0;
+	const parts = await adminMapCardAlignDevices(cardBase, async (deviceId) => {
+		try {
+			const agg = await runMachineTradeAggregateCardAligned([deviceId], extraAnd, (pipe) =>
+				pipe.group({ _id: null, count: $.sum(1) })
+			);
+			return Number((((agg.data || [])[0] || {}).count || 0));
+		} catch (e) {
+			console.error('adminCountTradesCardAligned device', deviceId, e);
+			return 0;
+		}
 	});
 	return (parts || []).reduce((s, n) => s + Number(n || 0), 0);
 }
 
-/** 按 trade_member_bucket 分桶求和（分 chunk 聚合后合并） */
+/** 按 trade_member_bucket 分桶求和（逐机具聚合后合并） */
 async function adminSumTradeAmountByBucketCardAligned(cardBase, extraAnd = []) {
-	const _ = db.command;
 	const $ = db.command.aggregate;
 	const byBucket = Object.create(null);
 	if (!cardBase || !cardBase.ok) return { total: 0, byBucket, rows: [] };
-	const chunkRows = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
-		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
-		if (!where) return [];
+	const chunkRows = await adminMapCardAlignDevices(cardBase, async (deviceId) => {
 		try {
-			const agg = await machineTradeCollection
-				.aggregate()
-				.match(where)
-				.group({ _id: '$trade_member_bucket', total: $.sum('$amount') })
-				.end();
+			const agg = await runMachineTradeAggregateCardAligned([deviceId], extraAnd, (pipe) =>
+				pipe.group({ _id: '$trade_member_bucket', total: $.sum('$amount') })
+			);
 			return agg.data || [];
 		} catch (e) {
-			console.error('adminSumTradeAmountByBucketCardAligned chunk', e);
+			console.error('adminSumTradeAmountByBucketCardAligned device', deviceId, e);
 			return [];
 		}
 	});
@@ -2917,12 +3196,9 @@ async function adminForEachTradeRowPaged(where, field, onBatch) {
 							_.and([{ create_time: cursorTs }, { _id: _.gt(cursorId) }])
 						])
 					]);
-		const r = await machineTradeCollection
-			.where(pageWhere)
-			.field(fieldWithMeta)
-			.orderBy('create_time', 'asc')
-			.limit(ADMIN_TREND_TRADE_PAGE)
-			.get();
+		let q = machineTradeCollection.where(pageWhere).field(fieldWithMeta).orderBy('create_time', 'asc');
+		q = applyCardAlignTradeHintToQuery(q);
+		const r = await q.limit(ADMIN_TREND_TRADE_PAGE).get();
 		const rows = r.data || [];
 		if (rows.length) {
 			onBatch(rows);
@@ -2938,30 +3214,26 @@ async function adminForEachTradeRowPaged(where, field, onBatch) {
 }
 
 /**
- * 按 trade_type + paychannel 聚合（分 device chunk），供首页趋势 allTime / 区间统计，避免拉全量行。
+ * 按 trade_type + paychannel 聚合（逐机具并行），供首页趋势 allTime / 区间统计。
+ * 单机具等值可走 stats_eligible_device_id_create_time；大 $in 即使用该索引也会被优化器丢掉。
  * @returns {{ totalAmount: number, totalCount: number, rows: Array<{trade_type, paychannel, count, amount}> }}
  */
 async function adminAggregateTradeTypeStatsCardAligned(cardBase, extraAnd = []) {
-	const _ = db.command;
 	const $ = db.command.aggregate;
 	const empty = { totalAmount: 0, totalCount: 0, rows: [] };
 	if (!cardBase || !cardBase.ok) return empty;
-	const chunkRows = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
-		const where = buildCardAlignedTradeWhereForChunk(_, chunk, extraAnd);
-		if (!where) return [];
+	const chunkRows = await adminMapCardAlignDevices(cardBase, async (deviceId) => {
 		try {
-			const agg = await machineTradeCollection
-				.aggregate()
-				.match(where)
-				.group({
+			const agg = await runMachineTradeAggregateCardAligned([deviceId], extraAnd, (pipe) =>
+				pipe.group({
 					_id: { trade_type: '$trade_type', paychannel: '$paychannel' },
 					count: $.sum(1),
 					amount: $.sum('$amount')
 				})
-				.end();
+			);
 			return agg.data || [];
 		} catch (e) {
-			console.error('adminAggregateTradeTypeStatsCardAligned chunk', e);
+			console.error('adminAggregateTradeTypeStatsCardAligned device', deviceId, e);
 			return [];
 		}
 	});
@@ -3044,13 +3316,9 @@ async function adminAggregateTrendBucketTradeStatsCardAligned(cardBase, range, n
 	let usedDateGroup = false;
 	if (cardBase && cardBase.ok && keys.length) {
 		try {
-			const chunkRows = await adminMapCardAlignDeviceChunks(cardBase, async (chunk) => {
-				const where = buildCardAlignedTradeWhereForChunk(_, chunk, rangeExtra);
-				if (!where) return [];
-				const agg = await machineTradeCollection
-					.aggregate()
-					.match(where)
-					.group({
+			const chunkRows = await adminMapCardAlignDevices(cardBase, async (deviceId) => {
+				const agg = await runMachineTradeAggregateCardAligned([deviceId], rangeExtra, (pipe) =>
+					pipe.group({
 						_id: {
 							bucket: $.dateToString({
 								format: dateFormat,
@@ -3063,7 +3331,7 @@ async function adminAggregateTrendBucketTradeStatsCardAligned(cardBase, range, n
 						count: $.sum(1),
 						amount: $.sum('$amount')
 					})
-					.end();
+				);
 				return agg.data || [];
 			});
 			for (const rows of chunkRows || []) {
@@ -3128,7 +3396,9 @@ async function adminAggregateTrendBucketTradeStatsCardAligned(cardBase, range, n
 
 async function adminCountTradesWhere(where) {
 	if (!where) return 0;
-	const res = await machineTradeCollection.where(where).count();
+	let q = machineTradeCollection.where(where);
+	q = applyCardAlignTradeHintToQuery(q);
+	const res = await q.count();
 	return Number(res.total || res.result?.total || 0);
 }
 
@@ -3136,12 +3406,16 @@ async function adminSumTradeAmountWhere(where) {
 	if (!where) return 0;
 	const $ = db.command.aggregate;
 	try {
-		const agg = await machineTradeCollection
-			.aggregate()
-			.match(where)
-			.group({ _id: null, total: $.sum('$amount') })
-			.end();
-		return Number(Number((((agg.data || [])[0] || {}).total || 0)).toFixed(2));
+		let agg = machineTradeCollection.aggregate();
+		if (typeof agg.hint === 'function' && _cardAlignTradeHintMode !== 'none') {
+			try {
+				agg = agg.hint(CARD_ALIGN_TRADE_INDEX_HINT);
+			} catch (e) {
+				/* ignore */
+			}
+		}
+		const aggRes = await agg.match(where).group({ _id: null, total: $.sum('$amount') }).end();
+		return Number(Number((((aggRes.data || [])[0] || {}).total || 0)).toFixed(2));
 	} catch (e) {
 		console.error('adminSumTradeAmountWhere failed', e);
 		return 0;
@@ -3661,7 +3935,11 @@ async function backfillWithdrawMemberBucketChunk(limit = 160) {
 	}
 }
 
-/** 控制台首页：历史刷卡流水回填 trade_member_bucket（按商户当前身份；新流水在落库时已写入） */
+/**
+ * 历史刷卡流水回填 trade_member_bucket（按商户当前身份；新流水在落库时已写入）。
+ * 仅手动 adminHomeBackfillBuckets / 后台任务调用；勿挂首页热路径。
+ * 逐机具等值查询，避免大 $in 误选 device_id_trade_no 空扫数万行。
+ */
 async function backfillTradeMemberBucketChunk(limit = 200) {
 	const _ = db.command;
 	try {
@@ -3675,16 +3953,24 @@ async function backfillTradeMemberBucketChunk(limit = 200) {
 			])
 		];
 		const rows = [];
-		for (const chunk of cardBase.deviceChunks || []) {
+		const deviceIds = adminFlattenCardAlignDeviceIds(cardBase);
+		let emptyStreak = 0;
+		for (const deviceId of deviceIds) {
 			if (rows.length >= needLimit) break;
-			const where = buildCardAlignedTradeWhereForChunk(_, chunk, bucketMissExtra);
+			// 连续多台无缺失且尚未捞到任何行：视为回填已基本完成，停止空扫
+			if (!rows.length && emptyStreak >= 50) break;
+			const where = buildCardAlignedTradeWhereForChunk(_, [deviceId], bucketMissExtra);
 			if (!where) continue;
-			const res = await machineTradeCollection
-				.where(where)
-				.field({ user_id: true })
-				.limit(needLimit - rows.length)
-				.get();
-			for (const r of res.data || []) rows.push(r);
+			let q = machineTradeCollection.where(where).field({ user_id: true });
+			q = applyCardAlignTradeHintToQuery(q);
+			const res = await q.limit(needLimit - rows.length).get();
+			const batch = res.data || [];
+			if (!batch.length) {
+				emptyStreak += 1;
+				continue;
+			}
+			emptyStreak = 0;
+			for (const r of batch) rows.push(r);
 		}
 		if (!rows.length) return 0;
 		const uids = [...new Set(rows.map((r) => String(r.user_id || '').trim()).filter(Boolean))];
@@ -3974,12 +4260,11 @@ async function adminHomeSummary(data = {}) {
 		]);
 		const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
 
-		// 轻量回填缺失分桶，避免「已提现 ≠ 会员+非会员」
+		// 提现分桶可轻量补；刷卡 trade_member_bucket 回填勿走热路径（大 $in 易慢查），用 adminHomeBackfillBuckets
 		try {
 			await backfillWithdrawMemberBucketChunk(200);
-			await backfillTradeMemberBucketChunk(200);
 		} catch (eBf) {
-			console.error('adminHomeSummary backfill', eBf);
+			console.error('adminHomeSummary withdraw backfill', eBf);
 		}
 
 		const rechargeMatch = _.and([
@@ -8602,7 +8887,7 @@ async function upsertMerchantByAuth(profile) {
 
 /**
  * 按 _id / user_id / mobile / 设备号 查商户。
- * 默认不返回 agreement_img（签名图常为 base64，单文档可达数 MB，会拖慢几乎所有登录/鉴权查询）。
+ * 默认不返回 agreement_img（历史 base64 单文档可达数 MB；新签署存 cloud://，仍建议按需拉取）。
  * 需要协议图时传 { includeAgreementImg: true }。
  */
 async function getMerchantByIdOrUserId(key, options = {}) {
@@ -10012,11 +10297,12 @@ async function h5AgreementSignedSnapshot(data) {
 		const img = String(merchant.agreement_img || '').trim();
 		const agreementSigned =
 			!!img || Number(merchant.agreement_signed_at || 0) > 0;
+		const displayUrl = img ? await resolveAgreementImgDisplayUrl(img) : '';
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
-				agreementImg: img,
+				agreementImg: displayUrl || img,
 				agreementSigned,
 				agreementSignedAt: formatTime(merchant.agreement_signed_at),
 				needSign
@@ -11770,25 +12056,35 @@ async function h5SignAgreement(data, event = {}) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const signatureImage = String(data?.signatureImage || '').trim();
 		if (!signatureImage) return { code: 400, message: '请先签名' };
-		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		// 需读旧图以便覆盖签署时删除云文件；默认投影会排除 agreement_img
+		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const persisted = await persistAgreementImageRef(merchant._id, signatureImage);
+		if (!persisted.ok) return { code: 500, message: persisted.message || '协议图片上传失败' };
+		const agreementImgRef = persisted.ref;
 		const curAgreement = await getCurrentAgreement();
 		const agreementVersion = safeText(data?.agreementVersion || curAgreement?.version || 'legacy', 40);
 		const now = nowTs();
 		const agreementSignedIp = resolveAgreementSignClientIp(event, data);
 		const agreementSignDevice = buildAgreementSignDeviceRecord(data);
+		const prevImg = String(merchant.agreement_img || '').trim();
 		await merchantCollection.doc(merchant._id).update({
-			agreement_img: signatureImage,
+			agreement_img: agreementImgRef,
 			agreement_signed_at: now,
 			agreement_version: agreementVersion,
 			agreement_signed_ip: agreementSignedIp,
-			agreement_sign_device: agreementSignDevice
+			agreement_sign_device: agreementSignDevice,
+			update_time: now
 		});
+		if (prevImg && prevImg !== agreementImgRef && isAgreementImgCloudFileId(prevImg)) {
+			await safeDeleteAgreementCloudFile(prevImg);
+		}
+		const displayUrl = await resolveAgreementImgDisplayUrl(agreementImgRef);
 		return {
 			code: 0,
 			message: '签署成功',
 			data: {
-				agreementImg: signatureImage,
+				agreementImg: displayUrl || agreementImgRef,
 				agreementSignedAt: now,
 				agreementSignedIp: agreementSignedIp,
 				agreementSignDevice: agreementSignDevice
@@ -15692,16 +15988,30 @@ async function h5IncomeList(data) {
 					status: true,
 					create_time: true,
 					expire_time: true,
-					claim_open_time: true
+					claim_open_time: true,
+					unlock_flow_yuan: true
 				},
 				orderBy: { field: 'create_time', direction: 'desc' }
 			}
 		);
+		const curYm = subsidyEngine.monthNoFromTs(now);
+		const { start: curStart, end: curEnd } = subsidyEngine.monthStartEndTs(curYm);
+		let flowThisMonth = 0;
+		if (curStart && curEnd) {
+			try {
+				flowThisMonth = await subsidyEngine.sumEligibleRealFlowYuan(db, merchantUserId, curStart, curEnd);
+			} catch (e) {
+				console.error('h5IncomeList sumEligibleRealFlowYuan', e);
+			}
+		}
 		const pendingRows = allPending.filter((x) => {
 			if (x.expire_time && x.expire_time < now) return false;
 			if (!Number(x.claim_open_time || 0)) return false;
 			if (x.claim_open_time && x.claim_open_time > now) return false;
 			if (subsidyEngine.roundPacketAmountYuan(x.amount) < 0.01) return false;
+			// 与 claimPackets 一致：分期待返需本月流水达到 unlock_flow_yuan 才可展示/领取
+			const need = x.unlock_flow_yuan != null ? Number(x.unlock_flow_yuan) : null;
+			if (need != null && Number.isFinite(need) && need > 0 && flowThisMonth + 1e-6 < need) return false;
 			return true;
 		});
 		// syncSubsidyPackets 已按上限失效最早的；此处再截断，保证气泡最多 50 个
@@ -15801,14 +16111,49 @@ async function h5IncomeList(data) {
 
 async function claimPackets(merchant, packetIds) {
 	const ids = Array.isArray(packetIds) ? packetIds.filter(Boolean).map(String) : [];
-	if (!ids.length) return { claimedCount: 0, claimedAmount: 0 };
+	if (!ids.length) {
+		return { claimedCount: 0, claimedAmount: 0, failReason: 'missing_id', failMessage: '缺少红包标识' };
+	}
 	const now = nowTs();
 	const merchantUserId = merchant.user_id || merchant._id;
-	const res = await incomePacketCollection
-		.where({ _id: db.command.in(ids), merchant_user_id: merchantUserId, status: 'pending', is_deleted: false })
-		.limit(Math.min(ids.length, subsidyEngine.DB_PAGE_SIZE))
-		.get();
-	const rows = res.data || [];
+	// 单条优先 doc 读取，避免 _id $in + 其它条件偶发查不到
+	let rows = [];
+	if (ids.length === 1) {
+		try {
+			const one = await incomePacketCollection.doc(ids[0]).get();
+			const doc = one.data && one.data[0] ? one.data[0] : null;
+			if (
+				doc &&
+				String(doc.merchant_user_id || '') === String(merchantUserId) &&
+				String(doc.status || '') === 'pending' &&
+				doc.is_deleted !== true
+			) {
+				rows = [doc];
+			}
+		} catch (e) {
+			console.error('claimPackets doc get', e);
+		}
+	}
+	if (!rows.length) {
+		const res = await incomePacketCollection
+			.where({
+				_id: db.command.in(ids),
+				merchant_user_id: merchantUserId,
+				status: 'pending',
+				is_deleted: false
+			})
+			.limit(Math.min(ids.length, subsidyEngine.DB_PAGE_SIZE))
+			.get();
+		rows = res.data || [];
+	}
+	if (!rows.length) {
+		return {
+			claimedCount: 0,
+			claimedAmount: 0,
+			failReason: 'not_found',
+			failMessage: '红包不存在、已领取或不属于当前商户'
+		};
+	}
 	const curYm = subsidyEngine.monthNoFromTs(now);
 	const { start: curStart, end: curEnd } = subsidyEngine.monthStartEndTs(curYm);
 	let flowThisMonth = 0;
@@ -15821,12 +16166,25 @@ async function claimPackets(merchant, packetIds) {
 	}
 	let claimedAmount = 0;
 	const claimedIds = [];
+	let blockedUnlock = 0;
+	let blockedNotOpen = 0;
+	let blockedExpired = 0;
+	let minUnlockNeed = null;
 	for (const row of rows) {
-		if (row.expire_time && row.expire_time < now) continue;
-		if (!Number(row.claim_open_time || 0)) continue;
-		if (row.claim_open_time && row.claim_open_time > now) continue;
+		if (row.expire_time && row.expire_time < now) {
+			blockedExpired += 1;
+			continue;
+		}
+		if (!Number(row.claim_open_time || 0) || (row.claim_open_time && row.claim_open_time > now)) {
+			blockedNotOpen += 1;
+			continue;
+		}
 		const need = row.unlock_flow_yuan != null ? Number(row.unlock_flow_yuan) : null;
-		if (need != null && Number.isFinite(need) && flowThisMonth + 1e-6 < need) continue;
+		if (need != null && Number.isFinite(need) && need > 0 && flowThisMonth + 1e-6 < need) {
+			blockedUnlock += 1;
+			if (minUnlockNeed == null || need < minUnlockNeed) minUnlockNeed = need;
+			continue;
+		}
 		const amt = subsidyEngine.roundPacketAmountYuan(row.amount);
 		if (amt < 0.01) continue;
 		claimedAmount += amt;
@@ -15859,15 +16217,44 @@ async function claimPackets(merchant, packetIds) {
 		const boundMachines = await listBoundMachinesByMerchant(merchant);
 		const m = pickPrimaryBoundMachine(merchant, boundMachines);
 		if (m) {
-			// 领取进待提现：机具 pending 增加；冻结一律全量重算（首期领取会抬冻结，分期待返领取后理论仍按「未到期月」计）
 			await machineCollection.doc(m._id).update({
 				pending_amount: Number((Number(m.pending_amount || 0) + claimedAmount).toFixed(4))
 			});
 		}
-		// 首期领取后生成冻结、首期以外领取后刷新口径，统一全量重算商户+主绑机具
 		await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
+		return {
+			claimedCount: claimedIds.length,
+			claimedAmount: subsidyEngine.roundPacketAmountYuan(claimedAmount),
+			flowThisMonth
+		};
 	}
-	return { claimedCount: claimedIds.length, claimedAmount: subsidyEngine.roundPacketAmountYuan(claimedAmount) };
+	let failReason = 'blocked';
+	let failMessage = '红包暂不可领取';
+	if (blockedUnlock) {
+		failReason = 'unlock_flow';
+		const needText =
+			minUnlockNeed != null ? Number(minUnlockNeed).toFixed(0) : '';
+		const flowText = Number(flowThisMonth || 0).toFixed(2);
+		failMessage = needText
+			? `需本月刷卡流水满 ${needText} 元才可领取（当前约 ${flowText} 元）`
+			: `需本月刷卡流水达到解锁条件才可领取（当前约 ${flowText} 元）`;
+	} else if (blockedExpired) {
+		failReason = 'expired';
+		failMessage = '红包已过期';
+	} else if (blockedNotOpen) {
+		failReason = 'not_open';
+		failMessage = '红包尚未到可领取时间';
+	}
+	return {
+		claimedCount: 0,
+		claimedAmount: 0,
+		failReason,
+		failMessage,
+		flowThisMonth,
+		blockedUnlock,
+		blockedExpired,
+		blockedNotOpen
+	};
 }
 
 async function h5IncomeClaim(data) {
@@ -15878,7 +16265,16 @@ async function h5IncomeClaim(data) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const result = await claimPackets(merchant, [packetId]);
-		if (!result.claimedCount) return { code: 400, message: '红包已被领取或不存在' };
+		if (!result.claimedCount) {
+			return {
+				code: 400,
+				message: result.failMessage || '红包已被领取或不存在',
+				data: {
+					failReason: result.failReason || '',
+					flowThisMonth: result.flowThisMonth
+				}
+			};
+		}
 		return { code: 0, message: '领取成功', data: result };
 	} catch (e) {
 		console.error('h5IncomeClaim failed', e);
@@ -17670,6 +18066,142 @@ async function adminLoginTimeBackfillFromLastClaim(data = {}, event = {}) {
 	}
 }
 
+/**
+ * 存量：把 hsy-merchant-users.agreement_img 内嵌 base64 迁到云存储，库内只留 cloud://fileID。
+ * 控制台分批：dryRun 预览 → apply 写库，用 nextCursor 续跑。建议 chunkSize≤10（单文档可达数 MB）。
+ */
+async function adminAgreementImgMigrateToCloud(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 8), 1), 30);
+		const cursorId = safeText(data?.cursorId || data?.cursor || '', 80);
+		const onlyUid = safeText(data?.merchantUserId || data?.userId || data?.merchantId || '', 80);
+		const now = nowTs();
+		const _ = db.command;
+
+		let rows = [];
+		if (onlyUid) {
+			const m = await getMerchantByIdOrUserId(onlyUid, { includeAgreementImg: true });
+			if (!m) return { code: 404, message: '商户不存在' };
+			rows = [m];
+		} else {
+			const parts = [{ agreement_img: new RegExp('^data:image/', 'i') }];
+			if (cursorId) parts.push({ _id: _.gt(cursorId) });
+			const where = parts.length === 1 ? parts[0] : _.and(parts);
+			const res = await merchantCollection
+				.where(where)
+				.field({
+					_id: true,
+					user_id: true,
+					wx_nickname: true,
+					mobile: true,
+					agreement_img: true
+				})
+				.orderBy('_id', 'asc')
+				.limit(chunkSize)
+				.get();
+			rows = res.data || [];
+		}
+
+		let scanned = 0;
+		let updated = 0;
+		let skippedOk = 0;
+		let skippedEmpty = 0;
+		let failed = 0;
+		const samples = [];
+		const errors = [];
+
+		for (const row of rows) {
+			scanned += 1;
+			const img = String(row.agreement_img || '').trim();
+			if (!img) {
+				skippedEmpty += 1;
+				continue;
+			}
+			if (isAgreementImgCloudFileId(img) || isAgreementImgHttpUrl(img)) {
+				skippedOk += 1;
+				continue;
+			}
+			if (!isAgreementImgInlineData(img)) {
+				skippedOk += 1;
+				continue;
+			}
+
+			const prevBytes = Buffer.byteLength(img, 'utf8');
+			if (!(apply && !dryRun)) {
+				updated += 1;
+				if (samples.length < 12) {
+					samples.push({
+						_id: row._id,
+						user_id: row.user_id || '',
+						nickname: row.wx_nickname || '',
+						prevBytes,
+						newRef: '(dry-run)',
+						uploaded: false
+					});
+				}
+				continue;
+			}
+
+			const persisted = await persistAgreementImageRef(row._id, img);
+			if (!persisted.ok) {
+				failed += 1;
+				if (errors.length < 10) {
+					errors.push({
+						_id: row._id,
+						user_id: row.user_id || '',
+						message: persisted.message || 'upload failed'
+					});
+				}
+				continue;
+			}
+
+			await merchantCollection.doc(row._id).update({
+				agreement_img: persisted.ref,
+				update_time: now
+			});
+
+			updated += 1;
+			if (samples.length < 12) {
+				samples.push({
+					_id: row._id,
+					user_id: row.user_id || '',
+					nickname: row.wx_nickname || '',
+					prevBytes,
+					newRef: persisted.ref,
+					uploaded: !!persisted.uploaded
+				});
+			}
+		}
+
+		const nextCursor = onlyUid ? '' : rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = onlyUid ? true : rows.length < chunkSize;
+		return {
+			code: 0,
+			message: apply && !dryRun ? 'ok' : 'dry-run 完成（未写库）',
+			data: {
+				dryRun: !(apply && !dryRun),
+				apply: !!(apply && !dryRun),
+				chunkSize,
+				scanned,
+				updated,
+				skippedOk,
+				skippedEmpty,
+				failed,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				errors,
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminAgreementImgMigrateToCloud failed', e);
+		return { code: 500, message: safeText(e?.message || '协议图迁移失败', 180) };
+	}
+}
+
 async function feedbackFindOpenTicket(merchantId) {
 	const r = await feedbackTicketCollection
 		.where({ merchant_id: merchantId, status: 'open', is_deleted: false })
@@ -19253,6 +19785,8 @@ exports.main = async (event, context) => {
 			return await adminSilverMembersQuotaRecalcByWithdrawn(actualData, event);
 		case 'adminLoginTimeBackfillFromLastClaim':
 			return await adminLoginTimeBackfillFromLastClaim(actualData, event);
+		case 'adminAgreementImgMigrateToCloud':
+			return await adminAgreementImgMigrateToCloud(actualData, event);
 		case 'rechargeGiftShipmentList':
 			return await rechargeGiftShipmentList(actualData);
 		case 'rechargeGiftShipmentUpdate':

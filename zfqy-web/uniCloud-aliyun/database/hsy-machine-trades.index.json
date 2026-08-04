@@ -82,5 +82,22 @@
 			],
 			"MgoIsUnique": false
 		}
+	},
+	{
+		"IndexName": "stats_eligible_device_id",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "stats_eligible",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "device_id",
+					"Direction": "1"
+				}
+			],
+			"MgoIsUnique": false
+		}
 	}
 ]

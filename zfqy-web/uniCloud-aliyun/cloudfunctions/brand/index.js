@@ -352,6 +352,27 @@ async function agreementSignList(data) {
 		const total = rows.length;
 		const start = (page - 1) * pageSize;
 		const list = rows.slice(start, start + pageSize);
+		// 当前页 cloud:// 转临时 https，兼容旧 base64 / http(s)
+		const cloudIds = list
+			.map((x) => String(x.signImage || '').trim())
+			.filter((s) => s.startsWith('cloud://'));
+		if (cloudIds.length) {
+			try {
+				const tempRes = await uniCloud.getTempFileURL({ fileList: [...new Set(cloudIds)] });
+				const urlMap = new Map();
+				for (const f of tempRes.fileList || []) {
+					const fid = String(f.fileID || '').trim();
+					const url = String(f.tempFileURL || f.url || '').trim();
+					if (fid && url) urlMap.set(fid, url);
+				}
+				list.forEach((x) => {
+					const s = String(x.signImage || '').trim();
+					if (urlMap.has(s)) x.signImage = urlMap.get(s);
+				});
+			} catch (e) {
+				console.error('agreementSignList getTempFileURL failed', e);
+			}
+		}
 		return {
 			code: 0,
 			message: '获取成功',
