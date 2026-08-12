@@ -801,6 +801,17 @@ export default {
 					uni.showToast({ title: '协议图片不存在', icon: 'none' });
 					return;
 				}
+				// 历史 PDF 签署应由服务端转成图片；若仍是 PDF 链接则拒绝打开，避免浏览器直接下载
+				if (
+					ret.data?.agreementImgIsPdf === true ||
+					/\.pdf($|\?|#)/i.test(url)
+				) {
+					uni.showToast({
+						title: '签署文件格式异常，请清除后让商户重新签署',
+						icon: 'none'
+					});
+					return;
+				}
 				this.agreementPreviewMode = true;
 				this.agreementPreviewMerchant = {
 					id: item.id,

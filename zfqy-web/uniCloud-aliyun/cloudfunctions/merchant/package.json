@@ -1,6 +1,8 @@
 {
   "name": "merchant",
   "dependencies": {
+    "@hyzyla/pdfium": "^2.1.13",
+    "jimp": "^0.22.12",
     "uni-id-common": "file:../../../uni_modules/uni-id-common/uniCloud/cloudfunctions/common/uni-id-common"
   },
   "extensions": {

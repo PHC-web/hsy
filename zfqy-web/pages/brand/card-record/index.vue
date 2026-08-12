@@ -266,29 +266,44 @@ export default {
 		},
 		search() {
 			const form = this.buildListPayload();
+			const reqId = (this._cardListReqId = (this._cardListReqId || 0) + 1);
 			this.loading = true;
-			this.$request(
-				'cardRecordList',
-				{
-					page: this.pageInfo.currentPage,
-					pageSize: this.pageInfo.pageSize,
-					...form
-				},
-				{ functionName: 'machine' }
-			)
+			const listPayload = {
+				page: this.pageInfo.currentPage,
+				pageSize: this.pageInfo.pageSize,
+				includeStats: false,
+				...form
+			};
+			const statsPayload = {
+				page: 1,
+				pageSize: 1,
+				includeList: false,
+				includeStats: true,
+				...form
+			};
+			this.$request('cardRecordList', listPayload, { functionName: 'machine' })
 				.then((res) => {
+					if (reqId !== this._cardListReqId) return;
 					this.loading = false;
 					if (res.code === 0) {
 						this.list = res.data && res.data.list ? res.data.list : [];
-						this.pageInfo.total = (res.data && res.data.total) || 0;
-						this.totalAmount = (res.data && res.data.totalAmount) || 0;
 					} else {
 						uni.showToast({ title: res.message || '获取失败', icon: 'none' });
 					}
 				})
 				.catch(() => {
+					if (reqId !== this._cardListReqId) return;
 					this.loading = false;
 				});
+			this.$request('cardRecordList', statsPayload, { functionName: 'machine' })
+				.then((res) => {
+					if (reqId !== this._cardListReqId) return;
+					if (res.code === 0) {
+						this.pageInfo.total = (res.data && res.data.total) || 0;
+						this.totalAmount = (res.data && res.data.totalAmount) || 0;
+					}
+				})
+				.catch(() => {});
 		},
 		runSearchFromHeader() {
 			this.pageInfo.currentPage = 1;

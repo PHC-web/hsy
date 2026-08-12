@@ -103,8 +103,10 @@ async function batchSumRefundedByOriginalTradeNos(tradeNos) {
 	const _ = db.command;
 	const pageSize = 1000;
 	let skip = 0;
+	// 依赖索引 refund_of_trade_no_is_refund；无索引时会 COLLSCAN 全表（~9 万 doc）
+	const REFUND_SUM_INDEX_HINT = 'refund_of_trade_no_is_refund';
 	for (let guard = 0; guard < 20; guard += 1) {
-		const res = await tradeCollection
+		let q = tradeCollection
 			.where({
 				refund_of_trade_no: _.in(nos),
 				is_refund: true,
@@ -112,8 +114,15 @@ async function batchSumRefundedByOriginalTradeNos(tradeNos) {
 			})
 			.field({ refund_of_trade_no: true, amount: true })
 			.skip(skip)
-			.limit(pageSize)
-			.get();
+			.limit(pageSize);
+		if (typeof q.hint === 'function') {
+			try {
+				q = q.hint(REFUND_SUM_INDEX_HINT) || q;
+			} catch (e) {
+				/* index 未建好时忽略 hint */
+			}
+		}
+		const res = await q.get();
 		const rows = res.data || [];
 		for (const row of rows) {
 			const key = String(row.refund_of_trade_no || '');
@@ -965,19 +974,76 @@ async function getFreezeBillList(data) {
 
 /** get() 默认最多 100 条，必须分页否则「已绑定机具」列表不全，刷卡记录会漏数据 */
 const CARD_LIST_BOUND_MACHINE_PAGE = 1000;
-/** 单次 $in 机具数；禁止再用 $or 拼多段 $in（会慢查） */
-const CARD_LIST_IN_CHUNK = 300;
-const CARD_LIST_QUERY_CONCURRENCY = 3;
+/** 统计逐机具并发（禁用 $in / $or 多机具：都会误选 device_id_trade_no） */
+const CARD_LIST_STATS_CONCURRENCY = 20;
+/** 回退列表：逐机具并发 */
+const CARD_LIST_DEVICE_CONCURRENCY = 16;
+/** 列表按时间倒序扫描时每批条数 */
+const CARD_LIST_RECENT_SCAN_BATCH = 120;
+const CARD_LIST_RECENT_SCAN_MAX_ROUNDS = 30;
+/** 列表扫描索引 */
+const CARD_LIST_RECENT_INDEX_HINT = 'stats_eligible_create_time';
+/** 单机具统计优先走 device_id_create_time（见慢查询：OR/hint 仍会选 device_id_trade_no） */
+const CARD_LIST_DEVICE_TIME_INDEX_HINT = 'device_id_create_time';
+/** 交易额/条数缓存：全量历史聚合不可避免扫大量文档，短时缓存避免每次打开都打爆 */
+const CARD_LIST_STATS_CACHE_MS = 120000;
+const _cardListStatsMem = new Map();
 
-function chunkIdsForIn(arr, chunkSize) {
-	const out = [];
-	const a = Array.isArray(arr) ? arr : [];
-	for (let i = 0; i < a.length; i += chunkSize) out.push(a.slice(i, i + chunkSize));
-	return out;
+function cardListStatsCacheKey(parts) {
+	const crypto = require('crypto');
+	return crypto.createHash('md5').update(JSON.stringify(parts || {})).digest('hex').slice(0, 20);
 }
 
-async function mapCardListChunks(chunks, worker, concurrency = CARD_LIST_QUERY_CONCURRENCY) {
-	const list = (Array.isArray(chunks) ? chunks : []).filter((c) => Array.isArray(c) && c.length);
+async function readCardListStatsCache(cacheKey) {
+	const now = Date.now();
+	const mem = _cardListStatsMem.get(cacheKey);
+	if (mem && now - Number(mem.at || 0) < CARD_LIST_STATS_CACHE_MS) {
+		return { total: Number(mem.total || 0), totalAmount: Number(mem.totalAmount || 0), cache: 'memory' };
+	}
+	try {
+		const key = `card_list_stats:${cacheKey}`;
+		const r = await systemSettingCollection.where({ key }).limit(1).get();
+		const doc = (r.data || [])[0];
+		if (!doc) return null;
+		const updatedAt = Number(doc.updated_at || 0);
+		if (!(updatedAt > 0) || now - updatedAt >= CARD_LIST_STATS_CACHE_MS) return null;
+		let val = doc.value;
+		if (typeof val === 'string') {
+			try {
+				val = JSON.parse(val);
+			} catch (e) {
+				return null;
+			}
+		}
+		const total = Number((val && val.total) || 0);
+		const totalAmount = Number((val && val.totalAmount) || 0);
+		_cardListStatsMem.set(cacheKey, { at: now, total, totalAmount });
+		return { total, totalAmount, cache: 'db' };
+	} catch (e) {
+		return null;
+	}
+}
+
+async function writeCardListStatsCache(cacheKey, total, totalAmount) {
+	const now = Date.now();
+	const payload = { total: Number(total || 0), totalAmount: Number(totalAmount || 0) };
+	_cardListStatsMem.set(cacheKey, { at: now, ...payload });
+	try {
+		const key = `card_list_stats:${cacheKey}`;
+		const r = await systemSettingCollection.where({ key }).limit(1).get();
+		const doc = (r.data || [])[0];
+		if (doc && doc._id) {
+			await systemSettingCollection.doc(doc._id).update({ value: payload, updated_at: now });
+		} else {
+			await systemSettingCollection.add({ key, value: payload, updated_at: now });
+		}
+	} catch (e) {
+		/* 缓存失败不影响主流程 */
+	}
+}
+
+async function mapCardListPool(items, worker, concurrency) {
+	const list = Array.isArray(items) ? items : [];
 	if (!list.length) return [];
 	const results = new Array(list.length);
 	let cursor = 0;
@@ -999,10 +1065,110 @@ async function mapCardListChunks(chunks, worker, concurrency = CARD_LIST_QUERY_C
 	return results;
 }
 
+/** 逐机具并行（列表回退 / 统计用） */
+async function mapCardListDevices(deviceIds, worker, concurrency = CARD_LIST_DEVICE_CONCURRENCY) {
+	const list = (Array.isArray(deviceIds) ? deviceIds : [])
+		.map((x) => String(x || '').trim())
+		.filter(Boolean);
+	return mapCardListPool(list, worker, concurrency);
+}
+
+function applyTradeIndexHint(queryOrAgg, indexName) {
+	if (!queryOrAgg || !indexName || typeof queryOrAgg.hint !== 'function') return queryOrAgg;
+	try {
+		return queryOrAgg.hint(indexName) || queryOrAgg;
+	} catch (e) {
+		return queryOrAgg;
+	}
+}
+
+/**
+ * 列表快路径：按 stats_eligible + create_time 倒序扫，内存过滤已绑定机具。
+ * 依赖索引 stats_eligible_create_time；避免对成百上千台机具逐台 get。
+ * 若扫描凑不齐一页（绑定机具流水很稀），回退到逐机具等值拉取再合并。
+ */
+async function fetchCardRecordPageByRecentScan(_, opts) {
+	const {
+		boundDeviceIds,
+		boundDeviceSet,
+		filterWhere,
+		timeStart = '',
+		timeEnd = '',
+		skip = 0,
+		size = 10,
+		whereForDevice
+	} = opts || {};
+	const target = Math.max(0, Number(skip) || 0) + Math.max(1, Number(size) || 10);
+	const matched = [];
+	let upper = timeEnd !== '' && timeEnd != null ? Number(timeEnd) : null;
+	let upperExclusive = false;
+	const batchSize = CARD_LIST_RECENT_SCAN_BATCH;
+	for (let round = 0; round < CARD_LIST_RECENT_SCAN_MAX_ROUNDS; round += 1) {
+		if (matched.length >= target) break;
+		const timeParts = [];
+		if (timeStart !== '' && timeStart != null) {
+			timeParts.push({ create_time: _.gte(Number(timeStart)) });
+		}
+		if (upper != null && Number.isFinite(upper)) {
+			timeParts.push(upperExclusive ? { create_time: _.lt(upper) } : { create_time: _.lte(upper) });
+		} else if (!(timeStart !== '' && timeStart != null)) {
+			timeParts.push({ create_time: _.gte(1) });
+		}
+		const prefix = _.and([{ stats_eligible: true }, ...timeParts]);
+		const w = filterWhere ? _.and([prefix, filterWhere]) : prefix;
+		let q = tradeCollection.where(w).orderBy('create_time', 'desc').limit(batchSize);
+		q = applyTradeIndexHint(q, CARD_LIST_RECENT_INDEX_HINT);
+		const r = await q.get();
+		const rows = r.data || [];
+		if (!rows.length) break;
+		for (const row of rows) {
+			if (boundDeviceSet.has(String(row.device_id || ''))) {
+				matched.push(row);
+				if (matched.length >= target) break;
+			}
+		}
+		const lastTs = Number(rows[rows.length - 1].create_time || 0);
+		if (!(lastTs > 0)) break;
+		upper = lastTs;
+		upperExclusive = true;
+		if (rows.length < batchSize) break;
+	}
+	if (matched.length >= target || typeof whereForDevice !== 'function') {
+		return matched.slice(skip, skip + size);
+	}
+	// 回退：逐机具等值各取 skip+size 条，内存合并（仅在扫描不足时触发）
+	const need = Math.min(1000, target);
+	const deviceRows = await mapCardListDevices(boundDeviceIds, async (oneId) => {
+		const w = whereForDevice(oneId);
+		if (!w) return [];
+		let q = tradeCollection.where(w).orderBy('create_time', 'desc').limit(need);
+		q = applyTradeIndexHint(q, CARD_LIST_DEVICE_TIME_INDEX_HINT);
+		const r = await q.get();
+		return r.data || [];
+	});
+	return (deviceRows || [])
+		.flat()
+		.sort((a, b) => Number(b.create_time || 0) - Number(a.create_time || 0))
+		.slice(skip, skip + size);
+}
+
 /**
  * 拉取满足条件的全部已绑定机具的 device_id / bind_user_id（分页）
+ * 短时内存缓存：列表+统计并行时避免同实例重复扫机具表
  */
-async function fetchAllBoundMachineIdsForCardList(boundMachineWhere) {
+const _cardListBoundCache = { at: 0, key: '', data: null };
+const CARD_LIST_BOUND_CACHE_MS = 45000;
+
+async function fetchAllBoundMachineIdsForCardList(boundMachineWhere, cacheKey = '') {
+	const now = Date.now();
+	if (
+		cacheKey &&
+		_cardListBoundCache.key === cacheKey &&
+		_cardListBoundCache.data &&
+		now - Number(_cardListBoundCache.at || 0) < CARD_LIST_BOUND_CACHE_MS
+	) {
+		return _cardListBoundCache.data;
+	}
 	const deviceSet = new Set();
 	const userSet = new Set();
 	let skip = 0;
@@ -1024,7 +1190,13 @@ async function fetchAllBoundMachineIdsForCardList(boundMachineWhere) {
 		skip += CARD_LIST_BOUND_MACHINE_PAGE;
 		if (skip > 200000) break;
 	}
-	return { boundDeviceIds: [...deviceSet], boundUserIds: [...userSet] };
+	const data = { boundDeviceIds: [...deviceSet], boundUserIds: [...userSet] };
+	if (cacheKey) {
+		_cardListBoundCache.at = now;
+		_cardListBoundCache.key = cacheKey;
+		_cardListBoundCache.data = data;
+	}
+	return data;
 }
 
 // 刷卡记录列表（多条件筛选 + 品牌/商户关联）
@@ -1051,8 +1223,13 @@ async function getCardRecordList(data) {
 			timeStart = '',
 			timeEnd = '',
 			tradeType = '',
-			tradeTypeList
+			tradeTypeList,
+			includeList,
+			includeStats
 		} = data || {};
+		// 前端可拆成：列表 includeStats:false / 统计 includeList:false，并行请求降低首屏等待
+		const wantList = includeList !== false && includeList !== 0 && String(includeList) !== 'false';
+		const wantStats = includeStats !== false && includeStats !== 0 && String(includeStats) !== 'false';
 
 		const whereParts = [{ is_deleted: _.neq(true) }];
 		const pushWhere = (cond) => {
@@ -1062,21 +1239,9 @@ async function getCardRecordList(data) {
 		const brandKeyArr = Array.isArray(brandIds) && brandIds.length
 			? [...new Set(brandIds.map((id) => String(id).trim()).filter(Boolean))]
 			: (String(brandId || '').trim() ? [String(brandId).trim()] : []);
-		if (brandKeyArr.length) {
-			const brandWhere = brandKeyArr.length === 1
-				? { brand_id: brandKeyArr[0] }
-				: { brand_id: _.in(brandKeyArr) };
-			const machines = await machineCollection.where({ ...brandWhere, is_deleted: false }).field({ device_id: true }).get();
-			const deviceIds = (machines.data || []).map(m => m.device_id);
-			if (deviceIds.length === 0) {
-				return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
-			}
-			pushWhere({ device_id: _.in(deviceIds) });
-		}
+		// 品牌筛选放在已绑定机具查询里，勿在流水上叠大 device_id $in
+		const deviceIdKw = String(deviceId || '').trim();
 
-		if (deviceId) {
-			pushWhere({ device_id: new RegExp(String(deviceId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
-		}
 		if (tradeNo) {
 			pushWhere({ trade_no: new RegExp(String(tradeNo).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) });
 		}
@@ -1112,12 +1277,22 @@ async function getCardRecordList(data) {
 		} else if (muidArr.length > 1) {
 			boundMachineWhere.bind_user_id = _.in(muidArr);
 		}
-		const { boundDeviceIds, boundUserIds } = await fetchAllBoundMachineIdsForCardList(boundMachineWhere);
-		if (!boundDeviceIds.length || !boundUserIds.length) {
+		const { boundDeviceIds: boundDeviceIdsRaw, boundUserIds } = await fetchAllBoundMachineIdsForCardList(
+			boundMachineWhere,
+			JSON.stringify({ b: brandKeyArr, u: muidArr })
+		);
+		if (!boundDeviceIdsRaw.length || !boundUserIds.length) {
 			return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
 		}
-		// 仅按已绑定机具 device_id 分片；不再叠加巨型 user_id $in / $or（user_id 非空条件已在下方）
-		const deviceChunks = chunkIdsForIn(boundDeviceIds, CARD_LIST_IN_CHUNK);
+		let boundDeviceIds = boundDeviceIdsRaw;
+		if (deviceIdKw) {
+			const dre = new RegExp(deviceIdKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+			boundDeviceIds = boundDeviceIdsRaw.filter((d) => dre.test(String(d || '')));
+			if (!boundDeviceIds.length) {
+				return { code: 0, message: '获取成功', data: { list: [], total: 0, totalAmount: 0, page, pageSize } };
+			}
+		}
+		const boundDeviceSet = new Set(boundDeviceIds.map((d) => String(d || '')));
 		const actArr = Array.isArray(isActivatedList)
 			? [...new Set(isActivatedList.map((x) => String(x)))]
 			: [];
@@ -1188,12 +1363,6 @@ async function getCardRecordList(data) {
 		} else if (riskStatus === 'no') {
 			pushWhere({ is_risk_trade: _.neq(true) });
 		}
-		if (timeStart) {
-			pushWhere({ create_time: _.gte(Number(timeStart)) });
-		}
-		if (timeEnd) {
-			pushWhere({ create_time: _.lte(Number(timeEnd)) });
-		}
 		const ttArr = Array.isArray(tradeTypeList)
 			? [...new Set(tradeTypeList.map((x) => String(x)))]
 			: [];
@@ -1207,11 +1376,6 @@ async function getCardRecordList(data) {
 			pushWhere({ trade_type: 'real' });
 		}
 
-		// 刷卡记录页仅统计“已绑定商户机具”的流水：
-		// 1) stats_eligible 必须显式为 true
-		// 2) user_id 必须非空（未绑定机具流水 user_id 为空，不参与本页统计）
-		// 3) 交易用户展示字段至少有一项非空（避免历史脏数据把未绑定流水统计进来）
-		pushWhere({ stats_eligible: true });
 		pushWhere(
 			_.and([
 				{ user_id: _.neq('') },
@@ -1231,40 +1395,138 @@ async function getCardRecordList(data) {
 			])
 		);
 
-		const baseWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
-		const whereForDeviceChunk = (chunk) => {
-			const ids = (chunk || []).map((x) => String(x || '').trim()).filter(Boolean);
-			if (!ids.length) return null;
-			// stats_eligible 已在 baseWhere；此处补 device_id $in(单片)
-			return _.and([baseWhere, { device_id: _.in(ids) }]);
-		};
-
-		const countParts = await mapCardListChunks(deviceChunks, async (chunk) => {
-			const w = whereForDeviceChunk(chunk);
-			if (!w) return 0;
-			const countRes = await tradeCollection.where(w).count();
-			return Number(countRes.total || 0);
-		});
-		const total = (countParts || []).reduce((s, n) => s + Number(n || 0), 0);
-
+		const filterWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
 		const pageNum = Math.max(1, Number(page) || 1);
 		const size = Math.max(1, Math.min(500, Number(pageSize) || 10));
 		const skip = (pageNum - 1) * size;
-		const perChunkLimit = Math.min(1000, skip + size);
-		const chunkRows = await mapCardListChunks(deviceChunks, async (chunk) => {
-			const w = whereForDeviceChunk(chunk);
-			if (!w) return [];
-			const r = await tradeCollection
-				.where(w)
-				.orderBy('create_time', 'desc')
-				.limit(perChunkLimit)
-				.get();
-			return r.data || [];
+
+		/**
+		 * 单机具：先 device_id + create_time（hint device_id_create_time），再滤业务条件。
+		 * 禁止 $in / 多机具 $or —— 慢查询证明会 IXSCAN device_id_trade_no 扫近 3 万 key/片。
+		 */
+		const whereForDevice = (oneDeviceId) => {
+			const id = String(oneDeviceId || '').trim();
+			if (!id) return null;
+			const prefixParts = [{ stats_eligible: true }, { device_id: id }];
+			if (timeStart) prefixParts.push({ create_time: _.gte(Number(timeStart)) });
+			if (timeEnd) prefixParts.push({ create_time: _.lte(Number(timeEnd)) });
+			if (!timeStart && !timeEnd) prefixParts.push({ create_time: _.gte(1) });
+			return _.and([_.and(prefixParts), filterWhere]);
+		};
+		const deviceTimeMatch = (oneDeviceId) => {
+			const id = String(oneDeviceId || '').trim();
+			if (!id) return null;
+			const parts = [{ device_id: id }];
+			if (timeStart) parts.push({ create_time: _.gte(Number(timeStart)) });
+			if (timeEnd) parts.push({ create_time: _.lte(Number(timeEnd)) });
+			if (!timeStart && !timeEnd) parts.push({ create_time: _.gte(1) });
+			return parts.length === 1 ? parts[0] : _.and(parts);
+		};
+		const residualMatch = _.and([{ stats_eligible: true }, filterWhere]);
+
+		const statsCacheKey = cardListStatsCacheKey({
+			t0: timeStart || '',
+			t1: timeEnd || '',
+			b: brandKeyArr,
+			u: muidArr,
+			d: deviceIdKw,
+			act: isActivatedList || isActivated || '',
+			cb: isCashbackList || isCashback || '',
+			ra: releaseAmount || '',
+			rs: riskStatusList || riskStatus || '',
+			tt: tradeTypeList || tradeType || '',
+			tn: tradeNo || '',
+			mk: merchantKw || '',
+			n: boundDeviceIds.length,
+			h: cardListStatsCacheKey(boundDeviceIds)
 		});
-		const merged = (chunkRows || [])
-			.flat()
-			.sort((a, b) => Number(b.create_time || 0) - Number(a.create_time || 0));
-		const trades = merged.slice(skip, skip + size);
+
+		const $ = db.command.aggregate;
+		const listPromise = wantList
+			? fetchCardRecordPageByRecentScan(_, {
+					boundDeviceIds,
+					boundDeviceSet,
+					filterWhere,
+					timeStart,
+					timeEnd,
+					skip,
+					size,
+					whereForDevice
+				})
+			: Promise.resolve([]);
+
+		const statsPromise = (async () => {
+			if (!wantStats) return null;
+			const forceRefresh =
+				data?.forceRefresh === true ||
+				data?.forceRefresh === 1 ||
+				String(data?.forceRefresh || '').toLowerCase() === 'true';
+			if (!forceRefresh) {
+				const hit = await readCardListStatsCache(statsCacheKey);
+				if (hit) return { total: hit.total, totalAmount: hit.totalAmount, cache: hit.cache };
+			}
+			const parts = await mapCardListDevices(
+				boundDeviceIds,
+				async (oneId) => {
+					const timeW = deviceTimeMatch(oneId);
+					if (!timeW) return { cnt: 0, amount: 0 };
+					try {
+						let agg = tradeCollection.aggregate();
+						agg = applyTradeIndexHint(agg, CARD_LIST_DEVICE_TIME_INDEX_HINT);
+						const aggRes = await agg
+							.match(timeW)
+							.match(residualMatch)
+							.group({
+								_id: null,
+								cnt: $.sum(1),
+								amount: $.sum('$amount')
+							})
+							.end();
+						const row = (aggRes.data || [])[0] || {};
+						return {
+							cnt: Number(row.cnt || 0),
+							amount: Number(row.amount || 0)
+						};
+					} catch (e) {
+						console.error('getCardRecordList stats device', e);
+						return { cnt: 0, amount: 0 };
+					}
+				},
+				CARD_LIST_STATS_CONCURRENCY
+			);
+			const total = (parts || []).reduce((s, p) => s + Number((p && p.cnt) || 0), 0);
+			const totalAmount = Number(
+				(parts || []).reduce((s, p) => s + Number((p && p.amount) || 0), 0).toFixed(2)
+			);
+			await writeCardListStatsCache(statsCacheKey, total, totalAmount);
+			return { total, totalAmount, cache: 'miss' };
+		})();
+
+		const [trades, statsRes] = await Promise.all([listPromise, statsPromise]);
+		let total = 0;
+		let totalAmount = 0;
+		let statsCache = '';
+		if (statsRes) {
+			total = Number(statsRes.total || 0);
+			totalAmount = Number(statsRes.totalAmount || 0);
+			statsCache = String(statsRes.cache || '');
+		}
+
+		if (!wantList) {
+			return {
+				code: 0,
+				message: '获取成功',
+				data: {
+					list: [],
+					total,
+					totalAmount,
+					page: pageNum,
+					pageSize: size,
+					statsOnly: true,
+					statsCache
+				}
+			};
+		}
 
 		const deviceIds = [...new Set(trades.map((t) => t.device_id))];
 		let brandMap = {};
@@ -1281,7 +1543,6 @@ async function getCardRecordList(data) {
 			const cashback = Number(item.cashback || 0);
 			const releaseAmt = Number(item.release_amount || 0);
 			const releaseRatio = item.release_ratio != null ? item.release_ratio : (totalTx > 0 && releaseAmt > 0 ? (releaseAmt / totalTx * 100) : 0);
-			// 业务口径：每 10000 元对应 38 积分，折算比例固定为 0.38%
 			const ssfl = totalTx > 0 ? '0.38%' : '-';
 			const bn = brandMap[item.device_id] || '';
 			const refundMeta = buildTradeRefundMeta(item, refundedMap);
@@ -1330,29 +1591,18 @@ async function getCardRecordList(data) {
 			};
 		});
 
-		// 分 chunk 聚合求和，避免巨型 where + skip 扫全表
-		const $ = db.command.aggregate;
-		const sumParts = await mapCardListChunks(deviceChunks, async (chunk) => {
-			const w = whereForDeviceChunk(chunk);
-			if (!w) return 0;
-			try {
-				const agg = await tradeCollection
-					.aggregate()
-					.match(w)
-					.group({ _id: null, total: $.sum('$amount') })
-					.end();
-				return Number((((agg.data || [])[0] || {}).total || 0));
-			} catch (e) {
-				console.error('getCardRecordList sum chunk', e);
-				return 0;
-			}
-		});
-		const totalAmount = Number((sumParts || []).reduce((s, n) => s + Number(n || 0), 0).toFixed(2));
-
 		return {
 			code: 0,
 			message: '获取成功',
-			data: { list, total, totalAmount, page: pageNum, pageSize: size }
+			data: {
+				list,
+				total: wantStats ? total : 0,
+				totalAmount: wantStats ? totalAmount : 0,
+				page: pageNum,
+				pageSize: size,
+				statsPending: !wantStats,
+				statsCache: wantStats ? statsCache : ''
+			}
 		};
 	} catch (error) {
 		console.error('刷卡记录列表失败:', error);
@@ -1523,6 +1773,7 @@ async function getRiskList(data) {
 			stats_eligible: true,
 			trade_type: 'real'
 		});
+		// 列表无 device_id：须走 risk_stats_type_create_time 索引；勿依赖 stats_eligible+device_id+create_time
 
 		if (userKeyword) {
 			const r = new RegExp(escapeReg(userKeyword), 'i');

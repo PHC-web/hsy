@@ -306,10 +306,11 @@ export default {
 			}
 			uni.showLoading({ title: '提交签署...', mask: true });
 			try {
-				const agreementImage = await this.buildAgreementCompositeImage(signatureImage);
+				// 只上传签名小图；服务端将协议 PDF 与签名合成 JPEG 后落库
 				const res = await h5SignAgreement({
-					signatureImage: agreementImage,
-					agreementVersion: this.agreement.currentVersion || ''
+					signatureImage,
+					agreementVersion: this.agreement.currentVersion || '',
+					agreementPdfFileId: this.agreement.pdfFileId || ''
 				});
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '签署失败', icon: 'none' });

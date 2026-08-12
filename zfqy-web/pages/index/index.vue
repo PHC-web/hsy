@@ -464,7 +464,7 @@
 			},
 			startHomeStatsTimer() {
 				this.stopHomeStatsTimer();
-				// 前端每 5 分钟从 Redis 拉一次；云端每 3 分钟预热
+				// 前端每 5 分钟从 Redis 拉一次；云端每 15 分钟预热
 				this._homeStatsTimer = setInterval(() => {
 					this.loadHomeStats({ silent: true });
 				}, 5 * 60 * 1000);

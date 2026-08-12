@@ -99,5 +99,68 @@
 			],
 			"MgoIsUnique": false
 		}
+	},
+	{
+		"IndexName": "risk_stats_type_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "is_risk_trade",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "stats_eligible",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "trade_type",
+					"Direction": "1",
+					"Type": "string"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "stats_eligible_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "stats_eligible",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
+		"IndexName": "refund_of_trade_no_is_refund",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "refund_of_trade_no",
+					"Direction": "1"
+				},
+				{
+					"Name": "is_refund",
+					"Direction": "1",
+					"Type": "bool"
+				}
+			],
+			"MgoIsUnique": false
+		}
 	}
 ]

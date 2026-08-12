@@ -65,7 +65,7 @@ const REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP_LAST = 'hsy:admin:home:withdrawTop20:v1:
 const REDIS_KEY_ADMIN_HOME_PENDING_FROZEN = 'hsy:admin:home:pendingFrozen:v1';
 const REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST = 'hsy:admin:home:pendingFrozen:v1:last';
 const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
-/** 定时每 3 分钟预热；正式 key TTL 覆盖多轮 cron；last 长留作刷新空窗回退 */
+/** 定时每 15 分钟预热；正式 key TTL 覆盖多轮 cron；last 长留作刷新空窗回退 */
 const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_PREVIEW_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_TREND_SEC = 1800;
@@ -1086,6 +1086,283 @@ async function persistAgreementImageRef(merchantId, rawImage) {
 	}
 }
 
+function isAgreementPdfRef(raw) {
+	const s = String(raw || '').trim();
+	if (!s) return false;
+	if (/\.pdf($|\?|#)/i.test(s)) return true;
+	if (/\/hsy\/agreement\/.+\.pdf/i.test(s)) return true;
+	return false;
+}
+
+async function downloadBinaryFromFileRef(fileRef) {
+	const s = String(fileRef || '').trim();
+	if (!s) throw new Error('文件引用为空');
+	let url = s;
+	if (isAgreementImgCloudFileId(s)) {
+		const tempRes = await uniCloud.getTempFileURL({ fileList: [s] });
+		const item = tempRes.fileList && tempRes.fileList[0];
+		url = String((item && (item.tempFileURL || item.url)) || '').trim();
+		if (!url) throw new Error('获取文件临时链接失败');
+	} else if (!isAgreementImgHttpUrl(s)) {
+		throw new Error('不支持的文件地址');
+	}
+	const r = await uniCloud.httpclient.request(url, {
+		method: 'GET',
+		dataType: 'arraybuffer',
+		timeout: 120000,
+		followRedirect: true
+	});
+	const status = Number(r.status != null ? r.status : r.statusCode);
+	if (status && status !== 200) {
+		throw new Error(`下载文件失败 HTTP ${status}`);
+	}
+	const data = r.data;
+	if (!data) throw new Error('下载文件内容为空');
+	return Buffer.isBuffer(data) ? data : Buffer.from(data);
+}
+
+let _pdfiumLibraryPromise = null;
+async function getPdfiumLibrary() {
+	if (_pdfiumLibraryPromise) return _pdfiumLibraryPromise;
+	_pdfiumLibraryPromise = (async () => {
+		const fs = require('fs');
+		const path = require('path');
+		const { PDFiumLibrary } = require('@hyzyla/pdfium');
+		const wasmPath = path.join(__dirname, 'node_modules', '@hyzyla', 'pdfium', 'dist', 'pdfium.wasm');
+		const wasmBinary = fs.readFileSync(wasmPath);
+		return PDFiumLibrary.init({
+			wasmBinary: wasmBinary.buffer.slice(
+				wasmBinary.byteOffset,
+				wasmBinary.byteOffset + wasmBinary.byteLength
+			)
+		});
+	})();
+	try {
+		return await _pdfiumLibraryPromise;
+	} catch (e) {
+		_pdfiumLibraryPromise = null;
+		throw e;
+	}
+}
+
+/** pdfium bitmap 默认 BGRA → Jimp 需要 RGBA */
+function pdfiumBgraToRgba(raw, width, height) {
+	const src = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+	const w = Number(width || 0);
+	const h = Number(height || 0);
+	const expect = w * h * 4;
+	if (!w || !h || src.length < expect) {
+		throw new Error('PDF 页面渲染数据无效');
+	}
+	const out = Buffer.allocUnsafe(expect);
+	for (let i = 0; i < expect; i += 4) {
+		out[i] = src[i + 2];
+		out[i + 1] = src[i + 1];
+		out[i + 2] = src[i];
+		out[i + 3] = src[i + 3];
+	}
+	return out;
+}
+
+async function jimpFromRgbaBuffer(rgba, width, height) {
+	const Jimp = require('jimp');
+	return new Promise((resolve, reject) => {
+		// eslint-disable-next-line no-new
+		new Jimp(
+			{ data: rgba, width: Number(width || 0), height: Number(height || 0) },
+			(err, image) => (err ? reject(err) : resolve(image))
+		);
+	});
+}
+
+async function jimpSolid(width, height, color = 0xffffffff) {
+	const Jimp = require('jimp');
+	return new Promise((resolve, reject) => {
+		// eslint-disable-next-line no-new
+		new Jimp(width, height, color, (err, img) => (err ? reject(err) : resolve(img)));
+	});
+}
+
+/**
+ * 将协议 PDF 各页渲成长图 JPEG（不含新签名区；用于历史「签署版 PDF」预览迁移）
+ */
+async function renderPdfPagesToJpegBuffer(pdfBytes) {
+	const Jimp = require('jimp');
+	const library = await getPdfiumLibrary();
+	const document = await library.loadDocument(
+		pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes)
+	);
+	const pageImages = [];
+	const scale = 1.5;
+	try {
+		for (const page of document.pages()) {
+			const rendered = await page.render({ scale, render: 'bitmap' });
+			const rgba = pdfiumBgraToRgba(rendered.data, rendered.width, rendered.height);
+			pageImages.push(await jimpFromRgbaBuffer(rgba, rendered.width, rendered.height));
+		}
+	} finally {
+		try {
+			document.destroy();
+		} catch (e) {
+			/* ignore */
+		}
+	}
+	if (!pageImages.length) throw new Error('协议 PDF 无页面可渲染');
+
+	const contentWidth = Math.max(1000, ...pageImages.map((p) => p.bitmap.width));
+	const resizedPages = [];
+	for (const p of pageImages) {
+		const clone = p.clone();
+		if (clone.bitmap.width !== contentWidth) {
+			clone.resize(contentWidth, Jimp.AUTO);
+		}
+		resizedPages.push(clone);
+	}
+	const pageGap = Math.max(16, Math.round(contentWidth * 0.02));
+	let totalHeight = 0;
+	for (let i = 0; i < resizedPages.length; i += 1) {
+		totalHeight += resizedPages[i].bitmap.height;
+		if (i < resizedPages.length - 1) totalHeight += pageGap;
+	}
+
+	const canvas = await jimpSolid(contentWidth, Math.max(1, totalHeight), 0xffffffff);
+	let y = 0;
+	for (let i = 0; i < resizedPages.length; i += 1) {
+		canvas.composite(resizedPages[i], 0, y);
+		y += resizedPages[i].bitmap.height;
+		if (i < resizedPages.length - 1) y += pageGap;
+	}
+	if (canvas.bitmap.width > 1400) {
+		canvas.resize(1400, Jimp.AUTO);
+	}
+	return canvas.quality(82).getBufferAsync(Jimp.MIME_JPEG);
+}
+
+/**
+ * 服务端：协议 PDF 渲成图 + 签名小图 → 长图 JPEG（与原先 H5 本地合成效果一致，便于列表图片预览）
+ */
+async function composeSignedAgreementJpegBuffer(pdfBytes, signParsed, meta = {}) {
+	const Jimp = require('jimp');
+	const library = await getPdfiumLibrary();
+	const document = await library.loadDocument(
+		pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes)
+	);
+	const pageImages = [];
+	const scale = 1.5;
+	try {
+		for (const page of document.pages()) {
+			const rendered = await page.render({ scale, render: 'bitmap' });
+			const rgba = pdfiumBgraToRgba(rendered.data, rendered.width, rendered.height);
+			pageImages.push(await jimpFromRgbaBuffer(rgba, rendered.width, rendered.height));
+		}
+	} finally {
+		try {
+			document.destroy();
+		} catch (e) {
+			/* ignore */
+		}
+	}
+	if (!pageImages.length) throw new Error('协议 PDF 无页面可渲染');
+
+	const contentWidth = Math.max(1000, ...pageImages.map((p) => p.bitmap.width));
+	const resizedPages = [];
+	for (const p of pageImages) {
+		const clone = p.clone();
+		if (clone.bitmap.width !== contentWidth) {
+			clone.resize(contentWidth, Jimp.AUTO);
+		}
+		resizedPages.push(clone);
+	}
+	const pageGap = Math.max(16, Math.round(contentWidth * 0.02));
+	const signBlockHeight = 220;
+	let totalHeight = signBlockHeight;
+	for (let i = 0; i < resizedPages.length; i += 1) {
+		totalHeight += resizedPages[i].bitmap.height;
+		if (i < resizedPages.length - 1) totalHeight += pageGap;
+	}
+
+	const canvas = await jimpSolid(contentWidth, totalHeight, 0xffffffff);
+	let y = 0;
+	for (let i = 0; i < resizedPages.length; i += 1) {
+		canvas.composite(resizedPages[i], 0, y);
+		y += resizedPages[i].bitmap.height;
+		if (i < resizedPages.length - 1) y += pageGap;
+	}
+
+	const blockTop = totalHeight - signBlockHeight;
+	const sidePad = 24;
+	const white = await jimpSolid(contentWidth, signBlockHeight, 0xffffffff);
+	canvas.composite(white, 0, blockTop);
+
+	// 签名区边框（与 H5 本地合成一致）；Jimp 内置字体无中文，文案用可读英文 + 时间戳
+	const border = await jimpSolid(contentWidth - sidePad * 2, signBlockHeight - 24, 0xffffffff);
+	border.scan(0, 0, border.bitmap.width, border.bitmap.height, function (x, yy, idx) {
+		const edge =
+			x < 2 || yy < 2 || x >= border.bitmap.width - 2 || yy >= border.bitmap.height - 2;
+		if (edge) {
+			this.bitmap.data[idx] = 0xd0;
+			this.bitmap.data[idx + 1] = 0xd7;
+			this.bitmap.data[idx + 2] = 0xe2;
+			this.bitmap.data[idx + 3] = 0xff;
+		}
+	});
+	canvas.composite(border, sidePad, blockTop + 12);
+
+	const font = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK);
+	const fontSm = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
+	canvas.print(font, sidePad + 20, blockTop + 36, 'Party B Signature');
+	const signedAtText = String(meta.signedAtText || '').trim() || new Date().toISOString();
+	canvas.print(fontSm, sidePad + 20, blockTop + signBlockHeight - 48, `Signed at: ${signedAtText}`);
+
+	const signImg = await Jimp.read(signParsed.buffer);
+	const maxSignW = Math.min(360, Math.floor(contentWidth * 0.36));
+	signImg.resize(maxSignW, Jimp.AUTO);
+	const signX = contentWidth - sidePad - signImg.bitmap.width - 24;
+	const signY = blockTop + 40;
+	canvas.composite(signImg, signX, signY);
+
+	if (canvas.bitmap.width > 1400) {
+		canvas.resize(1400, Jimp.AUTO);
+	}
+	return canvas.quality(82).getBufferAsync(Jimp.MIME_JPEG);
+}
+
+/** 历史签署版 PDF → 长图 JPEG 并回写云存储，便于管理端图片预览 */
+async function migrateAgreementPdfToJpegIfNeeded(merchant, imgRaw) {
+	const img = String(imgRaw || '').trim();
+	if (!img || !isAgreementPdfRef(img)) {
+		return { ok: true, ref: img, migrated: false };
+	}
+	try {
+		const pdfBytes = await downloadBinaryFromFileRef(img);
+		const jpegBuffer = await renderPdfPagesToJpegBuffer(pdfBytes);
+		const newRef = await persistSignedAgreementJpeg(merchant._id, jpegBuffer);
+		await merchantCollection.doc(merchant._id).update({
+			agreement_img: newRef,
+			update_time: nowTs()
+		});
+		if (isAgreementImgCloudFileId(img) && img !== newRef) {
+			await safeDeleteAgreementCloudFile(img);
+		}
+		return { ok: true, ref: newRef, migrated: true };
+	} catch (e) {
+		console.error('migrateAgreementPdfToJpegIfNeeded failed', e);
+		return { ok: false, ref: img, migrated: false, message: safeText(e?.message || 'PDF转图片失败', 120) };
+	}
+}
+
+async function persistSignedAgreementJpeg(merchantId, jpegBuffer) {
+	const mid = safeText(merchantId, 80) || 'm';
+	const cloudPath = `hsy/agreement/${mid}/signed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+	const up = await uniCloud.uploadFile({
+		cloudPath,
+		fileContent: jpegBuffer
+	});
+	const fileID = String(up.fileID || up.fileId || '').trim();
+	if (!fileID) throw new Error('签署协议图片上传失败（无 fileID）');
+	return fileID;
+}
+
 /** 读路径：cloud:// → 临时 https；data URL / http(s) 原样返回 */
 async function resolveAgreementImgDisplayUrl(raw) {
 	const s = String(raw || '').trim();
@@ -1197,19 +1474,33 @@ async function merchantAgreementImage(data = {}) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId || data?.id;
 		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
-		const img = String(merchant.agreement_img || '').trim();
+		let img = String(merchant.agreement_img || '').trim();
 		if (!img) return { code: 404, message: '该商户未签署协议或签署图片不存在' };
+		// 短暂 PDF 签署期遗留：转成长图后回写，管理端始终走图片预览（不再下载 PDF）
+		if (isAgreementPdfRef(img)) {
+			const migrated = await migrateAgreementPdfToJpegIfNeeded(merchant, img);
+			if (!migrated.ok) {
+				return { code: 500, message: migrated.message || '签署文件为 PDF，转图片失败，请清除后让商户重签' };
+			}
+			img = String(migrated.ref || '').trim();
+			merchant.agreement_img = img;
+		}
 		const displayUrl = await resolveAgreementImgDisplayUrl(img);
+		const isPdf = isAgreementPdfRef(img) || isAgreementPdfRef(displayUrl);
 		const base = {
 			merchantId: merchant._id,
 			wxNickname: safeText(merchant.wx_nickname || '', 60),
 			mobile: safeText(merchant.mobile || '', 20),
 			agreementImg: displayUrl || img,
+			agreementImgIsPdf: false,
 			agreementSignedAt: formatTime(merchant.agreement_signed_at),
 			agreementSignedIp: safeText(merchant.agreement_signed_ip, 80) || '',
 			agreementSignDevice: safeText(merchant.agreement_sign_device, 320) || ''
 		};
 		if (data?.forPdfExport === true || data?.forPdfExport === '1' || data?.forPdfExport === 1) {
+			if (isPdf) {
+				return { code: 500, message: '签署文件仍为 PDF，无法导出图片，请清除后重签' };
+			}
 			const fetched = await fetchAgreementImageDataUrl(img);
 			if (!fetched.ok) return { code: 500, message: fetched.message || '读取协议图片失败' };
 			return {
@@ -1839,7 +2130,10 @@ async function merchantPointsMonthlyInsight(data) {
 						});
 					});
 			});
-		const tradeSamples = (trades || []).slice(-200).map((t, idx) => {
+		const tradeSamples = (trades || [])
+			.slice(-200)
+			.reverse()
+			.map((t, idx) => {
 			const amount = Number(t.amount || 0);
 			const total = Number((amount * 0.0038).toFixed(4));
 			const first = Number(t.release_amount != null ? t.release_amount : total);
@@ -2876,16 +3170,29 @@ const ADMIN_CARD_ALIGN_MACHINE_PAGE = 1000;
 const ADMIN_CARD_ALIGN_IN_CHUNK = 80;
 /** 分 chunk 查交易时的并发（非聚合） */
 const ADMIN_CARD_ALIGN_QUERY_CONCURRENCY = 4;
-/** 聚合逐机具并发：单机具等值 + create_time 可稳定走 device_id_create_time */
-const ADMIN_CARD_ALIGN_DEVICE_CONCURRENCY = 12;
+/** 聚合逐机具并发：单机具等值 + create_time 优先走 device_id_create_time */
+const ADMIN_CARD_ALIGN_DEVICE_CONCURRENCY = 16;
 /**
- * 粉卡对齐优先索引（见 hsy-machine-trades.index.json）。
- * 大 $in 时优化器仍会选 device_id_trade_no（已建 stats_eligible* 索引也一样），
- * 故聚合改为单机具等值并行，不依赖 hint。
+ * 粉卡对齐 where/count 优先索引（见 hsy-machine-trades.index.json）。
+ * 聚合请用 CARD_ALIGN_DEVICE_TIME_INDEX_HINT：慢查询证明带 stats_eligible 的前缀仍会选 device_id_trade_no。
  */
 const CARD_ALIGN_TRADE_INDEX_HINT = 'stats_eligible_device_id_create_time';
+/** 单机具聚合：先 match device_id+create_time，hint 本索引 */
+const CARD_ALIGN_DEVICE_TIME_INDEX_HINT = 'device_id_create_time';
 /** null | 'chain' | 'none' */
 let _cardAlignTradeHintMode = null;
+/** 首页趋势「历史累计」交易聚合缓存（跨 rangeType 复用，避免刷 4 次区间各扫一遍全库） */
+const ADMIN_TREND_ALLTIME_CACHE_MS = 300000;
+const ADMIN_TREND_ALLTIME_COALESCE_MS = 45000;
+let adminTrendAllTimeCache = { at: 0, deviceCount: -1, data: null };
+
+function redisKeyAdminHomeTrendAllTime() {
+	return 'hsy:admin:home:trend:alltime:v1';
+}
+
+function redisKeyAdminHomeTrendAllTimeLast() {
+	return `${redisKeyAdminHomeTrendAllTime()}:last`;
+}
 
 function adminChunkIdsForIn(arr, chunkSize) {
 	const out = [];
@@ -2999,17 +3306,45 @@ function applyCardAlignTradeHintToQuery(query) {
 
 /**
  * 粉卡对齐聚合：两段 $match。
- * 调用方应传单机具数组 [deviceId]，避免大 $in。
+ * 1) device_id 等值 + create_time（hint device_id_create_time）
+ * 2) stats_eligible + 业务过滤
+ * 调用方必须传单机具 [deviceId]；禁止大 $in / 多机具 $or（会误选 device_id_trade_no）。
  */
 async function runMachineTradeAggregateCardAligned(deviceChunk, extraAnd, buildStages) {
 	const _ = db.command;
 	const { timeExtras, otherExtras } = partitionCardAlignExtras(extraAnd);
-	const prefix = buildCardAlignedTradePrefixWhere(_, deviceChunk, timeExtras);
-	if (!prefix) return { data: [] };
-	const filter = buildCardAlignedTradeFilterWhere(_, otherExtras);
+	const ids = (Array.isArray(deviceChunk) ? deviceChunk : [])
+		.map((x) => String(x || '').trim())
+		.filter(Boolean);
+	if (!ids.length) return { data: [] };
+	const deviceId = ids[0];
+	const timeParts = [{ device_id: deviceId }];
+	let hasCreateTime = false;
+	for (const x of Array.isArray(timeExtras) ? timeExtras : []) {
+		if (!x) continue;
+		timeParts.push(x);
+		if (x.create_time != null) hasCreateTime = true;
+	}
+	if (!hasCreateTime) {
+		timeParts.push({ create_time: _.gte(1) });
+	}
+	const timeMatch = timeParts.length === 1 ? timeParts[0] : _.and(timeParts);
 
-	let agg = machineTradeCollection.aggregate().match(prefix);
-	if (filter) agg = agg.match(filter);
+	const filterParts = [{ stats_eligible: true }, ...buildCardAlignTradeCommonParts(_).slice(1)];
+	for (const x of Array.isArray(otherExtras) ? otherExtras : []) {
+		if (x) filterParts.push(x);
+	}
+	const filterMatch = filterParts.length === 1 ? filterParts[0] : _.and(filterParts);
+
+	let agg = machineTradeCollection.aggregate();
+	if (typeof agg.hint === 'function') {
+		try {
+			agg = agg.hint(CARD_ALIGN_DEVICE_TIME_INDEX_HINT) || agg;
+		} catch (e) {
+			/* index 未建或运行时不支持 hint 时忽略 */
+		}
+	}
+	agg = agg.match(timeMatch).match(filterMatch);
 	if (typeof buildStages === 'function') agg = buildStages(agg) || agg;
 	return agg.end();
 }
@@ -3253,6 +3588,76 @@ async function adminAggregateTradeTypeStatsCardAligned(cardBase, extraAnd = []) 
 	const totalCount = rows.reduce((s, r) => s + Number(r.count || 0), 0);
 	const totalAmount = Number(rows.reduce((s, r) => s + Number(r.amount || 0), 0).toFixed(2));
 	return { totalAmount, totalCount, rows };
+}
+
+/**
+ * 首页「历史累计」交易类型聚合：跨 today/week/month/30d 共享缓存。
+ * forceRefresh 时仍合并 45s 内同进程重复计算（adminHomeCacheRefresh 会连刷多个 rangeType）。
+ */
+async function getAdminTrendAllTimeTradeStats(cardBase, opts = {}) {
+	const empty = { totalAmount: 0, totalCount: 0, rows: [] };
+	if (!cardBase || !cardBase.ok) return empty;
+	const forceRefresh = !!(opts && opts.forceRefresh);
+	const deviceCount = Number(
+		cardBase.deviceCount != null ? cardBase.deviceCount : adminFlattenCardAlignDeviceIds(cardBase).length
+	);
+	const now = Date.now();
+	const coalesceMs = forceRefresh ? ADMIN_TREND_ALLTIME_COALESCE_MS : ADMIN_TREND_ALLTIME_CACHE_MS;
+	if (
+		adminTrendAllTimeCache.data &&
+		Number(adminTrendAllTimeCache.deviceCount) === deviceCount &&
+		now - Number(adminTrendAllTimeCache.at || 0) < coalesceMs
+	) {
+		return adminTrendAllTimeCache.data;
+	}
+	if (!forceRefresh) {
+		try {
+			const redisHit = await redisH5.h5RedisGetJson(redisKeyAdminHomeTrendAllTime());
+			if (
+				redisHit &&
+				Number(redisHit.deviceCount) === deviceCount &&
+				Array.isArray(redisHit.rows)
+			) {
+				adminTrendAllTimeCache = { at: now, deviceCount, data: redisHit };
+				return redisHit;
+			}
+			const lastHit = await redisH5.h5RedisGetJson(redisKeyAdminHomeTrendAllTimeLast());
+			if (
+				lastHit &&
+				Number(lastHit.deviceCount) === deviceCount &&
+				Array.isArray(lastHit.rows)
+			) {
+				adminTrendAllTimeCache = { at: now, deviceCount, data: lastHit };
+				return lastHit;
+			}
+		} catch (e) {
+			/* ignore redis */
+		}
+	}
+	const agg = await adminAggregateTradeTypeStatsCardAligned(cardBase);
+	const payload = {
+		totalAmount: Number(agg.totalAmount || 0),
+		totalCount: Number(agg.totalCount || 0),
+		rows: Array.isArray(agg.rows) ? agg.rows : [],
+		deviceCount,
+		updatedAt: now
+	};
+	adminTrendAllTimeCache = { at: now, deviceCount, data: payload };
+	try {
+		await redisH5.h5RedisSetJson(
+			redisKeyAdminHomeTrendAllTime(),
+			payload,
+			REDIS_EX_ADMIN_HOME_TREND_SEC
+		);
+		await redisH5.h5RedisSetJson(
+			redisKeyAdminHomeTrendAllTimeLast(),
+			payload,
+			REDIS_EX_ADMIN_HOME_LAST_SEC
+		);
+	} catch (e) {
+		/* ignore */
+	}
+	return payload;
 }
 
 function adminTrendBucketTimeBounds(bucketKey, range) {
@@ -3665,8 +4070,10 @@ async function adminDashboardTrend30d(data = {}) {
 		}
 		try {
 			if (cardBase.ok) {
-				// 聚合按类型汇总，避免全量扫行 + skip 深分页
-				const allTimeAgg = await adminAggregateTradeTypeStatsCardAligned(cardBase);
+				// 历史累计跨区间缓存；forceRefresh 时同进程多 range 只算一次
+				const allTimeAgg = await getAdminTrendAllTimeTradeStats(cardBase, {
+					forceRefresh
+				});
 				allTimeTotalFlow = allTimeAgg.totalAmount;
 				allTimeTradeCount = allTimeAgg.totalCount;
 				(allTimeAgg.rows || []).forEach((row) => {
@@ -4125,6 +4532,7 @@ async function invalidateAdminHomeSummaryCache() {
 	adminHomeSummaryCache = { at: 0, data: null };
 	adminMembershipTierCache = { at: 0, data: null };
 	adminDashboardTrendCache = { at: 0, key: '', data: null };
+	adminTrendAllTimeCache = { at: 0, deviceCount: -1, data: null };
 	// 只清正式 key，保留 :last，刷新空窗前端仍可读旧数据
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_SUMMARY);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PREVIEW);
@@ -4132,6 +4540,7 @@ async function invalidateAdminHomeSummaryCache() {
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PENDING_FROZEN);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_MEMBERSHIP_TIER);
+	await redisH5.h5RedisDel(redisKeyAdminHomeTrendAllTime());
 	for (const t of ADMIN_HOME_TREND_RANGE_TYPES) {
 		await redisH5.h5RedisDel(redisKeyAdminHomeTrend(t));
 	}
@@ -10299,15 +10708,22 @@ async function h5AgreementSignedSnapshot(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const curAgreement = await getCurrentAgreement();
 		const needSign = !isMerchantAgreementSatisfied(merchant, curAgreement);
-		const img = String(merchant.agreement_img || '').trim();
+		let img = String(merchant.agreement_img || '').trim();
 		const agreementSigned =
 			!!img || Number(merchant.agreement_signed_at || 0) > 0;
+		if (img && isAgreementPdfRef(img)) {
+			const migrated = await migrateAgreementPdfToJpegIfNeeded(merchant, img);
+			if (migrated.ok && migrated.ref) {
+				img = String(migrated.ref || '').trim();
+			}
+		}
 		const displayUrl = img ? await resolveAgreementImgDisplayUrl(img) : '';
 		return {
 			code: 0,
 			message: 'ok',
 			data: {
 				agreementImg: displayUrl || img,
+				agreementImgIsPdf: false,
 				agreementSigned,
 				agreementSignedAt: formatTime(merchant.agreement_signed_at),
 				needSign
@@ -12064,14 +12480,58 @@ async function h5SignAgreement(data, event = {}) {
 		// 需读旧图以便覆盖签署时删除云文件；默认投影会排除 agreement_img
 		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
-		const persisted = await persistAgreementImageRef(merchant._id, signatureImage);
-		if (!persisted.ok) return { code: 500, message: persisted.message || '协议图片上传失败' };
-		const agreementImgRef = persisted.ref;
+
+		// 新流程：客户端只传签名小图；服务端用当前协议 PDF 合成签署版再落库
+		const signParsed = parseAgreementImageInput(signatureImage);
+		if (!signParsed.ok) return { code: 400, message: signParsed.message || '签名图无效' };
+		if (signParsed.kind === 'ref') {
+			return { code: 400, message: '请提交签名图片内容（勿传云文件引用）' };
+		}
+		// 签名小图一般 < 500KB；过大多为误传整页合成图
+		if (signParsed.buffer.length > 1.5 * 1024 * 1024) {
+			return { code: 400, message: '签名图过大，请仅提交手写签名（勿上传整份协议合成图）' };
+		}
+
 		const curAgreement = await getCurrentAgreement();
-		const agreementVersion = safeText(data?.agreementVersion || curAgreement?.version || 'legacy', 40);
-		const now = nowTs();
+		const pdfRef = safeText(
+			data?.agreementPdfFileId || curAgreement?.pdf_file_id || '',
+			500
+		);
+		if (!pdfRef) return { code: 400, message: '当前无生效协议文件，请稍后重试或联系客服' };
+
+		let pdfBytes;
+		try {
+			pdfBytes = await downloadBinaryFromFileRef(pdfRef);
+		} catch (e) {
+			console.error('h5SignAgreement download pdf', e);
+			return { code: 500, message: '下载协议正文失败，请稍后重试' };
+		}
+
 		const agreementSignedIp = resolveAgreementSignClientIp(event, data);
 		const agreementSignDevice = buildAgreementSignDeviceRecord(data);
+		const now = nowTs();
+		const signedAtText = formatTime(now) || new Date(now).toISOString();
+
+		let signedJpegBuffer;
+		try {
+			signedJpegBuffer = await composeSignedAgreementJpegBuffer(pdfBytes, signParsed, {
+				signedAtText,
+				signedIp: agreementSignedIp
+			});
+		} catch (e) {
+			console.error('h5SignAgreement compose image', e);
+			return { code: 500, message: '协议与签名合成失败，请稍后重试' };
+		}
+
+		let agreementImgRef = '';
+		try {
+			agreementImgRef = await persistSignedAgreementJpeg(merchant._id, signedJpegBuffer);
+		} catch (e) {
+			console.error('h5SignAgreement upload signed image', e);
+			return { code: 500, message: safeText(e?.message || '签署图片上传失败', 160) };
+		}
+
+		const agreementVersion = safeText(data?.agreementVersion || curAgreement?.version || 'legacy', 40);
 		const prevImg = String(merchant.agreement_img || '').trim();
 		await merchantCollection.doc(merchant._id).update({
 			agreement_img: agreementImgRef,
@@ -12090,6 +12550,7 @@ async function h5SignAgreement(data, event = {}) {
 			message: '签署成功',
 			data: {
 				agreementImg: displayUrl || agreementImgRef,
+				agreementImgIsPdf: false,
 				agreementSignedAt: now,
 				agreementSignedIp: agreementSignedIp,
 				agreementSignDevice: agreementSignDevice
