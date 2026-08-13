@@ -129,6 +129,34 @@
 		}
 	},
 	{
+		"IndexName": "flow_opt_stats_status_create_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{
+					"Name": "is_flow_opt_trade",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "stats_eligible",
+					"Direction": "1",
+					"Type": "bool"
+				},
+				{
+					"Name": "flow_opt_audit_status",
+					"Direction": "1",
+					"Type": "string"
+				},
+				{
+					"Name": "create_time",
+					"Direction": "-1",
+					"Type": "long"
+				}
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
 		"IndexName": "stats_eligible_create_time",
 		"MgoKeySchema": {
 			"MgoIndexKeys": [

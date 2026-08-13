@@ -44,7 +44,28 @@ exports.main = async (event) => {
 		summary.withdrawTop = !!(base.data && base.data.withdrawTop);
 		summary.pendingFrozen = !!(base.data && base.data.pendingFrozen);
 
+		// 临时关闭：首页「数据统计」趋势/历史累计聚合（与 merchant ADMIN_HOME_TREND_STATS_DISABLED 对齐）
+		const TREND_STATS_DISABLED = true;
+		if (TREND_STATS_DISABLED) {
+			summary.trendAllTime = true;
+			summary.trends = { today: true, week: true, month: true, '30d': true, skipped: true };
+			return {
+				code: 0,
+				message: 'ok_trend_disabled',
+				data: summary
+			};
+		}
+
 		const rangeTypes = ['today', 'week', 'month', '30d'];
+		// 先刷历史累计交易聚合（供各区间复用），再分次刷区间，避免单次超网关超时
+		const allTimeRet = await callMerchant('adminHomeCacheRefresh', {
+			parts: ['trendAllTime'],
+			refreshAllTime: true
+		});
+		summary.trendAllTime = !!(allTimeRet && allTimeRet.code === 0 && allTimeRet.data && allTimeRet.data.trendAllTime);
+		if (!summary.trendAllTime) {
+			console.error('[admin-home-cache-cron] trendAllTime fail', allTimeRet && allTimeRet.message);
+		}
 		for (const rangeType of rangeTypes) {
 			const tr = await callMerchant('adminHomeCacheRefresh', {
 				parts: ['trend'],

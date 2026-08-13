@@ -77,6 +77,11 @@ const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 1800;
 const ADMIN_HOME_SUMMARY_CACHE_MS = 45000;
 const ADMIN_MEMBERSHIP_TIER_CACHE_MS = 180000;
 const ADMIN_HOME_TREND_RANGE_TYPES = ['today', 'week', 'month', '30d'];
+/**
+ * 临时关闭首页「数据统计」图表服务端统计（避免慢查询 / 网关超时）。
+ * 前端图表 UI 保留，返回空序列；后续优化完成后改为 false 即可恢复。
+ */
+const ADMIN_HOME_TREND_STATS_DISABLED = true;
 
 function redisKeyAdminHomeTrend(rangeType) {
 	const t = String(rangeType || '30d').trim() || '30d';
@@ -900,7 +905,8 @@ async function listMerchants(data) {
 					withdraw_pending_balance: true,
 					agreement_signed_ip: true,
 					agreement_sign_device: true,
-					points_opt_whitelist: true
+					points_opt_whitelist: true,
+					points_flow_opt_whitelist: true
 				})
 				.get(),
 			getBizSettings()
@@ -971,7 +977,8 @@ async function listMerchants(data) {
 			loginTime: formatTime(item.login_time),
 			agreementSignedIp: safeText(item.agreement_signed_ip, 80) || '',
 			agreementSignDevice: safeText(item.agreement_sign_device, 320) || '',
-			pointsOptWhitelist: !!item.points_opt_whitelist
+			pointsOptWhitelist: !!item.points_opt_whitelist,
+			pointsFlowOptWhitelist: !!item.points_flow_opt_whitelist
 			};
 		})
 		);
@@ -3325,6 +3332,73 @@ function adminTrendRange(typeRaw) {
 	};
 }
 
+/** 首页数据统计关闭时的空图表载荷（保留 categories，数值全 0） */
+function buildAdminHomeTrendDisabledStub(rangeTypeRaw) {
+	const range = adminTrendRange(rangeTypeRaw);
+	const zeros = range.keys.map(() => 0);
+	const tradeTypeDefs = [
+		{ key: '06', label: '贷记卡(06)' },
+		{ key: '31', label: '白条(31)' },
+		{ key: '05', label: '借记卡(05)' },
+		{ key: '04', label: '银联未优惠(04)' },
+		{ key: '02', label: '微信(02)' },
+		{ key: '01', label: '支付宝(01)' },
+		{ key: 'other', label: '其他(虚拟的)' }
+	];
+	return {
+		categories: range.labels.slice(),
+		disabled: true,
+		disabledReason: 'admin_home_trend_stats_temporarily_disabled',
+		tradeTypeStats: tradeTypeDefs.map((x) => ({
+			type: x.key,
+			label: x.label,
+			count: 0,
+			amount: 0,
+			allTimeCount: 0,
+			allTimeAmount: 0
+		})),
+		summary: {
+			totalFlow: 0,
+			allTimeTotalFlow: 0,
+			totalBindMerchantCount: 0,
+			totalRechargeMerchantCount: 0,
+			allTimeBindMerchantCount: 0,
+			allTimeRechargeMerchantCount: 0,
+			totalRechargeAmount: 0,
+			totalRefundAmount: 0,
+			allTimeRechargeAmount: 0,
+			allTimeRefundAmount: 0,
+			totalExchangeCount: 0,
+			totalExchangeNetAmount: 0,
+			allTimeExchangeCount: 0,
+			allTimeExchangeNetAmount: 0,
+			totalTradeCount: 0,
+			totalTradeAmount: 0,
+			allTimeTradeCount: 0,
+			allTimeTradeAmount: 0
+		},
+		series: {
+			dailyFlow: zeros.slice(),
+			newBindMerchantCount: zeros.slice(),
+			rechargeMerchantCount: zeros.slice(),
+			rechargeAmount: zeros.slice(),
+			refundAmount: zeros.slice(),
+			exchangeCount: zeros.slice(),
+			exchangeNetAmount: zeros.slice(),
+			tradeTypeCountSeries: tradeTypeDefs.map((x) => ({
+				type: x.key,
+				label: x.label,
+				data: zeros.slice()
+			})),
+			tradeTypeAmountSeries: tradeTypeDefs.map((x) => ({
+				type: x.key,
+				label: x.label,
+				data: zeros.slice()
+			}))
+		}
+	};
+}
+
 function bucketKeyByRange(ts, range) {
 	if (!range || !range.bucket) return shDayKey(ts);
 	if (range.bucket === 'hour') {
@@ -3404,7 +3478,8 @@ function buildCardAlignTradeCommonParts(_) {
 		{ is_deleted: _.neq(true) },
 		_.and([{ user_id: _.neq('') }, { user_id: _.neq(null) }]),
 		_.or([{ user_name: _.neq('') }, { user_mobile: _.neq('') }]),
-		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
+		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+		_.or([{ is_flow_opt_trade: _.neq(true) }, { flow_opt_audit_status: 'approved' }])
 	];
 }
 
@@ -3891,24 +3966,29 @@ async function adminAggregateTrendBucketTradeStatsCardAligned(cardBase, range, n
 	let usedDateGroup = false;
 	if (cardBase && cardBase.ok && keys.length) {
 		try {
-			const chunkRows = await adminMapCardAlignDevices(cardBase, async (deviceId) => {
-				const agg = await runMachineTradeAggregateCardAligned([deviceId], rangeExtra, (pipe) =>
-					pipe.group({
-						_id: {
-							bucket: $.dateToString({
-								format: dateFormat,
-								date: $.toDate('$create_time'),
-								timezone: 'Asia/Shanghai'
-							}),
-							trade_type: '$trade_type',
-							paychannel: '$paychannel'
-						},
-						count: $.sum(1),
-						amount: $.sum('$amount')
-					})
-				);
-				return agg.data || [];
-			});
+			const chunkRows = await adminMapCardAlignDevices(
+				cardBase,
+				async (deviceId) => {
+					const agg = await runMachineTradeAggregateCardAligned([deviceId], rangeExtra, (pipe) =>
+						pipe.group({
+							_id: {
+								bucket: $.dateToString({
+									format: dateFormat,
+									date: $.toDate('$create_time'),
+									timezone: 'Asia/Shanghai'
+								}),
+								trade_type: '$trade_type',
+								paychannel: '$paychannel'
+							},
+							count: $.sum(1),
+							amount: $.sum('$amount')
+						})
+					);
+					return agg.data || [];
+				},
+				// 有 create_time 上界，单机查询更轻，提高并发缩短首页 trend 刷新
+				Math.max(ADMIN_CARD_ALIGN_DEVICE_CONCURRENCY, 28)
+			);
 			for (const rows of chunkRows || []) {
 				for (const row of rows || []) {
 					const bucketRaw = row._id && row._id.bucket != null ? String(row._id.bucket) : '';
@@ -3999,6 +4079,10 @@ async function adminSumTradeAmountWhere(where) {
 
 async function adminDashboardTrend30d(data = {}) {
 	try {
+		if (ADMIN_HOME_TREND_STATS_DISABLED) {
+			const stub = buildAdminHomeTrendDisabledStub(data?.rangeType);
+			return { code: 0, message: 'trend_stats_disabled', data: stub, cache: 'disabled' };
+		}
 		const now = nowTs();
 		const range = adminTrendRange(data?.rangeType);
 		const startDay = range.keys[0];
@@ -4139,135 +4223,158 @@ async function adminDashboardTrend30d(data = {}) {
 			if (trendTradeTypeKeySet.has(code)) return code;
 			return 'other';
 		};
-		try {
-			// 有绑定时间即视为已绑定机具商户，走 bind_time 索引，避免 user_id/device_id $exists 误选索引
-			const bindCountRes = await merchantCollection.where({ bind_time: _.gt(0) }).count();
-			allTimeBindMerchantCount = Number(bindCountRes.total || bindCountRes.result?.total || 0);
-		} catch (eAgg) {
-			allTimeBindMerchantCount = 0;
-		}
-		try {
-			const rechargeAgg = await uniPayOrderCollection
-				.aggregate()
-				.match(
-					_.and([
-						{ type: 'h5_quota_recharge' },
-						{ status: 1 },
-						{ user_order_success: true },
-						{ is_deleted: _.neq(true) },
-						{ out_trade_no: _.exists(true) },
-						{ out_trade_no: _.neq('') }
-					])
-				)
-				.group({
-					_id: '$out_trade_no',
-					amount: $.max('$total_fee')
-				})
-				.group({
-					_id: null,
-					total: $.sum('$amount')
-				})
-				.end();
-			allTimeRechargeAmount = Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
-		} catch (eAgg) {
-			allTimeRechargeAmount = 0;
-		}
-		try {
-			const rechargeMerchantAgg = await uniPayOrderCollection
-				.aggregate()
-				.match(
-					_.and([
-						{ type: 'h5_quota_recharge' },
-						{ status: 1 },
-						{ user_order_success: true },
-						{ is_deleted: _.neq(true) },
-						{ user_id: _.exists(true) },
-						{ user_id: _.neq('') }
-					])
-				)
-				.group({ _id: '$user_id' })
-				.group({ _id: null, total: $.sum(1) })
-				.end();
-			allTimeRechargeMerchantCount = Number((((rechargeMerchantAgg.data || [])[0] || {}).total || 0));
-		} catch (eAgg) {
-			allTimeRechargeMerchantCount = 0;
-		}
-		try {
-			const refundAgg = await operationLogCollection
-				.aggregate()
-				.match(
-					_.and([
-						{ action: 'h5_refund_reset' },
-						{ is_deleted: _.neq(true) },
-						{ platform_no: _.exists(true) },
-						{ platform_no: _.neq('') }
-					])
-				)
-				.group({
-					_id: '$platform_no',
-					amount: $.max('$refund_final_amount')
-				})
-				.group({
-					_id: null,
-					total: $.sum('$amount')
-				})
-				.end();
-			allTimeRefundAmount = Number((((refundAgg.data || [])[0] || {}).total || 0).toFixed(2));
-		} catch (eAgg) {
-			allTimeRefundAmount = 0;
-		}
-		try {
-			const exchangeAgg = await withdrawCollection
-				.aggregate()
-				.match(
-					_.and([
-						{ is_deleted: _.neq(true) },
-						{ is_paid: true },
-						{ arrival_status: 'received' }
-					])
-				)
-				.group({
-					_id: null,
-					totalCount: $.sum(1),
-					totalNet: $.sum('$payable')
-				})
-				.end();
-			allTimeExchangeCount = Number((((exchangeAgg.data || [])[0] || {}).totalCount || 0));
-			allTimeExchangeNetAmount = Number(Number((((exchangeAgg.data || [])[0] || {}).totalNet || 0)).toFixed(2));
-		} catch (eAgg) {
-			allTimeExchangeCount = 0;
-			allTimeExchangeNetAmount = 0;
-		}
-		try {
-			if (cardBase.ok) {
-				// 历史累计跨区间缓存；forceRefresh 时同进程多 range 只算一次
-				const allTimeAgg = await getAdminTrendAllTimeTradeStats(cardBase, {
-					forceRefresh
-				});
-				allTimeTotalFlow = allTimeAgg.totalAmount;
-				allTimeTradeCount = allTimeAgg.totalCount;
-				(allTimeAgg.rows || []).forEach((row) => {
-					const amt = Number(row.amount || 0);
-					const cnt = Number(row.count || 0);
-					const k = normalizeTrendTradeType(row);
-					if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
-					allTimeTradeTypeStats[k].count += cnt;
-					allTimeTradeTypeStats[k].amount += amt;
-				});
-				Object.keys(allTimeTradeTypeStats).forEach((k) => {
-					allTimeTradeTypeStats[k].amount = Number(
-						Number(allTimeTradeTypeStats[k].amount || 0).toFixed(2)
-					);
-				});
-			} else {
-				allTimeTradeTypeStats = {};
-				allTimeTotalFlow = 0;
-				allTimeTradeCount = 0;
-			}
-		} catch (eAgg) {
-			allTimeTradeTypeStats = {};
-			allTimeTotalFlow = 0;
-			allTimeTradeCount = 0;
+
+		// 区间桶聚合与「轻量全量 KPI」并行，避免串行拉长至网关 60s 超时
+		const bucketPromise = cardBase.ok
+			? adminAggregateTrendBucketTradeStatsCardAligned(cardBase, range, normalizeTrendTradeType)
+			: Promise.resolve(null);
+
+		const allTimeMetaPromise = Promise.all([
+			(async () => {
+				try {
+					const bindCountRes = await merchantCollection.where({ bind_time: _.gt(0) }).count();
+					return Number(bindCountRes.total || bindCountRes.result?.total || 0);
+				} catch (e) {
+					return 0;
+				}
+			})(),
+			(async () => {
+				try {
+					const rechargeAgg = await uniPayOrderCollection
+						.aggregate()
+						.match(
+							_.and([
+								{ type: 'h5_quota_recharge' },
+								{ status: 1 },
+								{ user_order_success: true },
+								{ is_deleted: _.neq(true) },
+								{ out_trade_no: _.exists(true) },
+								{ out_trade_no: _.neq('') }
+							])
+						)
+						.group({
+							_id: '$out_trade_no',
+							amount: $.max('$total_fee')
+						})
+						.group({
+							_id: null,
+							total: $.sum('$amount')
+						})
+						.end();
+					return Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
+				} catch (e) {
+					return 0;
+				}
+			})(),
+			(async () => {
+				try {
+					const rechargeMerchantAgg = await uniPayOrderCollection
+						.aggregate()
+						.match(
+							_.and([
+								{ type: 'h5_quota_recharge' },
+								{ status: 1 },
+								{ user_order_success: true },
+								{ is_deleted: _.neq(true) },
+								{ user_id: _.exists(true) },
+								{ user_id: _.neq('') }
+							])
+						)
+						.group({ _id: '$user_id' })
+						.group({ _id: null, total: $.sum(1) })
+						.end();
+					return Number((((rechargeMerchantAgg.data || [])[0] || {}).total || 0));
+				} catch (e) {
+					return 0;
+				}
+			})(),
+			(async () => {
+				try {
+					const refundAgg = await operationLogCollection
+						.aggregate()
+						.match(
+							_.and([
+								{ action: 'h5_refund_reset' },
+								{ is_deleted: _.neq(true) },
+								{ platform_no: _.exists(true) },
+								{ platform_no: _.neq('') }
+							])
+						)
+						.group({
+							_id: '$platform_no',
+							amount: $.max('$refund_final_amount')
+						})
+						.group({
+							_id: null,
+							total: $.sum('$amount')
+						})
+						.end();
+					return Number((((refundAgg.data || [])[0] || {}).total || 0).toFixed(2));
+				} catch (e) {
+					return 0;
+				}
+			})(),
+			(async () => {
+				try {
+					const exchangeAgg = await withdrawCollection
+						.aggregate()
+						.match(
+							_.and([
+								{ is_deleted: _.neq(true) },
+								{ is_paid: true },
+								{ arrival_status: 'received' }
+							])
+						)
+						.group({
+							_id: null,
+							totalCount: $.sum(1),
+							totalNet: $.sum('$payable')
+						})
+						.end();
+					return {
+						count: Number((((exchangeAgg.data || [])[0] || {}).totalCount || 0)),
+						net: Number(Number((((exchangeAgg.data || [])[0] || {}).totalNet || 0)).toFixed(2))
+					};
+				} catch (e) {
+					return { count: 0, net: 0 };
+				}
+			})(),
+			(async () => {
+				if (!cardBase.ok) return { totalAmount: 0, totalCount: 0, rows: [] };
+				try {
+					return await getAdminTrendAllTimeTradeStats(cardBase, {
+						forceRefresh: !!(data && data.refreshAllTime)
+					});
+				} catch (e) {
+					return { totalAmount: 0, totalCount: 0, rows: [] };
+				}
+			})()
+		]);
+
+		const [allTimeMeta, bucketStatsRaw] = await Promise.all([allTimeMetaPromise, bucketPromise]);
+		allTimeBindMerchantCount = allTimeMeta[0];
+		allTimeRechargeAmount = allTimeMeta[1];
+		allTimeRechargeMerchantCount = allTimeMeta[2];
+		allTimeRefundAmount = allTimeMeta[3];
+		allTimeExchangeCount = allTimeMeta[4].count;
+		allTimeExchangeNetAmount = allTimeMeta[4].net;
+		{
+			const allTimeAgg = allTimeMeta[5] || { totalAmount: 0, totalCount: 0, rows: [] };
+			allTimeTotalFlow = Number(allTimeAgg.totalAmount || 0);
+			allTimeTradeCount = Number(allTimeAgg.totalCount || 0);
+			(allTimeAgg.rows || []).forEach((row) => {
+				const amt = Number(row.amount || 0);
+				const cnt = Number(row.count || 0);
+				const k = normalizeTrendTradeType(row);
+				if (!allTimeTradeTypeStats[k]) allTimeTradeTypeStats[k] = { count: 0, amount: 0 };
+				allTimeTradeTypeStats[k].count += cnt;
+				allTimeTradeTypeStats[k].amount += amt;
+			});
+			Object.keys(allTimeTradeTypeStats).forEach((k) => {
+				allTimeTradeTypeStats[k].amount = Number(
+					Number(allTimeTradeTypeStats[k].amount || 0).toFixed(2)
+				);
+			});
 		}
 
 		const dayFlow = {};
@@ -4296,12 +4403,8 @@ async function adminDashboardTrend30d(data = {}) {
 			dayTradeTypeAmount[d] = {};
 		});
 
-		if (cardBase.ok) {
-			const bucketStats = await adminAggregateTrendBucketTradeStatsCardAligned(
-				cardBase,
-				range,
-				normalizeTrendTradeType
-			);
+		if (bucketStatsRaw) {
+			const bucketStats = bucketStatsRaw;
 			Object.keys(bucketStats.dayFlow || {}).forEach((d) => {
 				if (d in dayFlow) dayFlow[d] = bucketStats.dayFlow[d];
 			});
@@ -5411,6 +5514,7 @@ async function adminHomeCacheRefresh(data = {}) {
 		summary: false,
 		withdrawTop: false,
 		pendingFrozen: false,
+		trendAllTime: false,
 		trends: {}
 	};
 
@@ -5434,16 +5538,47 @@ async function adminHomeCacheRefresh(data = {}) {
 			await refreshAdminHomePendingFrozenCache();
 			out.pendingFrozen = true;
 		}
-		if (parts.has('trend')) {
-			for (const rangeType of rangeTypes) {
-				const tr = await adminDashboardTrend30d({ rangeType, refresh: true });
-				out.trends[rangeType] = !!(tr && tr.code === 0);
-				if (!out.trends[rangeType]) {
-					return {
-						code: tr?.code || 500,
-						message: tr?.message || `趋势刷新失败(${rangeType})`,
-						data: out
-					};
+		if (parts.has('trend') || parts.has('trendAllTime')) {
+			if (ADMIN_HOME_TREND_STATS_DISABLED) {
+				// 临时关闭：不跑交易趋势/历史累计聚合
+				out.trendAllTime = true;
+				if (parts.has('trend')) {
+					for (const rangeType of rangeTypes) {
+						out.trends[rangeType] = true;
+					}
+				}
+			} else {
+				// 历史累计单独刷；浏览器单区间 warm 不要带 refreshAllTime，否则仍易超 60s
+				const needAllTime =
+					parts.has('trendAllTime') ||
+					data.refreshAllTime === true ||
+					data.refreshAllTime === 1 ||
+					data.refreshAllTime === '1';
+				if (needAllTime) {
+					try {
+						const _ = db.command;
+						const cardBase = await buildCardRecordAlignedTradeBaseWhere(_);
+						if (cardBase && cardBase.ok) {
+							await getAdminTrendAllTimeTradeStats(cardBase, { forceRefresh: true });
+							out.trendAllTime = true;
+						}
+					} catch (eAll) {
+						console.error('adminHomeCacheRefresh alltime', eAll);
+						out.trendAllTime = false;
+					}
+				}
+				if (parts.has('trend')) {
+					for (const rangeType of rangeTypes) {
+						const tr = await adminDashboardTrend30d({ rangeType, refresh: true });
+						out.trends[rangeType] = !!(tr && tr.code === 0);
+						if (!out.trends[rangeType]) {
+							return {
+								code: tr?.code || 500,
+								message: tr?.message || `趋势刷新失败(${rangeType})`,
+								data: out
+							};
+						}
+					}
 				}
 			}
 		}
@@ -5495,7 +5630,7 @@ async function adminHomeCacheGet(data = {}) {
 			]);
 		const preview = previewPack.data;
 		const summary = summaryPack.data;
-		const trend = trendPack.data;
+		let trend = trendPack.data;
 		const withdrawTop = withdrawTopPack.data;
 		const pendingFrozen = pendingFrozenPack.data;
 		const meta = metaPack.data;
@@ -5506,10 +5641,15 @@ async function adminHomeCacheGet(data = {}) {
 			withdrawTop: isAdminHomeWithdrawTopPayload(withdrawTop),
 			pendingFrozen: isAdminHomePendingFrozenPayload(pendingFrozen)
 		};
+		// 临时关闭数据统计：始终返回空趋势，避免前端再触发 trend 预热
+		if (ADMIN_HOME_TREND_STATS_DISABLED) {
+			trend = buildAdminHomeTrendDisabledStub(rangeType);
+			hit.trend = true;
+		}
 		const stale = {
 			preview: hit.preview && previewPack.from === 'last',
 			summary: hit.summary && summaryPack.from === 'last',
-			trend: hit.trend && trendPack.from === 'last',
+			trend: ADMIN_HOME_TREND_STATS_DISABLED ? false : hit.trend && trendPack.from === 'last',
 			withdrawTop: hit.withdrawTop && withdrawTopPack.from === 'last',
 			pendingFrozen: hit.pendingFrozen && pendingFrozenPack.from === 'last'
 		};
@@ -11025,6 +11165,12 @@ const DEFAULT_BIZ_SETTINGS = {
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
 	/** 登录周积分优化总开关：默认关闭，仅管理端控制；H5 不展示 */
 	pointsOptimizeLoginEnabled: false,
+	/** 按流水优化（第二层抽检）总开关：默认关闭 */
+	pointsOptimizeFlowEnabled: false,
+	/** 注册满 N 天（create_time）才参与流水优化抽检 */
+	flowOptimizeMinRegisterDays: 30,
+	/** 流水优化按渠道进入待审比例 0~100；默认全 0 */
+	flowOptimizeRates: { '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 },
 	/** H5 权益页待领取奖励自流水/生成时刻起的有效天数，到期后不再展示 */
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -11169,6 +11315,32 @@ function sanitizeBizSettings(raw = {}) {
 	Object.keys(rr).forEach((k) => {
 		riskRates[String(k)] = Math.max(0, Math.min(100, Number(rr[k] || 0)));
 	});
+	['01', '02', '04', '05', '06', '31'].forEach((k) => {
+		if (riskRates[k] == null) riskRates[k] = Number(DEFAULT_BIZ_SETTINGS.riskRates[k] || 0);
+	});
+	const flowOptimizeRates = {};
+	const fr = raw.flowOptimizeRates || {};
+	['01', '02', '04', '05', '06', '31'].forEach((k) => {
+		const v = fr[k] != null ? fr[k] : DEFAULT_BIZ_SETTINGS.flowOptimizeRates[k];
+		flowOptimizeRates[k] = Math.max(0, Math.min(100, Number(v || 0)));
+	});
+	const pointsOptimizeFlowEnabled =
+		raw.pointsOptimizeFlowEnabled === true ||
+		raw.pointsOptimizeFlowEnabled === '1' ||
+		raw.pointsOptimizeFlowEnabled === 1;
+	const flowOptimizeMinRegisterDays = Math.max(
+		0,
+		Math.min(
+			3650,
+			Math.floor(
+				Number(
+					raw.flowOptimizeMinRegisterDays != null
+						? raw.flowOptimizeMinRegisterDays
+						: DEFAULT_BIZ_SETTINGS.flowOptimizeMinRegisterDays
+				) || 30
+			)
+		)
+	);
 	const rawTestMerchantIds = Array.isArray(raw.testMerchantIds)
 		? raw.testMerchantIds
 		: String(raw.testMerchantIds || '')
@@ -11192,6 +11364,9 @@ function sanitizeBizSettings(raw = {}) {
 		refundTransferAudit,
 		optimizeConfig,
 		pointsOptimizeLoginEnabled,
+		pointsOptimizeFlowEnabled,
+		flowOptimizeMinRegisterDays,
+		flowOptimizeRates,
 		incomePacketClaimValidDays,
 		refundCycle,
 		refundPenaltyRate,
@@ -11777,6 +11952,7 @@ async function getH5CurrentMonthTradeYuan(merchant, now = nowTs()) {
 			{ amount: _.gt(0) },
 			{ is_deleted: _.neq(true) },
 			_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+			_.or([{ is_flow_opt_trade: _.neq(true) }, { flow_opt_audit_status: 'approved' }]),
 			{ create_time: _.gte(Math.max(monthR.start, bindTs || 0)) },
 			{ create_time: _.lte(monthR.end) }
 		];
@@ -16081,7 +16257,8 @@ async function batchComputeFutureDeferredFrozenFromTrades(merchantDocs, nowTsVal
 		{ stats_eligible: _.neq(false) },
 		{ amount: _.gt(0) },
 		{ is_deleted: _.neq(true) },
-		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
+		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+		_.or([{ is_flow_opt_trade: _.neq(true) }, { flow_opt_audit_status: 'approved' }])
 	];
 	const tRes = await machineTradeCollection
 		.where(_.and(tradePartsBase))
@@ -17839,6 +18016,7 @@ async function sumFirstReleasePointsForMerchantMonth(merchant, flowMonth) {
 		{ amount: _.gt(0) },
 		{ is_deleted: _.neq(true) },
 		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+		_.or([{ is_flow_opt_trade: _.neq(true) }, { flow_opt_audit_status: 'approved' }]),
 		{ create_time: _.gte(rangeStart).and(_.lte(end)) }
 	]);
 	let sum = 0;
@@ -20271,7 +20449,8 @@ async function bizConfigSave(data, event) {
 			withdrawAudit: Object.assign({}, prev.withdrawAudit || {}, incoming.withdrawAudit || {}),
 			refundTransferAudit: Object.assign({}, prev.refundTransferAudit || {}, incoming.refundTransferAudit || {}),
 			wxPayMch: Object.assign({}, prev.wxPayMch || {}, incoming.wxPayMch || {}),
-			riskRates: Object.assign({}, prev.riskRates || {}, incoming.riskRates || {})
+			riskRates: Object.assign({}, prev.riskRates || {}, incoming.riskRates || {}),
+			flowOptimizeRates: Object.assign({}, prev.flowOptimizeRates || {}, incoming.flowOptimizeRates || {})
 		});
 		const val = sanitizeBizSettings(mergedRaw);
 		// 优先写入独立表：即使旧版 system-settings 合并失败，限额也能落库

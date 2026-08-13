@@ -165,7 +165,8 @@ function buildEligibleSubsidyTradeWhere(db, merchantUserId) {
 		{ stats_eligible: _.neq(false) },
 		{ amount: _.gt(0) },
 		_.or([{ subsidy_void: _.neq(true) }, { subsidy_void: _.exists(false) }]),
-		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }])
+		_.or([{ is_risk_trade: _.neq(true) }, { risk_audit_status: 'approved' }]),
+		_.or([{ is_flow_opt_trade: _.neq(true) }, { flow_opt_audit_status: 'approved' }])
 	]);
 }
 

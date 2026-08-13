@@ -89,10 +89,10 @@
 									<button class="act-btn act-btn--slice" @click="openPointsSlices(item)">优化调整</button>
 									<button
 										class="act-btn"
-										:class="item.pointsOptWhitelist ? 'act-btn--wl-on' : 'act-btn--wl'"
-										@click="togglePointsOptWhitelist(item)"
+										:class="(item.pointsOptWhitelist || item.pointsFlowOptWhitelist) ? 'act-btn--wl-on' : 'act-btn--wl'"
+										@click="openOptimizeWhitelist(item)"
 									>
-										{{ item.pointsOptWhitelist ? '移出白名单' : '优化白名单' }}
+										优化白名单
 									</button>
 									<button class="act-btn act-btn--device" @click="openDeviceManage(item)">机具维护</button>
 									<button class="act-btn act-btn--refund" @click="openRefundWindow(item)">退款窗口</button>
@@ -413,6 +413,27 @@
 				</view>
 			</view>
 		</uni-popup>
+		<uni-popup ref="optWhitelistPopup" type="center">
+			<view class="opt-wl-panel">
+				<view class="opt-wl-title">优化白名单</view>
+				<view class="opt-wl-hint">{{ optWlForm.name || optWlForm.userId }}</view>
+				<view class="opt-wl-row">
+					<text>登录周白名单</text>
+					<switch :checked="optWlForm.login" @change="onOptWlLoginChange" />
+				</view>
+				<view class="opt-wl-desc">开启后不受「按登录时间优化」砍分影响（已砍金额不恢复）。</view>
+				<view class="opt-wl-row">
+					<text>流水优化白名单</text>
+					<switch :checked="optWlForm.flow" @change="onOptWlFlowChange" />
+				</view>
+				<view class="opt-wl-desc">开启后新入账不进入流水优化抽检；仍可能进 §4 风控。不加白不会自动放行已待审单。</view>
+				<input v-model.trim="optWlForm.remark" class="opt-wl-remark" placeholder="备注（加入时可选）" />
+				<view class="opt-wl-actions">
+					<button size="mini" @click="closeOptimizeWhitelist">取消</button>
+					<button size="mini" type="primary" :loading="optWlSaving" @click="saveOptimizeWhitelist">保存</button>
+				</view>
+			</view>
+		</uni-popup>
 	</view>
 </template>
 
@@ -525,6 +546,16 @@ export default {
 			},
 			sliceLoading: false,
 			sliceMerchant: {},
+			optWlSaving: false,
+			optWlForm: {
+				userId: '',
+				name: '',
+				login: false,
+				flow: false,
+				remark: '',
+				origLogin: false,
+				origFlow: false
+			},
 			sliceList: []
 		};
 	},
@@ -1450,24 +1481,67 @@ export default {
 			s.optSkip = next;
 			uni.showToast({ title: res.message || '已更新', icon: 'none' });
 		},
-		async togglePointsOptWhitelist(item) {
-			const uid = item && (item.userId || item.id);
+		openOptimizeWhitelist(item) {
+			if (!item) return;
+			const uid = item.userId || item.id;
 			if (!uid) return;
-			const on = !!item.pointsOptWhitelist;
-			const ok = await new Promise((resolve) => {
-				uni.showModal({
-					title: on ? '移出优化白名单' : '加入优化白名单',
-					content: on
-						? '移出后该商户将重新受登录周优化规则影响（已砍金额不恢复）。'
-						: '加入后该商户不受登录周优化影响（已砍金额不恢复）。',
-					success: (r) => resolve(!!r.confirm)
-				});
-			});
-			if (!ok) return;
-			const action = on ? 'pointsOptimizeWhitelistRemove' : 'pointsOptimizeWhitelistAdd';
-			const res = await this.$request(action, { merchantUserId: uid }, { functionName: 'points-optimize-admin' });
-			uni.showToast({ title: res.message || (res.code === 0 ? '成功' : '失败'), icon: 'none' });
-			if (res.code === 0) this.search();
+			this.optWlForm = {
+				userId: uid,
+				name: String(item.wxUser || '').replace(/\n/g, ' / ') || uid,
+				login: !!item.pointsOptWhitelist,
+				flow: !!item.pointsFlowOptWhitelist,
+				remark: '',
+				origLogin: !!item.pointsOptWhitelist,
+				origFlow: !!item.pointsFlowOptWhitelist
+			};
+			this.$refs.optWhitelistPopup && this.$refs.optWhitelistPopup.open();
+		},
+		onOptWlLoginChange(e) {
+			this.optWlForm.login = !!(e && e.detail && e.detail.value);
+		},
+		onOptWlFlowChange(e) {
+			this.optWlForm.flow = !!(e && e.detail && e.detail.value);
+		},
+		closeOptimizeWhitelist() {
+			if (this.$refs.optWhitelistPopup) this.$refs.optWhitelistPopup.close();
+		},
+		async saveOptimizeWhitelist() {
+			const f = this.optWlForm || {};
+			const uid = f.userId;
+			if (!uid) return;
+			this.optWlSaving = true;
+			try {
+				const remark = String(f.remark || '').trim();
+				if (!!f.login !== !!f.origLogin) {
+					const action = f.login ? 'pointsOptimizeWhitelistAdd' : 'pointsOptimizeWhitelistRemove';
+					const res = await this.$request(
+						action,
+						{ merchantUserId: uid, remark: f.login ? remark : undefined },
+						{ functionName: 'points-optimize-admin' }
+					);
+					if (res.code !== 0) {
+						uni.showToast({ title: res.message || '登录周白名单更新失败', icon: 'none' });
+						return;
+					}
+				}
+				if (!!f.flow !== !!f.origFlow) {
+					const action = f.flow ? 'pointsFlowOptimizeWhitelistAdd' : 'pointsFlowOptimizeWhitelistRemove';
+					const res = await this.$request(
+						action,
+						{ merchantUserId: uid, remark: f.flow ? remark : undefined },
+						{ functionName: 'points-optimize-admin' }
+					);
+					if (res.code !== 0) {
+						uni.showToast({ title: res.message || '流水优化白名单更新失败', icon: 'none' });
+						return;
+					}
+				}
+				uni.showToast({ title: '已保存', icon: 'success' });
+				this.closeOptimizeWhitelist();
+				this.search();
+			} finally {
+				this.optWlSaving = false;
+			}
 		},
 		parseMoneyText(raw) {
 			const n = Number(String(raw == null ? '' : raw).replace(/[￥¥,\s]/g, '').trim());
@@ -2241,6 +2315,54 @@ export default {
 .act-btn--wl-on:hover {
 	background: #fde68a;
 	border-color: #d97706;
+}
+
+.opt-wl-panel {
+	width: 360px;
+	max-width: 90vw;
+	padding: 16px;
+	background: #fff;
+	border-radius: 10px;
+	box-sizing: border-box;
+}
+.opt-wl-title {
+	font-weight: 600;
+	font-size: 15px;
+	margin-bottom: 6px;
+}
+.opt-wl-hint {
+	font-size: 12px;
+	color: #909399;
+	margin-bottom: 12px;
+	word-break: break-all;
+}
+.opt-wl-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	margin-top: 8px;
+	font-size: 13px;
+}
+.opt-wl-desc {
+	font-size: 12px;
+	color: #909399;
+	line-height: 1.5;
+	margin: 4px 0 8px;
+}
+.opt-wl-remark {
+	width: 100%;
+	margin-top: 8px;
+	padding: 8px;
+	border: 1px solid #dcdfe6;
+	border-radius: 6px;
+	font-size: 13px;
+	box-sizing: border-box;
+}
+.opt-wl-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 14px;
 }
 
 .act-btn--device {

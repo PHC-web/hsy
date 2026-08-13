@@ -44,12 +44,20 @@
 		"points_opt_update_time": { "bsonType": "timestamp", "description": "上次登录周优化时间" },
 		"points_opt_whitelist": {
 			"bsonType": "bool",
-			"description": "积分优化白名单：true 不受登录周优化",
+			"description": "登录周积分优化白名单：true 不受登录周优化",
 			"default": false
 		},
-		"points_opt_whitelist_at": { "bsonType": "timestamp", "description": "加入白名单时间" },
-		"points_opt_whitelist_by": { "bsonType": "string", "description": "白名单操作人" },
-		"points_opt_whitelist_remark": { "bsonType": "string", "description": "白名单备注" },
+		"points_opt_whitelist_at": { "bsonType": "timestamp", "description": "加入登录周白名单时间" },
+		"points_opt_whitelist_by": { "bsonType": "string", "description": "登录周白名单操作人" },
+		"points_opt_whitelist_remark": { "bsonType": "string", "description": "登录周白名单备注" },
+		"points_flow_opt_whitelist": {
+			"bsonType": "bool",
+			"description": "流水优化白名单：true 不进入按流水优化抽检（仍可进 §4 风控）",
+			"default": false
+		},
+		"points_flow_opt_whitelist_at": { "bsonType": "timestamp", "description": "加入流水优化白名单时间" },
+		"points_flow_opt_whitelist_by": { "bsonType": "string", "description": "流水优化白名单操作人" },
+		"points_flow_opt_whitelist_remark": { "bsonType": "string", "description": "流水优化白名单备注" },
 		"recharge_total_yuan": {
 			"bsonType": "number",
 			"description": "当前充值周期内用户已成功支付的累计金额（元），退款成功后清零",

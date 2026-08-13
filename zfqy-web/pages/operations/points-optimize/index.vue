@@ -112,7 +112,7 @@
 				</view>
 
 				<view v-else-if="loginTab === 'whitelist'" class="card">
-					<view class="hint">加入后不受「按登录时间优化」规则影响；已砍金额不恢复。与流水优化白名单相互独立（后者待上线）。</view>
+					<view class="hint">加入后不受「按登录时间优化」规则影响；已砍金额不恢复。与「流水优化白名单」相互独立。</view>
 					<view class="row">
 						<input v-model.trim="wlForm.keyword" class="input" placeholder="搜索：商户编号 / 机具号" />
 						<button size="mini" :loading="loading" @click="searchWhitelist">搜索</button>
@@ -197,14 +197,109 @@
 				</view>
 			</template>
 
-			<!-- 按流水优化：独立能力，后续自带总开关 / 白名单 / 任务日志 -->
-			<view v-else class="card flow-placeholder">
-				<view class="flow-title">按流水优化</view>
-				<view class="intro">
-					与「按登录时间优化」相互独立。后续将单独提供总开关、白名单、任务日志与执行能力，不与登录周共用。
+			<!-- 按流水优化：总开关 + 白名单 / 任务日志（无手动执行） -->
+			<template v-else>
+				<view class="switch-bar">
+					<text>流水优化总开关：</text>
+					<text :class="flowEnabled ? 'on' : 'off'">{{ flowEnabled ? '已开启' : '已关闭' }}</text>
+					<button size="mini" type="primary" plain @click="goBizConfig">去参数配置</button>
 				</view>
-				<view class="hint">功能待设计，敬请期待。</view>
-			</view>
+				<view class="hint" style="margin-bottom: 12px">
+					§4 风控未命中后，对注册满 N 天且非流水白名单的商户按渠道比例抽检进入「优化管理」待审；不加企微、无手动跑批。加白名单不自动放行已待审单。
+				</view>
+
+				<view class="tab-bar sub-bar">
+					<text
+						:class="['tab-item', flowTab === 'whitelist' ? 'tab-active' : '']"
+						@click="switchFlowTab('whitelist')"
+					>白名单</text>
+					<text
+						:class="['tab-item', flowTab === 'logs' ? 'tab-active' : '']"
+						@click="switchFlowTab('logs')"
+					>任务日志</text>
+				</view>
+
+				<view v-if="flowTab === 'whitelist'" class="card">
+					<view class="hint">加入后新入账不再进入流水优化抽检；仍可能进入 §4 风控。已待审单不会因加白自动放行。</view>
+					<view class="row">
+						<input v-model.trim="flowWlForm.keyword" class="input" placeholder="搜索：商户编号 / 机具号" />
+						<button size="mini" :loading="loading" @click="searchFlowWhitelist">搜索</button>
+						<button size="mini" :loading="loading" @click="resetFlowWhitelistSearch">清空搜索</button>
+					</view>
+					<view class="row">
+						<input v-model.trim="flowWlForm.ids" class="input flex" placeholder="加入白名单：商户编号 / 机具号，多个用逗号或换行" />
+						<input v-model.trim="flowWlForm.remark" class="input" placeholder="备注" />
+						<button size="mini" type="primary" :loading="loading" @click="addFlowWhitelist">加入</button>
+						<button size="mini" :loading="loading" @click="loadFlowWhitelist">刷新列表</button>
+					</view>
+					<uni-table border stripe :loading="loading" empty-text="暂无白名单">
+						<uni-tr>
+							<uni-th width="120">商户</uni-th>
+							<uni-th width="110">手机</uni-th>
+							<uni-th width="140">商户编号</uni-th>
+							<uni-th width="140">加入时间</uni-th>
+							<uni-th width="80">操作人</uni-th>
+							<uni-th>备注</uni-th>
+							<uni-th width="80">操作</uni-th>
+						</uni-tr>
+						<uni-tr v-for="item in flowWlList" :key="item.id">
+							<uni-td>{{ item.name }}</uni-td>
+							<uni-td>{{ item.mobile || '-' }}</uni-td>
+							<uni-td class="tiny">{{ item.userId }}</uni-td>
+							<uni-td>{{ item.at || '-' }}</uni-td>
+							<uni-td>{{ item.by || '-' }}</uni-td>
+							<uni-td>{{ item.remark || '-' }}</uni-td>
+							<uni-td>
+								<button size="mini" type="warn" plain @click="removeFlowWhitelist(item)">移出</button>
+							</uni-td>
+						</uni-tr>
+					</uni-table>
+					<view class="uni-pagination-box">
+						<uni-pagination
+							show-icon
+							:page-size="flowWlPage.pageSize"
+							v-model="flowWlPage.currentPage"
+							:total="flowWlPage.total"
+							@change="loadFlowWhitelist"
+						/>
+					</view>
+				</view>
+
+				<view v-else class="card">
+					<view class="hint">仅记录流水优化白名单增删。开关变更请在「参数配置」查看/修改。</view>
+					<button size="mini" :loading="loading" @click="loadFlowLogs">刷新日志</button>
+					<uni-table border stripe :loading="loading" empty-text="暂无日志">
+						<uni-tr>
+							<uni-th width="150">时间</uni-th>
+							<uni-th width="120">动作</uni-th>
+							<uni-th width="100">商户名称</uni-th>
+							<uni-th width="140">商户编号</uni-th>
+							<uni-th width="80">操作人</uni-th>
+							<uni-th>备注</uni-th>
+						</uni-tr>
+						<uni-tr v-for="item in flowLogList" :key="item._id">
+							<uni-td>{{ fmtTs(item.create_time) }}</uni-td>
+							<uni-td>{{ logActionLabel(item.action) }}</uni-td>
+							<uni-td>{{ item.merchant_name || '-' }}</uni-td>
+							<uni-td class="tiny">{{ item.merchant_user_id || '-' }}</uni-td>
+							<uni-td>{{ item.operator || '-' }}</uni-td>
+							<uni-td class="tiny">{{ item.remark || '' }}</uni-td>
+						</uni-tr>
+					</uni-table>
+					<view class="uni-pagination-box">
+						<uni-pagination
+							show-icon
+							show-page-size
+							:page-size="flowLogPage.pageSize"
+							:page-size-range="logPageSizeRange"
+							v-model="flowLogPage.currentPage"
+							:total="flowLogPage.total"
+							@change="onFlowLogPageChanged"
+							@pageSizeChange="onFlowLogPageSizeChange"
+						/>
+					</view>
+				</view>
+			</template>
 		</view>
 
 		<uni-popup ref="slicePopup" type="center">
@@ -263,9 +358,12 @@ export default {
 			mode: 'login',
 			/** 登录时间优化下二级：run / whitelist / logs */
 			loginTab: 'run',
+			/** 流水优化下二级：whitelist / logs */
+			flowTab: 'whitelist',
 			loading: false,
 			running: false,
 			enabled: false,
+			flowEnabled: false,
 			previewList: [],
 			previewSelected: {},
 			previewPage: { currentPage: 1, pageSize: 5, total: 0 },
@@ -276,8 +374,13 @@ export default {
 			wlForm: { ids: '', remark: '', keyword: '' },
 			wlList: [],
 			wlPage: { currentPage: 1, pageSize: 20, total: 0 },
+			flowWlForm: { ids: '', remark: '', keyword: '' },
+			flowWlList: [],
+			flowWlPage: { currentPage: 1, pageSize: 20, total: 0 },
 			logList: [],
 			logPage: { currentPage: 1, pageSize: 20, total: 0 },
+			flowLogList: [],
+			flowLogPage: { currentPage: 1, pageSize: 20, total: 0 },
 			logPageSizeRange: [20, 50, 100],
 			sliceMerchant: {},
 			sliceList: []
@@ -355,7 +458,9 @@ export default {
 				slice_opt_skip: '标记后续不优化',
 				slice_opt_unskip: '取消后续不优化',
 				whitelist_add: '加入白名单',
-				whitelist_remove: '移出白名单'
+				whitelist_remove: '移出白名单',
+				flow_whitelist_add: '加入流水白名单',
+				flow_whitelist_remove: '移出流水白名单'
 			};
 			return map[action] || action || '-';
 		},
@@ -377,7 +482,12 @@ export default {
 			uni.navigateTo({ url: '/pages/system/biz-config/index' });
 		},
 		async refreshAll() {
-			if (this.mode !== 'login') return;
+			if (this.mode === 'flow') {
+				await this.loadFlowEnabled();
+				if (this.flowTab === 'whitelist') await this.loadFlowWhitelist();
+				else await this.loadFlowLogs();
+				return;
+			}
 			await this.loadEnabled();
 			if (this.loginTab === 'run') await this.preview();
 			else if (this.loginTab === 'whitelist') await this.loadWhitelist();
@@ -386,7 +496,7 @@ export default {
 		switchMode(m) {
 			if (m === this.mode) return;
 			this.mode = m;
-			if (m === 'login') this.refreshAll();
+			this.refreshAll();
 		},
 		switchLoginTab(t) {
 			this.loginTab = t;
@@ -394,10 +504,24 @@ export default {
 			if (t === 'whitelist') this.loadWhitelist();
 			if (t === 'logs') this.loadLogs();
 		},
+		switchFlowTab(t) {
+			this.flowTab = t;
+			if (t === 'whitelist') this.loadFlowWhitelist();
+			if (t === 'logs') this.loadFlowLogs();
+		},
 		async loadEnabled() {
 			try {
 				const res = await this.$request('bizConfigGet', {}, { functionName: 'merchant' });
-				if (res.code === 0) this.enabled = !!(res.data && res.data.pointsOptimizeLoginEnabled);
+				if (res.code === 0) {
+					this.enabled = !!(res.data && res.data.pointsOptimizeLoginEnabled);
+					this.flowEnabled = !!(res.data && res.data.pointsOptimizeFlowEnabled);
+				}
+			} catch (e) {}
+		},
+		async loadFlowEnabled() {
+			try {
+				const res = await this.$request('bizConfigGet', {}, { functionName: 'merchant' });
+				if (res.code === 0) this.flowEnabled = !!(res.data && res.data.pointsOptimizeFlowEnabled);
 			} catch (e) {}
 		},
 		async preview(options = {}) {
@@ -656,6 +780,112 @@ export default {
 			);
 			uni.showToast({ title: res.message || '完成', icon: 'none' });
 			await this.loadWhitelist();
+		},
+		async loadFlowWhitelist() {
+			this.loading = true;
+			try {
+				const res = await this.$request(
+					'pointsFlowOptimizeWhitelistList',
+					{
+						page: this.flowWlPage.currentPage,
+						pageSize: this.flowWlPage.pageSize,
+						keyword: this.flowWlForm.keyword || undefined
+					},
+					{ functionName: 'points-optimize-admin' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+					return;
+				}
+				this.flowWlList = (res.data && res.data.list) || [];
+				this.flowWlPage.total = Number((res.data && res.data.total) || 0);
+				syncOpsListPageSize(this.flowWlPage, res.data);
+			} finally {
+				this.loading = false;
+			}
+		},
+		searchFlowWhitelist() {
+			this.flowWlPage.currentPage = 1;
+			return this.loadFlowWhitelist();
+		},
+		resetFlowWhitelistSearch() {
+			this.flowWlForm.keyword = '';
+			this.flowWlPage.currentPage = 1;
+			return this.loadFlowWhitelist();
+		},
+		async addFlowWhitelist() {
+			const raw = String(this.flowWlForm.ids || '')
+				.split(/[\n,，;\s]+/)
+				.map((x) => x.trim())
+				.filter(Boolean);
+			if (!raw.length) {
+				uni.showToast({ title: '请输入商户编号', icon: 'none' });
+				return;
+			}
+			this.loading = true;
+			try {
+				const res = await this.$request(
+					'pointsFlowOptimizeWhitelistAdd',
+					{ merchantUserIds: raw, remark: this.flowWlForm.remark },
+					{ functionName: 'points-optimize-admin' }
+				);
+				uni.showToast({ title: res.message || '完成', icon: 'none' });
+				this.flowWlForm.ids = '';
+				await this.loadFlowWhitelist();
+			} finally {
+				this.loading = false;
+			}
+		},
+		async removeFlowWhitelist(item) {
+			const ok = await this.confirmRun(`移出流水优化白名单：${item.name || item.userId}？`);
+			if (!ok) return;
+			const res = await this.$request(
+				'pointsFlowOptimizeWhitelistRemove',
+				{ merchantUserId: item.userId || item.id },
+				{ functionName: 'points-optimize-admin' }
+			);
+			uni.showToast({ title: res.message || '完成', icon: 'none' });
+			await this.loadFlowWhitelist();
+		},
+		async loadFlowLogs() {
+			this.loading = true;
+			try {
+				const res = await this.$request(
+					'pointsOptimizeLogsList',
+					{
+						scope: 'flow',
+						page: this.flowLogPage.currentPage,
+						pageSize: this.flowLogPage.pageSize
+					},
+					{ functionName: 'points-optimize-admin' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+					return;
+				}
+				this.flowLogList = (res.data && res.data.list) || [];
+				this.flowLogPage.total = Number((res.data && res.data.total) || 0);
+				syncOpsListPageSize(this.flowLogPage, res.data);
+			} finally {
+				this.loading = false;
+			}
+		},
+		onFlowLogPageChanged(page) {
+			const p = typeof page === 'number' ? page : Number(page?.current || page?.currentPage || page?.page || 1);
+			this.flowLogPage.currentPage = Number.isFinite(p) && p > 0 ? p : 1;
+			this.loadFlowLogs();
+		},
+		onFlowLogPageSizeChange(size) {
+			let s = 20;
+			if (typeof size === 'number' && Number.isFinite(size)) s = size;
+			else if (size && typeof size === 'object') {
+				s = Number(size.pageSize != null ? size.pageSize : size.size);
+			} else {
+				s = Number(size);
+			}
+			this.flowLogPage.pageSize = Number.isFinite(s) && s > 0 ? Math.min(100, s) : 20;
+			this.flowLogPage.currentPage = 1;
+			this.loadFlowLogs();
 		},
 		async toggleWhitelist(item) {
 			if (item.whitelist) await this.removeWhitelist(item);

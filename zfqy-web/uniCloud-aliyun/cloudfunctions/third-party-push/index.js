@@ -130,6 +130,7 @@ function normalizePaychannelCode(raw) {
 
 const DEFAULT_OPTIMIZE_CONFIG = { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 1 };
 const DEFAULT_RISK_RATES = { '06': 100, '31': 100, '05': 0, '04': 0, '02': 0, '01': 0 };
+const DEFAULT_FLOW_OPTIMIZE_RATES = { '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 };
 let bizConfigCache = null;
 let bizConfigCacheAt = 0;
 
@@ -138,16 +139,32 @@ async function getBizConfig() {
 	if (bizConfigCache && now - bizConfigCacheAt < 60000) return bizConfigCache;
 	try {
 		const r = await systemSettingCol.where({ key: 'h5_biz_params' }).limit(1).get();
-		const v = (r.data && r.data[0] && r.data[0].value) || {};
+		const row = r.data && r.data[0];
+		const v = (row && row.value) || {};
 		bizConfigCache = {
 			optimizeConfig: Object.assign({}, DEFAULT_OPTIMIZE_CONFIG, v.optimizeConfig || {}),
-			riskRates: Object.assign({}, DEFAULT_RISK_RATES, v.riskRates || {})
+			riskRates: Object.assign({}, DEFAULT_RISK_RATES, v.riskRates || {}),
+			pointsOptimizeFlowEnabled:
+				v.pointsOptimizeFlowEnabled === true ||
+				v.pointsOptimizeFlowEnabled === '1' ||
+				v.pointsOptimizeFlowEnabled === 1,
+			flowOptimizeMinRegisterDays: Math.max(
+				0,
+				Math.floor(Number(v.flowOptimizeMinRegisterDays != null ? v.flowOptimizeMinRegisterDays : 30) || 30)
+			),
+			flowOptimizeRates: Object.assign({}, DEFAULT_FLOW_OPTIMIZE_RATES, v.flowOptimizeRates || {})
 		};
 		bizConfigCacheAt = now;
 		return bizConfigCache;
 	} catch (e) {
-		console.error('getBizConfig failed', e);
-		return { optimizeConfig: DEFAULT_OPTIMIZE_CONFIG, riskRates: DEFAULT_RISK_RATES };
+		console.error('getBizConfig', e);
+		return {
+			optimizeConfig: DEFAULT_OPTIMIZE_CONFIG,
+			riskRates: DEFAULT_RISK_RATES,
+			pointsOptimizeFlowEnabled: false,
+			flowOptimizeMinRegisterDays: 30,
+			flowOptimizeRates: DEFAULT_FLOW_OPTIMIZE_RATES
+		};
 	}
 }
 
@@ -158,6 +175,23 @@ function riskAuditFromPaychannel(paychannelRaw, riskRates = DEFAULT_RISK_RATES) 
 		return { is_risk: true, risk_audit_status: 'pending' };
 	}
 	return { is_risk: false, risk_audit_status: 'none' };
+}
+
+function flowOptimizeFromPaychannel(paychannelRaw, rates = DEFAULT_FLOW_OPTIMIZE_RATES) {
+	const code = normalizePaychannelCode(paychannelRaw);
+	const rate = Math.max(0, Math.min(100, Number(rates[code] != null ? rates[code] : 0)));
+	if (Math.random() * 100 < rate) {
+		return {
+			is_flow_opt: true,
+			flow_opt_audit_status: 'pending',
+			flow_opt_control_status: 'hold'
+		};
+	}
+	return {
+		is_flow_opt: false,
+		flow_opt_audit_status: 'none',
+		flow_opt_control_status: 'no'
+	};
 }
 
 function mapDiscountFlagText(v) {
@@ -402,16 +436,38 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 	const activated = await tryActivateMachineByTotal(machine, newTotal, createTime);
 
 	let tradeMemberBucket = 'non_member';
+	let merchantDoc = null;
 	if (bound && machine.bind_user_id) {
 		try {
 			const mr = await merchantCol
 				.where(db.command.or([{ user_id: String(machine.bind_user_id) }, { _id: String(machine.bind_user_id) }]))
 				.limit(1)
 				.get();
-			const mer = mr.data && mr.data[0];
-			if (mer) tradeMemberBucket = tradeMemberBucketForMerchant(mer);
+			merchantDoc = mr.data && mr.data[0];
+			if (merchantDoc) tradeMemberBucket = tradeMemberBucketForMerchant(merchantDoc);
 		} catch (e) {
 			console.error('maybeAddXingyiMachineTrade member bucket', e);
+		}
+	}
+
+	// 第二层流水优化：仅 §4 未命中、真实正向流水、开关开、注册满 N 天、非流水白名单
+	let flowOpt = {
+		is_flow_opt: false,
+		flow_opt_audit_status: 'none',
+		flow_opt_control_status: 'no'
+	};
+	if (!risk.is_risk && amount > 0 && !!bound) {
+		try {
+			const flowOn = !!bizCfg.pointsOptimizeFlowEnabled;
+			const minDays = Math.max(0, Number(bizCfg.flowOptimizeMinRegisterDays || 30));
+			const createTs = Number(merchantDoc && merchantDoc.create_time) || 0;
+			const ageOk = createTs > 0 && Date.now() - createTs >= minDays * 24 * 60 * 60 * 1000;
+			const wl = !!(merchantDoc && merchantDoc.points_flow_opt_whitelist);
+			if (flowOn && ageOk && !wl) {
+				flowOpt = flowOptimizeFromPaychannel(d.paychannel, bizCfg.flowOptimizeRates || DEFAULT_FLOW_OPTIMIZE_RATES);
+			}
+		} catch (e) {
+			console.error('maybeAddXingyiMachineTrade flow optimize', e);
 		}
 	}
 
@@ -429,6 +485,9 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 			paychannel_text: pchText,
 			is_risk_trade: !!risk.is_risk,
 			risk_audit_status: risk.risk_audit_status,
+			is_flow_opt_trade: !!flowOpt.is_flow_opt,
+			flow_opt_audit_status: flowOpt.flow_opt_audit_status || 'none',
+			flow_opt_control_status: flowOpt.flow_opt_control_status || 'no',
 			stats_eligible: !!bound,
 			trade_member_bucket: tradeMemberBucket,
 			amount,

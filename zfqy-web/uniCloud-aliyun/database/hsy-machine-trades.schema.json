@@ -24,6 +24,24 @@
 		},
 		"risk_audit_remark": { "bsonType": "string", "description": "审核意见" },
 		"risk_audit_time": { "bsonType": "timestamp", "description": "审核时间" },
+		"is_flow_opt_trade": {
+			"bsonType": "bool",
+			"description": "是否进入流水优化抽检（§4 未命中后的第二层）",
+			"default": false
+		},
+		"flow_opt_audit_status": {
+			"bsonType": "string",
+			"description": "流水优化审核：none=未进，pending=待审，approved=通过，rejected=驳回",
+			"default": "none"
+		},
+		"flow_opt_audit_remark": { "bsonType": "string", "description": "流水优化审核意见" },
+		"flow_opt_audit_time": { "bsonType": "timestamp", "description": "流水优化审核时间" },
+		"flow_opt_audit_by": { "bsonType": "string", "description": "流水优化审核人" },
+		"flow_opt_control_status": {
+			"bsonType": "string",
+			"description": "流水优化控制：hold=暂扣，release=放行，no=否",
+			"default": "no"
+		},
 		"stats_eligible": {
 			"bsonType": "bool",
 			"description": "是否参与统计与补贴（绑定后流水为true，未绑定仅落库为false）",

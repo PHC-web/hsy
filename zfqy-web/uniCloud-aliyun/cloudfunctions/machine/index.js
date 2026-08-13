@@ -618,6 +618,9 @@ async function virtualSwipe(data, event) {
 				paychannel_text: '虚拟',
 				is_risk_trade: false,
 				risk_audit_status: 'none',
+				is_flow_opt_trade: false,
+				flow_opt_audit_status: 'none',
+				flow_opt_control_status: 'no',
 				stats_eligible: true,
 				trade_member_bucket: tradeMemberBucket,
 				amount: swipeAmount,
@@ -729,6 +732,9 @@ async function virtualRefund(data, event) {
 			paychannel_text: original.paychannel_text || '模拟退款',
 			is_risk_trade: false,
 			risk_audit_status: 'none',
+			is_flow_opt_trade: false,
+			flow_opt_audit_status: 'none',
+			flow_opt_control_status: 'no',
 			stats_eligible: true,
 			trade_member_bucket: original.trade_member_bucket || 'non_member',
 			amount: -refundAmount,
@@ -1394,6 +1400,12 @@ async function getCardRecordList(data) {
 				{ risk_audit_status: 'approved' }
 			])
 		);
+		pushWhere(
+			_.or([
+				{ is_flow_opt_trade: _.neq(true) },
+				{ flow_opt_audit_status: 'approved' }
+			])
+		);
 
 		const filterWhere = whereParts.length > 1 ? _.and(whereParts) : whereParts[0];
 		const pageNum = Math.max(1, Number(page) || 1);
@@ -1906,6 +1918,258 @@ async function riskAuditTrade(data, event) {
 	} catch (error) {
 		console.error('riskAuditTrade failed:', error);
 		return { code: 500, message: '审核失败' };
+	}
+}
+
+function flowOptRecordStatusText(status) {
+	const s = String(status || '');
+	if (s === 'approved') return '已通过';
+	if (s === 'rejected') return '已驳回';
+	if (s === 'pending') return '待审核';
+	return s || '-';
+}
+
+function getOperatorSafe(event) {
+	try {
+		const ctx = (event && event.context) || {};
+		const fromCtx =
+			(ctx.userInfo && (ctx.userInfo.username || ctx.userInfo.nickname)) ||
+			ctx.uid ||
+			ctx.OPENID ||
+			'';
+		if (fromCtx) return String(fromCtx).slice(0, 80);
+	} catch (e) {
+		/* ignore */
+	}
+	try {
+		const token = event && event.uniIdToken;
+		if (token) {
+			const parts = String(token).split('.');
+			if (parts.length >= 2) {
+				const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8') || '{}');
+				const name = payload.username || payload.nickname || payload.uid;
+				if (name) return String(name).slice(0, 80);
+			}
+		}
+	} catch (e) {
+		/* ignore */
+	}
+	return '系统';
+}
+
+// 优化管理：§4 未命中后进入流水优化待审的机具流水（与风控互斥）
+async function getFlowOptList(data) {
+	try {
+		const {
+			page = 1,
+			pageSize = 10,
+			userKeyword = '',
+			snTradeKeyword = '',
+			amountMin = '',
+			amountMax = '',
+			status = '',
+			statusList,
+			createTimeStart = '',
+			createTimeEnd = '',
+			updateTimeStart = '',
+			updateTimeEnd = '',
+			scenarioKeyword = '',
+			sortField = '',
+			sortOrder = ''
+		} = data || {};
+
+		const _ = db.command;
+		let query = tradeCollection.where({
+			is_flow_opt_trade: true,
+			is_risk_trade: _.neq(true),
+			stats_eligible: true,
+			trade_type: 'real'
+		});
+
+		if (userKeyword) {
+			const r = new RegExp(escapeReg(userKeyword), 'i');
+			query = query.where(db.command.or([{ user_name: r }, { user_mobile: r }]));
+		}
+		if (snTradeKeyword) {
+			const r = new RegExp(escapeReg(snTradeKeyword), 'i');
+			query = query.where(db.command.or([{ device_id: r }, { trade_no: r }]));
+		}
+
+		const minOk = amountMin !== '' && amountMin !== undefined && Number.isFinite(Number(amountMin));
+		const maxOk = amountMax !== '' && amountMax !== undefined && Number.isFinite(Number(amountMax));
+		if (minOk && maxOk) {
+			query = query.where(
+				db.command.and([
+					{ amount: db.command.gte(Number(amountMin)) },
+					{ amount: db.command.lte(Number(amountMax)) }
+				])
+			);
+		} else if (minOk) {
+			query = query.where({ amount: db.command.gte(Number(amountMin)) });
+		} else if (maxOk) {
+			query = query.where({ amount: db.command.lte(Number(amountMax)) });
+		}
+
+		const stArr = Array.isArray(statusList)
+			? [...new Set(statusList.map((x) => String(x)))]
+			: [];
+		if (stArr.length === 1) {
+			query = query.where({ flow_opt_audit_status: stArr[0] });
+		} else if (stArr.length > 1) {
+			query = query.where({ flow_opt_audit_status: db.command.in(stArr) });
+		} else if (status) {
+			query = query.where({ flow_opt_audit_status: String(status) });
+		}
+
+		if (scenarioKeyword) {
+			query = query.where({ paychannel_text: new RegExp(escapeReg(scenarioKeyword), 'i') });
+		}
+
+		if (createTimeStart) {
+			query = query.where({ create_time: db.command.gte(Number(createTimeStart)) });
+		}
+		if (createTimeEnd) {
+			query = query.where({ create_time: db.command.lte(Number(createTimeEnd)) });
+		}
+		if (updateTimeStart) {
+			query = query.where({ flow_opt_audit_time: db.command.gte(Number(updateTimeStart)) });
+		}
+		if (updateTimeEnd) {
+			query = query.where({ flow_opt_audit_time: db.command.lte(Number(updateTimeEnd)) });
+		}
+
+		let orderByField = 'create_time';
+		let orderByDir = 'desc';
+		if (sortField === 'amount' && (sortOrder === 'asc' || sortOrder === 'ascending')) {
+			orderByField = 'amount';
+			orderByDir = 'asc';
+		} else if (sortField === 'amount' && (sortOrder === 'desc' || sortOrder === 'descending')) {
+			orderByField = 'amount';
+			orderByDir = 'desc';
+		}
+
+		const countRes = await query.count();
+		const total = countRes.total;
+
+		const res = await query
+			.orderBy(orderByField, orderByDir)
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.get();
+
+		const list = (res.data || []).map((item) => ({
+			id: item._id,
+			userDisplay: [item.user_name || '', item.user_mobile || ''].filter(Boolean).join('\n') || '-',
+			snTradeDisplay: `${item.device_id || '-'} / ${item.trade_no || '-'}`,
+			sn: item.device_id || '',
+			tradeNo: item.trade_no || '',
+			amount: Number(item.amount || 0),
+			amountText: `￥${Number(item.amount || 0).toFixed(2)}`,
+			businessScenario: item.paychannel_text || item.paychannel || '-',
+			auditRemark: item.flow_opt_audit_remark || '',
+			status: item.flow_opt_audit_status || 'pending',
+			statusText: flowOptRecordStatusText(item.flow_opt_audit_status || 'pending'),
+			createTime: formatTime(item.create_time),
+			updateTime: item.flow_opt_audit_time ? formatTime(item.flow_opt_audit_time) : '-'
+		}));
+
+		return {
+			code: 0,
+			message: '获取成功',
+			data: { list, total, page, pageSize }
+		};
+	} catch (error) {
+		console.error('流水优化列表失败:', error);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function flowOptAuditTrade(data, event) {
+	try {
+		const tradeId = data && (data.tradeId || data.id);
+		const status = String((data && data.status) || '').trim();
+		const remark = String((data && data.remark) || '').trim().slice(0, 500);
+		if (!tradeId) return { code: 400, message: '缺少流水ID' };
+		if (!remark) return { code: 400, message: '请填写审核意见' };
+		if (status !== 'approved' && status !== 'rejected') return { code: 400, message: 'status 须为 approved 或 rejected' };
+
+		const docRes = await tradeCollection.doc(tradeId).get();
+		const doc = docRes.data && docRes.data[0];
+		if (!doc) return { code: 404, message: '流水不存在' };
+		if (!doc.is_flow_opt_trade) return { code: 400, message: '非流水优化待审流水' };
+		if (doc.is_risk_trade) return { code: 400, message: '该流水属于风控，请在风险管理处理' };
+		if (doc.flow_opt_audit_status && doc.flow_opt_audit_status !== 'pending') {
+			return { code: 400, message: '该流水已审核' };
+		}
+
+		const now = Date.now();
+		const operator = getOperatorSafe(event);
+		await tradeCollection.doc(tradeId).update({
+			flow_opt_audit_status: status,
+			flow_opt_audit_remark: remark,
+			flow_opt_audit_time: now,
+			flow_opt_audit_by: operator,
+			flow_opt_control_status: status === 'approved' ? 'release' : 'hold'
+		});
+
+		await recordOperationLog(event, 'flowOptAuditTrade', tradeId, tradeId, `流水优化审核:${status} ${remark}`);
+
+		return { code: 0, message: '审核已保存', data: { tradeId, status } };
+	} catch (error) {
+		console.error('flowOptAuditTrade failed:', error);
+		return { code: 500, message: '审核失败' };
+	}
+}
+
+async function flowOptAuditTradeBatch(data, event) {
+	try {
+		const status = String((data && data.status) || '').trim();
+		const remark = String((data && data.remark) || '').trim().slice(0, 500);
+		const idsRaw = Array.isArray(data && data.tradeIds) ? data.tradeIds : [];
+		const ids = [...new Set(idsRaw.map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 200);
+		if (!ids.length) return { code: 400, message: '请选择流水' };
+		if (!remark) return { code: 400, message: '请填写审核意见' };
+		if (status !== 'approved' && status !== 'rejected') return { code: 400, message: 'status 须为 approved 或 rejected' };
+
+		const now = Date.now();
+		const operator = getOperatorSafe(event);
+		let ok = 0;
+		const failed = [];
+		for (const tradeId of ids) {
+			try {
+				const docRes = await tradeCollection.doc(tradeId).get();
+				const doc = docRes.data && docRes.data[0];
+				if (!doc || !doc.is_flow_opt_trade || doc.is_risk_trade) {
+					failed.push(tradeId);
+					continue;
+				}
+				if (doc.flow_opt_audit_status && doc.flow_opt_audit_status !== 'pending') {
+					failed.push(tradeId);
+					continue;
+				}
+				await tradeCollection.doc(tradeId).update({
+					flow_opt_audit_status: status,
+					flow_opt_audit_remark: remark,
+					flow_opt_audit_time: now,
+					flow_opt_audit_by: operator,
+					flow_opt_control_status: status === 'approved' ? 'release' : 'hold'
+				});
+				ok += 1;
+			} catch (e) {
+				failed.push(tradeId);
+			}
+		}
+		await recordOperationLog(
+			event,
+			'flowOptAuditTradeBatch',
+			ids[0] || '',
+			'',
+			`流水优化批量审核:${status} 成功${ok} 失败${failed.length} ${remark}`
+		);
+		return { code: 0, message: `已处理 ${ok} 笔`, data: { ok, failed, status } };
+	} catch (error) {
+		console.error('flowOptAuditTradeBatch failed:', error);
+		return { code: 500, message: '批量审核失败' };
 	}
 }
 
@@ -2456,6 +2720,12 @@ exports.main = async (event, context) => {
 			return await getRiskList(actualData);
 		case 'riskAuditTrade':
 			return await riskAuditTrade(actualData, event);
+		case 'flowOptList':
+			return await getFlowOptList(actualData);
+		case 'flowOptAuditTrade':
+			return await flowOptAuditTrade(actualData, event);
+		case 'flowOptAuditTradeBatch':
+			return await flowOptAuditTradeBatch(actualData, event);
 		default:
 			return {
 				code: 400,

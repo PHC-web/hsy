@@ -525,6 +525,12 @@
 					}
 				},
 				{
+					"path": "optimize/index",
+					"style": {
+						"navigationBarTitleText": "优化管理"
+					}
+				},
+				{
 					"path": "agreement/index",
 					"style": {
 						"navigationBarTitleText": "协议管理"

@@ -26,7 +26,9 @@ const TASK_LOG_ACTIONS = [
 	'whitelist_add',
 	'whitelist_remove'
 ];
-const TASK_LOG_ACTION_SET = new Set(TASK_LOG_ACTIONS);
+/** 按流水优化：白名单增删（开关变更记在 bizConfig，此处仅白名单） */
+const FLOW_TASK_LOG_ACTIONS = ['flow_whitelist_add', 'flow_whitelist_remove'];
+const TASK_LOG_ACTION_SET = new Set([...TASK_LOG_ACTIONS, ...FLOW_TASK_LOG_ACTIONS]);
 
 function floor2(n) {
 	const x = Number(n || 0);
@@ -1019,7 +1021,9 @@ function createPointsOptimizeApi(deps) {
 	async function pointsOptimizeLogsList(data = {}) {
 		const page = Math.max(1, Number(data.page) || 1);
 		const pageSize = Math.min(100, Math.max(1, Number(data.pageSize) || 20));
-		const whereParts = [{ action: _.in(TASK_LOG_ACTIONS) }];
+		const scope = String(data.scope || data.logScope || 'login').trim();
+		const defaultActions = scope === 'flow' ? FLOW_TASK_LOG_ACTIONS : TASK_LOG_ACTIONS;
+		const whereParts = [{ action: _.in(defaultActions) }];
 		if (data.action && TASK_LOG_ACTION_SET.has(String(data.action))) {
 			whereParts[0] = { action: String(data.action) };
 		}
@@ -1147,6 +1151,113 @@ function createPointsOptimizeApi(deps) {
 		});
 		await addLog({
 			action: 'whitelist_remove',
+			merchant_user_id: m.user_id || m._id,
+			operator
+		});
+		return { code: 0, message: 'ok' };
+	}
+
+	async function pointsFlowOptimizeWhitelistList(data = {}) {
+		const page = Math.max(1, Number(data.page) || 1);
+		const pageSize = Math.min(100, Math.max(1, Number(data.pageSize) || 20));
+		const keyword = safeText(data.keyword || data.merchantUserId || data.deviceId, 80);
+		const whereParts = [{ points_flow_opt_whitelist: true }];
+		if (keyword) {
+			const hit = await getMerchantByIdOrUserId(keyword);
+			if (!hit) {
+				return { code: 0, message: 'ok', data: { list: [], total: 0, page, pageSize } };
+			}
+			const uid = String(hit.user_id || hit._id || '');
+			const docId = String(hit._id || '');
+			const idOr = [{ _id: docId }];
+			if (uid) idOr.push({ user_id: uid });
+			whereParts.push(_.or(idOr));
+		}
+		const where = whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
+		const countRes = await merchantCollection.where(where).count();
+		const listRes = await merchantCollection
+			.where(where)
+			.field({
+				_id: true,
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				points_flow_opt_whitelist: true,
+				points_flow_opt_whitelist_at: true,
+				points_flow_opt_whitelist_by: true,
+				points_flow_opt_whitelist_remark: true,
+				create_time: true
+			})
+			.orderBy('points_flow_opt_whitelist_at', 'desc')
+			.skip((page - 1) * pageSize)
+			.limit(pageSize)
+			.get();
+		const list = (listRes.data || []).map((x) => ({
+			id: x._id,
+			userId: x.user_id || x._id,
+			name: x.wx_nickname || '-',
+			mobile: x.mobile || '',
+			remark: x.points_flow_opt_whitelist_remark || '',
+			by: x.points_flow_opt_whitelist_by || '',
+			at: x.points_flow_opt_whitelist_at ? formatTime(x.points_flow_opt_whitelist_at) : '',
+			createTime: x.create_time ? formatTime(x.create_time) : ''
+		}));
+		return { code: 0, message: 'ok', data: { list, total: countRes.total || 0, page, pageSize } };
+	}
+
+	async function pointsFlowOptimizeWhitelistAdd(data = {}, event = {}) {
+		const operator = getOperator(event);
+		const remark = safeText(data.remark, 200);
+		const ids = [];
+		if (Array.isArray(data.merchantUserIds)) {
+			data.merchantUserIds.forEach((x) => {
+				const s = safeText(x, 80);
+				if (s) ids.push(s);
+			});
+		}
+		const one = safeText(data.merchantUserId || data.userId || data.merchantId, 80);
+		if (one) ids.push(one);
+		const uniq = [...new Set(ids)];
+		if (!uniq.length) return { code: 400, message: '请传入商户ID' };
+		const now = nowTs();
+		let ok = 0;
+		const failed = [];
+		for (const key of uniq.slice(0, 200)) {
+			const m = await getMerchantByIdOrUserId(key);
+			if (!m) {
+				failed.push(key);
+				continue;
+			}
+			await merchantCollection.doc(m._id).update({
+				points_flow_opt_whitelist: true,
+				points_flow_opt_whitelist_at: now,
+				points_flow_opt_whitelist_by: operator,
+				points_flow_opt_whitelist_remark: remark
+			});
+			await addLog({
+				action: 'flow_whitelist_add',
+				merchant_user_id: m.user_id || m._id,
+				operator,
+				remark
+			});
+			ok += 1;
+		}
+		return { code: 0, message: 'ok', data: { ok, failed } };
+	}
+
+	async function pointsFlowOptimizeWhitelistRemove(data = {}, event = {}) {
+		const operator = getOperator(event);
+		const key = safeText(data.merchantUserId || data.userId || data.merchantId, 80);
+		if (!key) return { code: 400, message: '请传入商户ID' };
+		const m = await getMerchantByIdOrUserId(key);
+		if (!m) return { code: 404, message: '商户不存在' };
+		await merchantCollection.doc(m._id).update({
+			points_flow_opt_whitelist: false,
+			points_flow_opt_whitelist_at: nowTs(),
+			points_flow_opt_whitelist_by: operator
+		});
+		await addLog({
+			action: 'flow_whitelist_remove',
 			merchant_user_id: m.user_id || m._id,
 			operator
 		});
@@ -1343,6 +1454,9 @@ function createPointsOptimizeApi(deps) {
 		pointsOptimizeWhitelistList,
 		pointsOptimizeWhitelistAdd,
 		pointsOptimizeWhitelistRemove,
+		pointsFlowOptimizeWhitelistList,
+		pointsFlowOptimizeWhitelistAdd,
+		pointsFlowOptimizeWhitelistRemove,
 		pointsSliceStateList,
 		pointsSliceManualSet,
 		pointsSliceReconcile,

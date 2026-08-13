@@ -270,6 +270,62 @@
 			</view>
 
 			<view class="card">
+				<view class="card-title">4.1）按流水优化（第二层抽检）</view>
+				<text class="card-tip">
+					仅对「未命中上方 §4 风控」的真实流水生效：商户注册（create_time）满 N 天后，再按渠道比例进入「优化管理」待审（无企微通知）。流水优化白名单商户跳过本层，仍可进 §4 风控。默认关闭且比例为 0。
+				</text>
+				<view class="ui-style-opts" style="margin-bottom: 12px">
+					<button
+						size="mini"
+						:type="form.pointsOptimizeFlowEnabled ? 'warn' : 'default'"
+						@click="form.pointsOptimizeFlowEnabled = false"
+					>
+						关闭
+					</button>
+					<button
+						size="mini"
+						:type="form.pointsOptimizeFlowEnabled ? 'primary' : 'default'"
+						@click="form.pointsOptimizeFlowEnabled = true"
+					>
+						开启
+					</button>
+				</view>
+				<text class="ui-style-current">
+					当前：{{ form.pointsOptimizeFlowEnabled ? '已开启' : '已关闭' }}
+				</text>
+				<view class="form-grid" style="margin-top: 12px">
+					<view class="field">
+						<text class="label">注册满 N 天（create_time）</text>
+						<uni-easyinput v-model="form.flowOptimizeMinRegisterDays" type="number" placeholder="如 30" />
+					</view>
+					<view class="field">
+						<text class="label">贷记卡(06) 优化率%</text>
+						<uni-easyinput v-model="form.flowOptimizeRates['06']" type="number" placeholder="如 0" />
+					</view>
+					<view class="field">
+						<text class="label">白条(31) 优化率%</text>
+						<uni-easyinput v-model="form.flowOptimizeRates['31']" type="number" placeholder="如 0" />
+					</view>
+					<view class="field">
+						<text class="label">借记卡(05) 优化率%</text>
+						<uni-easyinput v-model="form.flowOptimizeRates['05']" type="number" placeholder="如 0" />
+					</view>
+					<view class="field">
+						<text class="label">银联未优惠(04) 优化率%</text>
+						<uni-easyinput v-model="form.flowOptimizeRates['04']" type="number" placeholder="如 0" />
+					</view>
+					<view class="field">
+						<text class="label">微信(02) 优化率%</text>
+						<uni-easyinput v-model="form.flowOptimizeRates['02']" type="number" placeholder="如 0" />
+					</view>
+					<view class="field">
+						<text class="label">支付宝(01) 优化率%</text>
+						<uni-easyinput v-model="form.flowOptimizeRates['01']" type="number" placeholder="如 0" />
+					</view>
+				</view>
+			</view>
+
+			<view class="card">
 				<view class="card-title">5.1）登录周积分优化总开关</view>
 				<text class="card-tip">
 					关闭时不执行登录周待返优化；开启后按设计对未领分期待返各片每周 ×0.75。白名单商户不受影响。H5
@@ -364,6 +420,9 @@ const defaultForm = () => ({
 	},
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
 	pointsOptimizeLoginEnabled: false,
+	pointsOptimizeFlowEnabled: false,
+	flowOptimizeMinRegisterDays: 30,
+	flowOptimizeRates: { '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 },
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
 	refundPenaltyRate: 50,
@@ -570,6 +629,15 @@ export default {
 				merged.wxPayMch = Object.assign(defaultWxPayMch(), merged.wxPayMch || {});
 				merged.h5UiStyle = String(merged.h5UiStyle || 'A').toUpperCase() === 'B' ? 'B' : 'A';
 				merged.pointsOptimizeLoginEnabled = !!merged.pointsOptimizeLoginEnabled;
+				merged.pointsOptimizeFlowEnabled = !!merged.pointsOptimizeFlowEnabled;
+				merged.flowOptimizeMinRegisterDays = Math.max(
+					0,
+					Math.floor(Number(merged.flowOptimizeMinRegisterDays != null ? merged.flowOptimizeMinRegisterDays : 30) || 30)
+				);
+				merged.flowOptimizeRates = Object.assign(
+					{ '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 },
+					merged.flowOptimizeRates || {}
+				);
 				const ids = Array.isArray(merged.testMerchantIds) ? merged.testMerchantIds : [];
 				merged.testMerchantIdsText = ids.join('\n');
 				const ruleLines = Array.isArray(merged.h5RefundRuleLines) ? merged.h5RefundRuleLines : [];

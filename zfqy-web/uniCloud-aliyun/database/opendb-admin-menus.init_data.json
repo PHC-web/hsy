@@ -612,6 +612,18 @@
 		"_id": "risk_management"
 	},
 	{
+		"menu_id": "optimize_management",
+		"name": "优化管理",
+		"icon": "",
+		"url": "/pages/brand/optimize/index",
+		"sort": 1545,
+		"parent_id": "brand_management",
+		"permission": ["optimize_management"],
+		"enable": true,
+		"create_date": 1773382941000,
+		"_id": "optimize_management"
+	},
+	{
 		"menu_id": "agreement_management",
 		"name": "协议管理",
 		"icon": "",

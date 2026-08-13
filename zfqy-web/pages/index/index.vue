@@ -252,6 +252,7 @@
 						>{{ opt.label }}</view>
 					</view>
 				</view>
+				<view class="chart-disabled-hint">图表统计已暂时关闭，界面保留，数据优化后恢复</view>
 				<view class="chart-grid">
 					<view class="chart-card">
 						<view class="chart-head">
@@ -621,13 +622,11 @@
 			async warmHomeCacheInBackground(rangeType, parts) {
 				const list =
 					Array.isArray(parts) && parts.length
-						? parts
+						? parts.filter((p) => p !== 'trend')
 						: ['preview', 'summary', 'withdrawTop', 'pendingFrozen'];
+				if (!list.length) return;
 				try {
 					const payload = { parts: list };
-					if (list.indexOf('trend') >= 0) {
-						payload.rangeTypes = [rangeType || '30d'];
-					}
 					await this.$request('adminHomeCacheRefresh', payload, { functionName: 'merchant' });
 				} catch (e) {
 					console.error('warmHomeCacheInBackground', e);
@@ -661,17 +660,17 @@
 						hit.withdrawTop ||
 						hit.pendingFrozen
 					);
+					const kickWarm = (parts) => {
+						// 临时关闭数据统计：不要再请求 trend 预热（会超时刷错误日志）
+						const filtered = (Array.isArray(parts) ? parts : []).filter((p) => p !== 'trend');
+						if (!filtered.length) return;
+						this.warmHomeCacheInBackground(rangeType, filtered).then(() =>
+							this.scheduleHomeStatsRetryIfStale(true)
+						);
+					};
 					if (!hasRemote) {
-						await this.warmHomeCacheInBackground(rangeType, [
-							'preview',
-							'summary',
-							'withdrawTop',
-							'pendingFrozen'
-						]);
-						await this.warmHomeCacheInBackground(rangeType, ['trend']);
-						res = await this.fetchHomeCache(rangeType);
-						d = (res && res.code === 0 && res.data) || {};
-						hit = d.cacheHit || {};
+						kickWarm(['preview', 'summary', 'withdrawTop', 'pendingFrozen']);
+						this.scheduleHomeStatsRetryIfStale(true);
 					} else if (
 						!(hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen)
 					) {
@@ -680,16 +679,7 @@
 						if (!hit.summary) baseParts.push('summary');
 						if (!hit.withdrawTop) baseParts.push('withdrawTop');
 						if (!hit.pendingFrozen) baseParts.push('pendingFrozen');
-						if (baseParts.length) {
-							this.warmHomeCacheInBackground(rangeType, baseParts).then(() =>
-								this.scheduleHomeStatsRetryIfStale(true)
-							);
-						}
-						if (!hit.trend) {
-							this.warmHomeCacheInBackground(rangeType, ['trend']).then(() =>
-								this.scheduleHomeStatsRetryIfStale(true)
-							);
-						}
+						if (baseParts.length) kickWarm(baseParts);
 					}
 
 					if (!res || res.code !== 0) {
@@ -1714,6 +1704,12 @@
 
 	.chart-panel {
 		margin-top: 16px;
+	}
+	.chart-disabled-hint {
+		margin: -4px 0 12px;
+		font-size: 12px;
+		color: #94a3b8;
+		line-height: 1.5;
 	}
 .panel-head {
 	display: flex;

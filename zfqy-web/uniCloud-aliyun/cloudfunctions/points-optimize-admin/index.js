@@ -223,6 +223,12 @@ exports.main = async (event) => {
 			return await pointsOptimizeApi.pointsOptimizeWhitelistAdd(actualData, event);
 		case 'pointsOptimizeWhitelistRemove':
 			return await pointsOptimizeApi.pointsOptimizeWhitelistRemove(actualData, event);
+		case 'pointsFlowOptimizeWhitelistList':
+			return await pointsOptimizeApi.pointsFlowOptimizeWhitelistList(actualData);
+		case 'pointsFlowOptimizeWhitelistAdd':
+			return await pointsOptimizeApi.pointsFlowOptimizeWhitelistAdd(actualData, event);
+		case 'pointsFlowOptimizeWhitelistRemove':
+			return await pointsOptimizeApi.pointsFlowOptimizeWhitelistRemove(actualData, event);
 		case 'pointsSliceStateList':
 			return await pointsOptimizeApi.pointsSliceStateList(actualData);
 		case 'pointsSliceManualSet':
