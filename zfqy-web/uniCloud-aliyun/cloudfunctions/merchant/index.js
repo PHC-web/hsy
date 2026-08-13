@@ -2007,7 +2007,7 @@ async function merchantPointsMonthlyInsight(data) {
 		const bizInsight = await getBizSettings();
 		const optimizeConfig = bizInsight.optimizeConfig;
 		const tRes = await machineTradeCollection
-			.where({ user_id: uid, trade_type: db.command.in(['real', 'virtual']), amount: db.command.gt(0) })
+			.where(subsidyEngine.buildEligibleSubsidyTradeWhere(db, uid))
 			.field({ amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true })
 			.orderBy('create_time', 'asc')
 			.limit(20000)
@@ -2420,7 +2420,8 @@ async function simulateRegister(data) {
 			flag2: false,
 			flag3: false,
 			micro_merchant: false,
-			login_time: now
+			login_time: now,
+			create_time: now
 		};
 
 		const addRes = await merchantCollection.add(doc);
@@ -9598,7 +9599,8 @@ async function upsertMerchantByAuth(profile) {
 		flag2: true,
 		flag3: true,
 		micro_merchant: true,
-		login_time: now
+		login_time: now,
+		create_time: now
 	};
 	const addRes = await merchantCollection.add(doc);
 	return { id: addRes.id, userId, created: true };
@@ -16428,13 +16430,9 @@ async function h5PendingReturnPoints(data) {
 		const tradeRows = await subsidyEngine.fetchAllQueryPages(
 			db,
 			'hsy-machine-trades',
+			subsidyEngine.buildEligibleSubsidyTradeWhere(db, merchantUserId),
 			{
-				user_id: merchantUserId,
-				trade_type: db.command.in(['real', 'virtual']),
-				amount: db.command.gt(0)
-			},
-			{
-				field: { amount: true, cashback: true, release_amount: true, create_time: true },
+				field: { amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true },
 				orderBy: { field: 'create_time', direction: 'asc' }
 			}
 		);
@@ -18726,6 +18724,120 @@ async function adminSilverExchangeMerchantsQuotaFloor(data = {}, event = {}) {
 }
 
 /**
+ * 存量商户回填 create_time：无 create_time 时优先 bind_time，否则 update_time。
+ * 控制台分批：dryRun 预览 → apply 写库，用 nextCursor 续跑。
+ */
+async function adminCreateTimeBackfill(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 100), 10), 300);
+		const cursorId = safeText(data?.cursorId || data?.cursor || '', 80);
+		const onlyUid = safeText(data?.merchantUserId || data?.userId || '', 80);
+		const now = nowTs();
+		const _ = db.command;
+
+		let rows = [];
+		if (onlyUid) {
+			const m = await getMerchantByIdOrUserId(onlyUid);
+			if (!m) return { code: 404, message: '商户不存在' };
+			rows = [m];
+		} else {
+			const where = cursorId ? { _id: _.gt(cursorId) } : {};
+			const res = await merchantCollection
+				.where(where)
+				.field({
+					_id: true,
+					user_id: true,
+					wx_nickname: true,
+					mobile: true,
+					create_time: true,
+					bind_time: true,
+					update_time: true
+				})
+				.orderBy('_id', 'asc')
+				.limit(chunkSize)
+				.get();
+			rows = res.data || [];
+		}
+
+		let scanned = 0;
+		let updated = 0;
+		let skippedHasCreate = 0;
+		let skippedNoSource = 0;
+		const samples = [];
+
+		for (const row of rows) {
+			scanned += 1;
+			const existing = Number(row.create_time) || 0;
+			if (existing > 0) {
+				skippedHasCreate += 1;
+				continue;
+			}
+
+			const bindTs = Number(row.bind_time) || 0;
+			const updateTs = Number(row.update_time) || 0;
+			let nextTs = 0;
+			let source = '';
+			if (bindTs > 0) {
+				nextTs = bindTs;
+				source = 'bind_time';
+			} else if (updateTs > 0) {
+				nextTs = updateTs;
+				source = 'update_time';
+			} else {
+				skippedNoSource += 1;
+				continue;
+			}
+
+			if (apply && !dryRun) {
+				await merchantCollection.doc(row._id).update({
+					create_time: nextTs,
+					update_time: now
+				});
+			}
+
+			updated += 1;
+			if (samples.length < 20) {
+				samples.push({
+					_id: row._id,
+					user_id: row.user_id || row._id,
+					nickname: row.wx_nickname || '',
+					source,
+					create_time: nextTs,
+					create_time_text: formatTime(nextTs),
+					bind_time: bindTs || '',
+					update_time: updateTs || ''
+				});
+			}
+		}
+
+		const nextCursor = onlyUid ? '' : rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = onlyUid ? true : rows.length < chunkSize;
+		return {
+			code: 0,
+			message: apply && !dryRun ? 'ok' : 'dry-run 完成（未写库）',
+			data: {
+				dryRun: !(apply && !dryRun),
+				apply: !!(apply && !dryRun),
+				chunkSize,
+				scanned,
+				updated,
+				skippedHasCreate,
+				skippedNoSource,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminCreateTimeBackfill failed', e);
+		return { code: 500, message: safeText(e?.message || '回填 create_time 失败', 180) };
+	}
+}
+
+/**
  * 用「最后领取积分时间」回填 login_time（未领取过的商户不改）。
  * 控制台分批：dryRun 预览 → apply 写库，用 nextCursor 续跑。
  */
@@ -20699,6 +20811,8 @@ exports.main = async (event, context) => {
 			return await adminSilverMembersQuotaRecalcByWithdrawn(actualData, event);
 		case 'adminLoginTimeBackfillFromLastClaim':
 			return await adminLoginTimeBackfillFromLastClaim(actualData, event);
+		case 'adminCreateTimeBackfill':
+			return await adminCreateTimeBackfill(actualData, event);
 		case 'adminFloorMerchantPointsBalances':
 			return await adminFloorMerchantPointsBalances(actualData, event);
 		case 'adminAgreementImgMigrateToCloud':

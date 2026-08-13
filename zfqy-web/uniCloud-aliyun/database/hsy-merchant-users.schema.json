@@ -21,6 +21,7 @@
 		"agreement_signed_at": { "bsonType": "timestamp", "description": "协议签署时间" },
 		"agreement_version": { "bsonType": "string", "description": "协议版本" },
 		"bind_time": { "bsonType": "timestamp", "description": "绑定时间" },
+		"create_time": { "bsonType": "timestamp", "description": "商户注册/建档时间（流水优化满 N 天判定主字段）" },
 		"remaining_quota": { "bsonType": "number", "description": "剩余额度", "default": 0 },
 		"available_reward": { "bsonType": "number", "description": "可用奖励", "default": 0 },
 		"estimated_free_quota": { "bsonType": "number", "description": "预估免额度", "default": 0 },

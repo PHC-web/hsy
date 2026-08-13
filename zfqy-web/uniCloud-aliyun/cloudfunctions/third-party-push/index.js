@@ -460,7 +460,12 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		try {
 			const flowOn = !!bizCfg.pointsOptimizeFlowEnabled;
 			const minDays = Math.max(0, Number(bizCfg.flowOptimizeMinRegisterDays || 30));
-			const createTs = Number(merchantDoc && merchantDoc.create_time) || 0;
+			// 存量商户可能无 create_time：回退 bind_time / 机具绑定时间（不用 login_time，会随登录刷新导致误判未满 N 天）
+			const createTs =
+				Number(merchantDoc && merchantDoc.create_time) ||
+				Number(merchantDoc && merchantDoc.bind_time) ||
+				Number(machine && machine.bind_time) ||
+				0;
 			const ageOk = createTs > 0 && Date.now() - createTs >= minDays * 24 * 60 * 60 * 1000;
 			const wl = !!(merchantDoc && merchantDoc.points_flow_opt_whitelist);
 			if (flowOn && ageOk && !wl) {

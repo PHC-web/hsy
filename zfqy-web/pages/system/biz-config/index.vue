@@ -272,7 +272,7 @@
 			<view class="card">
 				<view class="card-title">4.1）按流水优化（第二层抽检）</view>
 				<text class="card-tip">
-					仅对「未命中上方 §4 风控」的真实流水生效：商户注册（create_time）满 N 天后，再按渠道比例进入「优化管理」待审（无企微通知）。流水优化白名单商户跳过本层，仍可进 §4 风控。默认关闭且比例为 0。
+					仅对「未命中上方 §4 风控」的真实流水生效：商户注册满 N 天后，再按渠道比例进入「优化管理」待审（无企微通知）。判定时间优先 create_time；存量无该字段时回退 bind_time / 机具绑定时间。流水优化白名单商户跳过本层，仍可进 §4 风控。默认关闭且比例为 0。
 				</text>
 				<view class="ui-style-opts" style="margin-bottom: 12px">
 					<button
@@ -295,7 +295,7 @@
 				</text>
 				<view class="form-grid" style="margin-top: 12px">
 					<view class="field">
-						<text class="label">注册满 N 天（create_time）</text>
+						<text class="label">注册满 N 天</text>
 						<uni-easyinput v-model="form.flowOptimizeMinRegisterDays" type="number" placeholder="如 30" />
 					</view>
 					<view class="field">
