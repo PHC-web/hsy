@@ -152,6 +152,21 @@ async function getBizConfig() {
 				0,
 				Math.floor(Number(v.flowOptimizeMinRegisterDays != null ? v.flowOptimizeMinRegisterDays : 30) || 30)
 			),
+			flowOptimizeEffectiveFrom: (() => {
+				const raw =
+					v.flowOptimizeEffectiveFrom != null ? v.flowOptimizeEffectiveFrom : v.flowOptimizeEffectiveFromDate;
+				if (raw == null || raw === '') return 0;
+				if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+				const s = String(raw).trim();
+				if (/^\d{13}$/.test(s)) return Number(s);
+				if (/^\d{10}$/.test(s)) return Number(s) * 1000;
+				const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+				if (m) {
+					const ts = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`).getTime();
+					return Number.isFinite(ts) && ts > 0 ? ts : 0;
+				}
+				return 0;
+			})(),
 			flowOptimizeRates: Object.assign({}, DEFAULT_FLOW_OPTIMIZE_RATES, v.flowOptimizeRates || {})
 		};
 		bizConfigCacheAt = now;
@@ -163,6 +178,7 @@ async function getBizConfig() {
 			riskRates: DEFAULT_RISK_RATES,
 			pointsOptimizeFlowEnabled: false,
 			flowOptimizeMinRegisterDays: 30,
+			flowOptimizeEffectiveFrom: 0,
 			flowOptimizeRates: DEFAULT_FLOW_OPTIMIZE_RATES
 		};
 	}
@@ -460,6 +476,9 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 		try {
 			const flowOn = !!bizCfg.pointsOptimizeFlowEnabled;
 			const minDays = Math.max(0, Number(bizCfg.flowOptimizeMinRegisterDays || 30));
+			const effectiveFrom = Math.max(0, Number(bizCfg.flowOptimizeEffectiveFrom || 0));
+			// 生效日起：交易时间早于此的不进优化（避免历史单/延迟推送被抽检）
+			const tradeTimeOk = !(effectiveFrom > 0) || Number(createTime) >= effectiveFrom;
 			// 存量商户可能无 create_time：回退 bind_time / 机具绑定时间（不用 login_time，会随登录刷新导致误判未满 N 天）
 			const createTs =
 				Number(merchantDoc && merchantDoc.create_time) ||
@@ -468,7 +487,7 @@ async function maybeAddXingyiMachineTrade(termphyno, d, receiveTs) {
 				0;
 			const ageOk = createTs > 0 && Date.now() - createTs >= minDays * 24 * 60 * 60 * 1000;
 			const wl = !!(merchantDoc && merchantDoc.points_flow_opt_whitelist);
-			if (flowOn && ageOk && !wl) {
+			if (flowOn && tradeTimeOk && ageOk && !wl) {
 				flowOpt = flowOptimizeFromPaychannel(d.paychannel, bizCfg.flowOptimizeRates || DEFAULT_FLOW_OPTIMIZE_RATES);
 			}
 		} catch (e) {

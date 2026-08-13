@@ -4,6 +4,7 @@
 			<uni-stat-breadcrumb class="uni-stat-breadcrumb-on-phone" />
 			<view class="uni-group">
 				<view class="header-actions">
+					<text v-if="effectiveFromText" class="eff-hint">生效日起：{{ effectiveFromText }}</text>
 					<button size="mini" @click="reset">重置</button>
 					<button
 						size="mini"
@@ -46,6 +47,7 @@
 								<checkbox :checked="allPendingChecked" @click.stop.prevent="toggleSelectAllPending" />
 							</uni-th>
 							<uni-th align="center" width="140" filter-type="search" @filter-change="headerFilterChange($event, 'userKeyword')">用户(昵称/手机)</uni-th>
+							<uni-th align="center" width="150">注册时间</uni-th>
 							<uni-th align="center" width="160" filter-type="search" @filter-change="headerFilterChange($event, 'snTrade')">SN/交易单号</uni-th>
 							<uni-th align="center" width="120" filter-type="range" @filter-change="headerFilterChange($event, 'amount')" sortable @sort-change="amountSortChange">金额</uni-th>
 							<uni-th align="center" width="120" filter-type="search" @filter-change="headerFilterChange($event, 'scenario')">支付渠道</uni-th>
@@ -65,6 +67,7 @@
 								<text v-else class="op-placeholder">—</text>
 							</uni-td>
 							<uni-td class="cell-user">{{ item.userDisplay }}</uni-td>
+							<uni-td align="center" class="cell-time">{{ item.registerTime || '-' }}</uni-td>
 							<uni-td class="cell-sn">{{ item.snTradeDisplay }}</uni-td>
 							<uni-td align="right" class="cell-amount">{{ item.amountText }}</uni-td>
 							<uni-td>{{ item.businessScenario }}</uni-td>
@@ -187,6 +190,7 @@ export default {
 			auditRemark: '',
 			batchMode: false,
 			batchStatus: 'approved',
+			effectiveFromText: '',
 			tableKey: 1,
 			showExportMenu: false,
 			exportTypeOptions: [
@@ -402,6 +406,7 @@ export default {
 					if (res.code === 0) {
 						this.list = res.data.list || [];
 						this.pageInfo.total = res.data.total || 0;
+						this.effectiveFromText = res.data.effectiveFromText || '';
 						const idSet = new Set(this.list.map((x) => x && x.id).filter(Boolean));
 						const next = {};
 						for (const id of Object.keys(this.selectedMap || {})) {
@@ -508,6 +513,7 @@ export default {
 			if (res.code !== 0) throw new Error(res.message || '导出数据获取失败');
 			return (res.data?.list || []).map((x) => ({
 				用户: x.userDisplay || '',
+				注册时间: x.registerTime || '',
 				SN交易单号: x.snTradeDisplay || '',
 				金额: x.amountText || '',
 				支付渠道: x.businessScenario || '',
@@ -595,6 +601,11 @@ export default {
 	align-items: center;
 	gap: 8px;
 	flex-wrap: wrap;
+}
+.eff-hint {
+	font-size: 12px;
+	color: #909399;
+	margin-right: 4px;
 }
 .export-dropdown {
 	position: relative;

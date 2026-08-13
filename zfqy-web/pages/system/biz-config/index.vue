@@ -272,7 +272,7 @@
 			<view class="card">
 				<view class="card-title">4.1）按流水优化（第二层抽检）</view>
 				<text class="card-tip">
-					仅对「未命中上方 §4 风控」的真实流水生效：商户注册满 N 天后，再按渠道比例进入「优化管理」待审（无企微通知）。判定时间优先 create_time；存量无该字段时回退 bind_time / 机具绑定时间。流水优化白名单商户跳过本层，仍可进 §4 风控。默认关闭且比例为 0。
+					仅对「未命中上方 §4 风控」的真实流水生效：商户注册满 N 天后，再按渠道比例进入「优化管理」待审（无企微通知）。判定时间优先 create_time；存量无该字段时回退 bind_time / 机具绑定时间。流水优化白名单商户跳过本层，仍可进 §4 风控。默认关闭且比例为 0。只处理「生效日起」及之后的交易；更早的历史单不抽检。
 				</text>
 				<view class="ui-style-opts" style="margin-bottom: 12px">
 					<button
@@ -294,6 +294,13 @@
 					当前：{{ form.pointsOptimizeFlowEnabled ? '已开启' : '已关闭' }}
 				</text>
 				<view class="form-grid" style="margin-top: 12px">
+					<view class="field">
+						<text class="label">生效日起（北京时间）</text>
+						<uni-easyinput
+							v-model="form.flowOptimizeEffectiveFromDate"
+							placeholder="如 2026-08-13，保存开启时留空则默认今天"
+						/>
+					</view>
 					<view class="field">
 						<text class="label">注册满 N 天</text>
 						<uni-easyinput v-model="form.flowOptimizeMinRegisterDays" type="number" placeholder="如 30" />
@@ -323,6 +330,14 @@
 						<uni-easyinput v-model="form.flowOptimizeRates['01']" type="number" placeholder="如 0" />
 					</view>
 				</view>
+				<view class="ui-style-opts" style="margin-top: 12px">
+					<button size="mini" type="warn" plain :loading="clearFlowOptLoading" @click="clearHistoricalFlowOpt">
+						清理误标优化流水
+					</button>
+				</view>
+				<text class="card-tip" style="margin-top: 8px">
+					清理范围：① 生效日之前的优化标记；② 已领取首期积分但仍挂着优化待审的误标流水。还原为普通流水，不删交易、不改已领积分。请先保存「生效日起」再执行。
+				</text>
 			</view>
 
 			<view class="card">
@@ -422,6 +437,7 @@ const defaultForm = () => ({
 	pointsOptimizeLoginEnabled: false,
 	pointsOptimizeFlowEnabled: false,
 	flowOptimizeMinRegisterDays: 30,
+	flowOptimizeEffectiveFromDate: '',
 	flowOptimizeRates: { '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 },
 	incomePacketClaimValidDays: 7,
 	refundCycle: { cycleDays: 180, windowDays: 3 },
@@ -441,6 +457,7 @@ export default {
 		return {
 			loading: false,
 			saving: false,
+			clearFlowOptLoading: false,
 			form: defaultForm(),
 			// 日/周限额用顶层字段绑定，避免深层对象 v-model 写不进去
 			periodExchangeDay: 200,
@@ -506,6 +523,83 @@ export default {
 		this.load();
 	},
 	methods: {
+		formatFlowOptEffectiveDate(raw) {
+			if (raw == null || raw === '') return '';
+			if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}/.test(raw.trim())) {
+				return raw.trim().slice(0, 10);
+			}
+			const n = Number(raw);
+			if (!(n > 0)) return '';
+			try {
+				return new Intl.DateTimeFormat('en-CA', {
+					timeZone: 'Asia/Shanghai',
+					year: 'numeric',
+					month: '2-digit',
+					day: '2-digit'
+				}).format(new Date(n));
+			} catch (e) {
+				const d = new Date(n + 8 * 3600000);
+				const p = (x) => String(x).padStart(2, '0');
+				return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+			}
+		},
+		async clearHistoricalFlowOpt() {
+			const dateStr = String(this.form.flowOptimizeEffectiveFromDate || '').trim();
+			if (!dateStr) {
+				uni.showToast({ title: '请先填写并保存生效日起', icon: 'none' });
+				return;
+			}
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '清理误标优化流水',
+					content: `将清理：\n1）「${dateStr}」之前的优化标记\n2）已领积分但仍挂优化待审的流水\n确认？`,
+					success: (r) => resolve(!!r.confirm)
+				});
+			});
+			if (!ok) return;
+			this.clearFlowOptLoading = true;
+			try {
+				let cursorId = '';
+				let batch = 0;
+				let cleared = 0;
+				let clearedBefore = 0;
+				let clearedClaimed = 0;
+				for (;;) {
+					batch += 1;
+					const res = await this.$request(
+						'adminClearFlowOptBeforeEffectiveFrom',
+						{
+							apply: true,
+							clearClaimed: true,
+							chunkSize: 100,
+							effectiveFrom: dateStr,
+							...(cursorId ? { cursorId } : {})
+						},
+						{ functionName: 'merchant' }
+					);
+					if (res.code !== 0) {
+						uni.showToast({ title: res.message || '清理失败', icon: 'none' });
+						return;
+					}
+					const d = res.data || {};
+					cleared += Number(d.cleared || 0);
+					clearedBefore += Number(d.clearedBefore || 0);
+					clearedClaimed += Number(d.clearedClaimed || 0);
+					if (d.samples && d.samples.length) console.table(d.samples);
+					console.log(`清理第 ${batch} 批`, d);
+					if (d.done) break;
+					cursorId = d.nextCursor || '';
+					if (!cursorId) break;
+				}
+				uni.showToast({
+					title: `清理 ${cleared}（历史${clearedBefore}/已领${clearedClaimed}）`,
+					icon: 'none',
+					duration: 3000
+				});
+			} finally {
+				this.clearFlowOptLoading = false;
+			}
+		},
 		calcMinSubsidyTradeYuan(installments) {
 			const n = Math.max(1, Number(installments) || 1);
 			// 每期最低 0.01 积分 → 最低流水 = 0.01 * 期数 / 0.0038，向上取整到分
@@ -634,6 +728,9 @@ export default {
 					0,
 					Math.floor(Number(merged.flowOptimizeMinRegisterDays != null ? merged.flowOptimizeMinRegisterDays : 30) || 30)
 				);
+				merged.flowOptimizeEffectiveFromDate = this.formatFlowOptEffectiveDate(
+					merged.flowOptimizeEffectiveFrom || merged.flowOptimizeEffectiveFromDate
+				);
 				merged.flowOptimizeRates = Object.assign(
 					{ '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 },
 					merged.flowOptimizeRates || {}
@@ -685,6 +782,9 @@ export default {
 
 				const payload = JSON.parse(JSON.stringify(this.form));
 				payload.withdrawPeriodLimits = periodLimits;
+				payload.flowOptimizeEffectiveFromDate = String(payload.flowOptimizeEffectiveFromDate || '').trim();
+				payload.flowOptimizeEffectiveFrom = payload.flowOptimizeEffectiveFromDate;
+				delete payload.flowOptimizeEffectiveFromDate;
 				payload.periodExchangeDay = periodLimits.exchangeCoupon.dayMax;
 				payload.periodExchangeWeek = periodLimits.exchangeCoupon.weekMax;
 				payload.periodGoldDay = periodLimits.paidGoldPlatinum.dayMax;

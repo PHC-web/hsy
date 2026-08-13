@@ -11171,6 +11171,11 @@ const DEFAULT_BIZ_SETTINGS = {
 	pointsOptimizeFlowEnabled: false,
 	/** 注册满 N 天（create_time）才参与流水优化抽检 */
 	flowOptimizeMinRegisterDays: 30,
+	/**
+	 * 流水优化生效起点（毫秒时间戳，按北京时间自然日 00:00）。
+	 * 交易 create_time 早于此的不进优化；0 表示未配置。
+	 */
+	flowOptimizeEffectiveFrom: 0,
 	/** 流水优化按渠道进入待审比例 0~100；默认全 0 */
 	flowOptimizeRates: { '06': 0, '31': 0, '05': 0, '04': 0, '02': 0, '01': 0 },
 	/** H5 权益页待领取奖励自流水/生成时刻起的有效天数，到期后不再展示 */
@@ -11190,6 +11195,51 @@ const DEFAULT_BIZ_SETTINGS = {
 	wxPayMch: sanitizeWxPayMchSelection(null, resolveDefaultWxPayMchIds())
 };
 const BIZ_SETTINGS_CACHE_TTL_MS = 60000;
+
+/** 流水优化生效日：支持毫秒时间戳或 YYYY-MM-DD（按北京时间 00:00） */
+function normalizeFlowOptimizeEffectiveFrom(raw) {
+	if (raw == null || raw === '') return 0;
+	if (typeof raw === 'number' && Number.isFinite(raw)) {
+		const n = Math.floor(raw);
+		return n > 0 ? n : 0;
+	}
+	const s = String(raw).trim();
+	if (!s) return 0;
+	if (/^\d{13}$/.test(s) || /^\d{10}$/.test(s)) {
+		const n = Number(s.length === 10 ? Number(s) * 1000 : s);
+		return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+	}
+	const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+	if (m) {
+		const ts = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`).getTime();
+		return Number.isFinite(ts) && ts > 0 ? ts : 0;
+	}
+	const parsed = Date.parse(s);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function formatFlowOptimizeEffectiveFromDate(ts) {
+	const n = Number(ts) || 0;
+	if (!(n > 0)) return '';
+	try {
+		return new Intl.DateTimeFormat('en-CA', {
+			timeZone: 'Asia/Shanghai',
+			year: 'numeric',
+			month: '2-digit',
+			day: '2-digit'
+		}).format(new Date(n));
+	} catch (e) {
+		const d = new Date(n + 8 * 3600000);
+		const p = (x) => String(x).padStart(2, '0');
+		return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())}`;
+	}
+}
+
+function chinaDayStartMs(ts = Date.now()) {
+	const s = formatFlowOptimizeEffectiveFromDate(ts);
+	if (!s) return 0;
+	return normalizeFlowOptimizeEffectiveFrom(s);
+}
 
 function sanitizeBizSettings(raw = {}) {
 	const rechargeRules = (Array.isArray(raw.rechargeRules) ? raw.rechargeRules : DEFAULT_RECHARGE_RULES)
@@ -11343,6 +11393,9 @@ function sanitizeBizSettings(raw = {}) {
 			)
 		)
 	);
+	const flowOptimizeEffectiveFrom = normalizeFlowOptimizeEffectiveFrom(
+		raw.flowOptimizeEffectiveFrom != null ? raw.flowOptimizeEffectiveFrom : raw.flowOptimizeEffectiveFromDate
+	);
 	const rawTestMerchantIds = Array.isArray(raw.testMerchantIds)
 		? raw.testMerchantIds
 		: String(raw.testMerchantIds || '')
@@ -11368,6 +11421,7 @@ function sanitizeBizSettings(raw = {}) {
 		pointsOptimizeLoginEnabled,
 		pointsOptimizeFlowEnabled,
 		flowOptimizeMinRegisterDays,
+		flowOptimizeEffectiveFrom,
 		flowOptimizeRates,
 		incomePacketClaimValidDays,
 		refundCycle,
@@ -18724,6 +18778,169 @@ async function adminSilverExchangeMerchantsQuotaFloor(data = {}, event = {}) {
 }
 
 /**
+ * 修复误标的流水优化标记：
+ * 1) 生效日之前的全部 is_flow_opt
+ * 2) 已领取首期积分（trade_first claimed）的仍挂优化标记的流水
+ * 还原为普通流水，不删交易、不改积分。
+ */
+async function adminClearFlowOptBeforeEffectiveFrom(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const chunkSize = Math.min(Math.max(Number(data?.chunkSize || 100), 10), 300);
+		const cursorId = safeText(data?.cursorId || data?.cursor || '', 80);
+		const clearClaimed = data.clearClaimed !== false;
+		const biz = await getBizSettings();
+		let effectiveFrom = normalizeFlowOptimizeEffectiveFrom(
+			data.effectiveFrom != null ? data.effectiveFrom : biz.flowOptimizeEffectiveFrom
+		);
+		if (!(effectiveFrom > 0)) {
+			effectiveFrom = chinaDayStartMs(nowTs());
+		}
+		const _ = db.command;
+		const whereParts = [{ is_flow_opt_trade: true }];
+		if (cursorId) whereParts.push({ _id: _.gt(cursorId) });
+		const where = whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
+		const res = await machineTradeCollection
+			.where(where)
+			.field({
+				_id: true,
+				trade_no: true,
+				user_id: true,
+				create_time: true,
+				flow_opt_audit_status: true,
+				amount: true
+			})
+			.orderBy('_id', 'asc')
+			.limit(chunkSize)
+			.get();
+		const rows = res.data || [];
+		let cleared = 0;
+		let skipped = 0;
+		let clearedBefore = 0;
+		let clearedClaimed = 0;
+		const samples = [];
+		const now = nowTs();
+
+		const candidateClaimed = [];
+		for (const row of rows) {
+			const createTs = Number(row.create_time || 0);
+			if (createTs > 0 && createTs < effectiveFrom) {
+				candidateClaimed.push({ row, reason: 'before_effective' });
+				continue;
+			}
+			if (clearClaimed) {
+				candidateClaimed.push({ row, reason: 'check_claimed' });
+			} else {
+				skipped += 1;
+			}
+		}
+
+		const needClaimCheck = candidateClaimed.filter((x) => x.reason === 'check_claimed').map((x) => x.row);
+		const claimedKeys = new Set();
+		if (needClaimCheck.length) {
+			const keys = [];
+			for (const row of needClaimCheck) {
+				const uid = String(row.user_id || '').trim();
+				const tn = String(row.trade_no || '').trim();
+				if (uid && tn) keys.push(`trade_${uid}_${tn}`);
+			}
+			const uniq = [...new Set(keys)];
+			for (let i = 0; i < uniq.length; i += 50) {
+				const chunk = uniq.slice(i, i + 50);
+				try {
+					const pr = await incomePacketCollection
+						.where(
+							_.and([
+								{ dedup_key: _.in(chunk) },
+								{ subsidy_kind: 'trade_first' },
+								{ status: 'claimed' },
+								{ is_deleted: _.neq(true) }
+							])
+						)
+						.field({ dedup_key: true })
+						.limit(chunk.length)
+						.get();
+					for (const p of pr.data || []) {
+						if (p.dedup_key) claimedKeys.add(String(p.dedup_key));
+					}
+				} catch (e) {
+					console.error('adminClearFlowOpt claim check', e);
+				}
+			}
+		}
+
+		for (const item of candidateClaimed) {
+			const row = item.row;
+			let reason = item.reason;
+			if (reason === 'check_claimed') {
+				const uid = String(row.user_id || '').trim();
+				const tn = String(row.trade_no || '').trim();
+				const dk = uid && tn ? `trade_${uid}_${tn}` : '';
+				if (!(dk && claimedKeys.has(dk))) {
+					skipped += 1;
+					continue;
+				}
+				reason = 'claimed';
+			}
+
+			if (apply && !dryRun) {
+				await machineTradeCollection.doc(row._id).update({
+					is_flow_opt_trade: false,
+					flow_opt_audit_status: 'none',
+					flow_opt_control_status: 'no',
+					flow_opt_audit_remark: '',
+					flow_opt_audit_time: null,
+					flow_opt_audit_by: '',
+					update_time: now
+				});
+			}
+			cleared += 1;
+			if (reason === 'before_effective') clearedBefore += 1;
+			if (reason === 'claimed') clearedClaimed += 1;
+			if (samples.length < 20) {
+				samples.push({
+					_id: row._id,
+					trade_no: row.trade_no || '',
+					user_id: row.user_id || '',
+					create_time: row.create_time,
+					create_time_text: formatTime(row.create_time),
+					prev_status: row.flow_opt_audit_status || '',
+					amount: row.amount,
+					reason
+				});
+			}
+		}
+
+		const nextCursor = rows.length ? String(rows[rows.length - 1]._id || '') : '';
+		const done = rows.length < chunkSize;
+		return {
+			code: 0,
+			message: apply && !dryRun ? 'ok' : 'dry-run 完成（未写库）',
+			data: {
+				dryRun: !(apply && !dryRun),
+				apply: !!(apply && !dryRun),
+				effectiveFrom,
+				effectiveFromDate: formatFlowOptimizeEffectiveFromDate(effectiveFrom),
+				chunkSize,
+				scanned: rows.length,
+				cleared,
+				clearedBefore,
+				clearedClaimed,
+				skipped,
+				done,
+				nextCursor: done ? '' : nextCursor,
+				samples,
+				operator: getOperator(event)
+			}
+		};
+	} catch (e) {
+		console.error('adminClearFlowOptBeforeEffectiveFrom failed', e);
+		return { code: 500, message: safeText(e?.message || '清理失败', 180) };
+	}
+}
+
+/**
  * 存量商户回填 create_time：无 create_time 时优先 bind_time，否则 update_time。
  * 控制台分批：dryRun 预览 → apply 写库，用 nextCursor 续跑。
  */
@@ -20565,6 +20782,10 @@ async function bizConfigSave(data, event) {
 			flowOptimizeRates: Object.assign({}, prev.flowOptimizeRates || {}, incoming.flowOptimizeRates || {})
 		});
 		const val = sanitizeBizSettings(mergedRaw);
+		// 开启流水优化且未配置生效日时，默认从「今天（北京时间）0 点」起生效，不回溯历史流水
+		if (val.pointsOptimizeFlowEnabled && !(Number(val.flowOptimizeEffectiveFrom) > 0)) {
+			val.flowOptimizeEffectiveFrom = chinaDayStartMs(now);
+		}
 		// 优先写入独立表：即使旧版 system-settings 合并失败，限额也能落库
 		const periodLimits = await savePeriodLimitsToStore(val.withdrawPeriodLimits, operator);
 		val.withdrawPeriodLimits = periodLimits;
@@ -20813,6 +21034,8 @@ exports.main = async (event, context) => {
 			return await adminLoginTimeBackfillFromLastClaim(actualData, event);
 		case 'adminCreateTimeBackfill':
 			return await adminCreateTimeBackfill(actualData, event);
+		case 'adminClearFlowOptBeforeEffectiveFrom':
+			return await adminClearFlowOptBeforeEffectiveFrom(actualData, event);
 		case 'adminFloorMerchantPointsBalances':
 			return await adminFloorMerchantPointsBalances(actualData, event);
 		case 'adminAgreementImgMigrateToCloud':

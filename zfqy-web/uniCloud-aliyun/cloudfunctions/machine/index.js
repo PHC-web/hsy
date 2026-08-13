@@ -1400,9 +1400,12 @@ async function getCardRecordList(data) {
 				{ risk_audit_status: 'approved' }
 			])
 		);
+		// 流水优化待审/驳回与风控待审同口径：不进刷卡记录；仅通过后展示
 		pushWhere(
 			_.or([
-				{ is_flow_opt_trade: _.neq(true) },
+				{ is_flow_opt_trade: false },
+				{ is_flow_opt_trade: _.exists(false) },
+				{ is_flow_opt_trade: null },
 				{ flow_opt_audit_status: 'approved' }
 			])
 		);
@@ -1929,6 +1932,38 @@ function flowOptRecordStatusText(status) {
 	return s || '-';
 }
 
+/**
+ * 按页批量取商户注册时间（create_time，缺省回退 bind_time）。
+ * 每批 1 次查询，避免列表 N+1。
+ */
+async function batchMerchantRegisterTimeMap(userIds) {
+	const ids = [...new Set((userIds || []).map((x) => String(x || '').trim()).filter(Boolean))];
+	const map = new Map();
+	if (!ids.length) return map;
+	const _ = db.command;
+	const CHUNK = 100;
+	for (let i = 0; i < ids.length; i += CHUNK) {
+		const chunk = ids.slice(i, i + CHUNK);
+		try {
+			const res = await merchantCollection
+				.where(_.or([{ user_id: _.in(chunk) }, { _id: _.in(chunk) }]))
+				.field({ _id: true, user_id: true, create_time: true, bind_time: true })
+				.limit(Math.min(chunk.length * 2, CHUNK * 2))
+				.get();
+			for (const m of res.data || []) {
+				const ts = Number(m.create_time) || Number(m.bind_time) || 0;
+				const uid = String(m.user_id || '').trim();
+				const id = String(m._id || '').trim();
+				if (uid) map.set(uid, ts);
+				if (id) map.set(id, ts);
+			}
+		} catch (e) {
+			console.error('batchMerchantRegisterTimeMap', e);
+		}
+	}
+	return map;
+}
+
 function getOperatorSafe(event) {
 	try {
 		const ctx = (event && event.context) || {};
@@ -1957,7 +1992,99 @@ function getOperatorSafe(event) {
 	return '系统';
 }
 
-// 优化管理：§4 未命中后进入流水优化待审的机具流水（与风控互斥）
+async function loadFlowOptimizeEffectiveFrom() {
+	try {
+		const r = await systemSettingCollection.where({ key: BIZ_SETTING_KEY }).limit(5).get();
+		const rows = r.data || [];
+		rows.sort((a, b) => Number(b.update_time || b.create_time || 0) - Number(a.update_time || a.create_time || 0));
+		const doc = rows[0];
+		const raw = doc && doc.value && typeof doc.value === 'object' ? doc.value : {};
+		const v = raw.flowOptimizeEffectiveFrom != null ? raw.flowOptimizeEffectiveFrom : raw.flowOptimizeEffectiveFromDate;
+		if (v == null || v === '') return 0;
+		if (typeof v === 'number' && Number.isFinite(v) && v > 0) return Math.floor(v);
+		const s = String(v).trim();
+		if (/^\d{13}$/.test(s)) return Number(s);
+		if (/^\d{10}$/.test(s)) return Number(s) * 1000;
+		const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+		if (m) {
+			const ts = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`).getTime();
+			return Number.isFinite(ts) && ts > 0 ? ts : 0;
+		}
+		return 0;
+	} catch (e) {
+		return 0;
+	}
+}
+
+function chinaDayStartMsForList(ts = Date.now()) {
+	try {
+		const s = new Intl.DateTimeFormat('en-CA', {
+			timeZone: 'Asia/Shanghai',
+			year: 'numeric',
+			month: '2-digit',
+			day: '2-digit'
+		}).format(new Date(ts));
+		const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})/);
+		if (!m) return 0;
+		const t = new Date(`${m[1]}-${m[2]}-${m[3]}T00:00:00+08:00`).getTime();
+		return Number.isFinite(t) && t > 0 ? t : 0;
+	} catch (e) {
+		return 0;
+	}
+}
+
+function flowOptClearPatch(now = Date.now()) {
+	return {
+		is_flow_opt_trade: false,
+		flow_opt_audit_status: 'none',
+		flow_opt_control_status: 'no',
+		flow_opt_audit_remark: '',
+		flow_opt_audit_time: null,
+		flow_opt_audit_by: '',
+		update_time: now
+	};
+}
+
+/** 已领取首期积分的流水不应再挂在优化待审 */
+async function findClaimedTradeFirstKeys(rows) {
+	const claimed = new Set();
+	const keys = [];
+	for (const row of rows || []) {
+		const uid = String(row.user_id || '').trim();
+		const tn = String(row.trade_no || '').trim();
+		if (!uid || !tn) continue;
+		keys.push(`trade_${uid}_${tn}`);
+	}
+	const uniq = [...new Set(keys)];
+	if (!uniq.length) return claimed;
+	const _ = db.command;
+	const CHUNK = 50;
+	for (let i = 0; i < uniq.length; i += CHUNK) {
+		const chunk = uniq.slice(i, i + CHUNK);
+		try {
+			const pr = await incomePacketCollection
+				.where(
+					_.and([
+						{ dedup_key: _.in(chunk) },
+						{ subsidy_kind: 'trade_first' },
+						{ status: 'claimed' },
+						{ is_deleted: _.neq(true) }
+					])
+				)
+				.field({ dedup_key: true })
+				.limit(chunk.length)
+				.get();
+			for (const p of pr.data || []) {
+				if (p.dedup_key) claimed.add(String(p.dedup_key));
+			}
+		} catch (e) {
+			console.error('findClaimedTradeFirstKeys', e);
+		}
+	}
+	return claimed;
+}
+
+// 优化管理：仅展示「生效日起」且仍待审的真实抽检流水
 async function getFlowOptList(data) {
 	try {
 		const {
@@ -1979,64 +2106,76 @@ async function getFlowOptList(data) {
 		} = data || {};
 
 		const _ = db.command;
-		let query = tradeCollection.where({
-			is_flow_opt_trade: true,
-			is_risk_trade: _.neq(true),
-			stats_eligible: true,
-			trade_type: 'real'
-		});
+		const pageNum = Math.max(1, Number(page) || 1);
+		const size = Math.max(1, Math.min(100, Number(pageSize) || 10));
+
+		// 生效日：配置优先，否则今天 0 点（北京时间）。列表强制不早于此。
+		let effectiveFrom = await loadFlowOptimizeEffectiveFrom();
+		if (!(effectiveFrom > 0)) effectiveFrom = chinaDayStartMsForList(Date.now());
+		const userStart = createTimeStart !== '' && createTimeStart != null ? Number(createTimeStart) : 0;
+		const rangeStart = Math.max(
+			effectiveFrom > 0 ? effectiveFrom : 0,
+			Number.isFinite(userStart) && userStart > 0 ? userStart : 0
+		);
+
+		const andParts = [
+			{ is_flow_opt_trade: true },
+			{ is_risk_trade: _.neq(true) },
+			{ stats_eligible: true },
+			{ trade_type: 'real' }
+		];
+		if (rangeStart > 0) {
+			andParts.push({ create_time: _.gte(rangeStart) });
+		}
+		if (createTimeEnd !== '' && createTimeEnd != null && Number.isFinite(Number(createTimeEnd))) {
+			andParts.push({ create_time: _.lte(Number(createTimeEnd)) });
+		}
 
 		if (userKeyword) {
 			const r = new RegExp(escapeReg(userKeyword), 'i');
-			query = query.where(db.command.or([{ user_name: r }, { user_mobile: r }]));
+			andParts.push(_.or([{ user_name: r }, { user_mobile: r }]));
 		}
 		if (snTradeKeyword) {
 			const r = new RegExp(escapeReg(snTradeKeyword), 'i');
-			query = query.where(db.command.or([{ device_id: r }, { trade_no: r }]));
+			andParts.push(_.or([{ device_id: r }, { trade_no: r }]));
 		}
 
 		const minOk = amountMin !== '' && amountMin !== undefined && Number.isFinite(Number(amountMin));
 		const maxOk = amountMax !== '' && amountMax !== undefined && Number.isFinite(Number(amountMax));
 		if (minOk && maxOk) {
-			query = query.where(
-				db.command.and([
-					{ amount: db.command.gte(Number(amountMin)) },
-					{ amount: db.command.lte(Number(amountMax)) }
-				])
-			);
+			andParts.push({ amount: _.gte(Number(amountMin)) });
+			andParts.push({ amount: _.lte(Number(amountMax)) });
 		} else if (minOk) {
-			query = query.where({ amount: db.command.gte(Number(amountMin)) });
+			andParts.push({ amount: _.gte(Number(amountMin)) });
 		} else if (maxOk) {
-			query = query.where({ amount: db.command.lte(Number(amountMax)) });
+			andParts.push({ amount: _.lte(Number(amountMax)) });
 		}
 
 		const stArr = Array.isArray(statusList)
-			? [...new Set(statusList.map((x) => String(x)))]
+			? [...new Set(statusList.map((x) => String(x)).filter(Boolean))]
 			: [];
 		if (stArr.length === 1) {
-			query = query.where({ flow_opt_audit_status: stArr[0] });
+			andParts.push({ flow_opt_audit_status: stArr[0] });
 		} else if (stArr.length > 1) {
-			query = query.where({ flow_opt_audit_status: db.command.in(stArr) });
+			andParts.push({ flow_opt_audit_status: _.in(stArr) });
 		} else if (status) {
-			query = query.where({ flow_opt_audit_status: String(status) });
+			andParts.push({ flow_opt_audit_status: String(status) });
+		} else {
+			// 默认只看待审，避免已处理/误标噪音
+			andParts.push({ flow_opt_audit_status: 'pending' });
 		}
 
 		if (scenarioKeyword) {
-			query = query.where({ paychannel_text: new RegExp(escapeReg(scenarioKeyword), 'i') });
-		}
-
-		if (createTimeStart) {
-			query = query.where({ create_time: db.command.gte(Number(createTimeStart)) });
-		}
-		if (createTimeEnd) {
-			query = query.where({ create_time: db.command.lte(Number(createTimeEnd)) });
+			andParts.push({ paychannel_text: new RegExp(escapeReg(scenarioKeyword), 'i') });
 		}
 		if (updateTimeStart) {
-			query = query.where({ flow_opt_audit_time: db.command.gte(Number(updateTimeStart)) });
+			andParts.push({ flow_opt_audit_time: _.gte(Number(updateTimeStart)) });
 		}
 		if (updateTimeEnd) {
-			query = query.where({ flow_opt_audit_time: db.command.lte(Number(updateTimeEnd)) });
+			andParts.push({ flow_opt_audit_time: _.lte(Number(updateTimeEnd)) });
 		}
+
+		const where = andParts.length === 1 ? andParts[0] : _.and(andParts);
 
 		let orderByField = 'create_time';
 		let orderByDir = 'desc';
@@ -2048,35 +2187,76 @@ async function getFlowOptList(data) {
 			orderByDir = 'desc';
 		}
 
-		const countRes = await query.count();
-		const total = countRes.total;
-
-		const res = await query
+		// 多取一些，便于剔除「已领积分」误标后再凑满一页
+		const fetchLimit = Math.min(200, size * 3);
+		const res = await tradeCollection
+			.where(where)
 			.orderBy(orderByField, orderByDir)
-			.skip((page - 1) * pageSize)
-			.limit(pageSize)
+			.skip((pageNum - 1) * size)
+			.limit(fetchLimit)
 			.get();
+		let rows = res.data || [];
 
-		const list = (res.data || []).map((item) => ({
-			id: item._id,
-			userDisplay: [item.user_name || '', item.user_mobile || ''].filter(Boolean).join('\n') || '-',
-			snTradeDisplay: `${item.device_id || '-'} / ${item.trade_no || '-'}`,
-			sn: item.device_id || '',
-			tradeNo: item.trade_no || '',
-			amount: Number(item.amount || 0),
-			amountText: `￥${Number(item.amount || 0).toFixed(2)}`,
-			businessScenario: item.paychannel_text || item.paychannel || '-',
-			auditRemark: item.flow_opt_audit_remark || '',
-			status: item.flow_opt_audit_status || 'pending',
-			statusText: flowOptRecordStatusText(item.flow_opt_audit_status || 'pending'),
-			createTime: formatTime(item.create_time),
-			updateTime: item.flow_opt_audit_time ? formatTime(item.flow_opt_audit_time) : '-'
-		}));
+		const claimedKeys = await findClaimedTradeFirstKeys(rows);
+		const kept = [];
+		const now = Date.now();
+		for (const row of rows) {
+			const uid = String(row.user_id || '').trim();
+			const tn = String(row.trade_no || '').trim();
+			const dk = uid && tn ? `trade_${uid}_${tn}` : '';
+			if (dk && claimedKeys.has(dk)) {
+				// 已领积分：清掉误标，不进列表
+				try {
+					await tradeCollection.doc(row._id).update(flowOptClearPatch(now));
+				} catch (e) {
+					console.error('auto clear claimed flow_opt', row._id, e);
+				}
+				continue;
+			}
+			kept.push(row);
+			if (kept.length >= size) break;
+		}
+		rows = kept;
+
+		const countRes = await tradeCollection.where(where).count();
+		// count 含误标；展示用近似值，避免再扫全表
+		const total = Math.max(0, Number(countRes.total || 0));
+
+		const regMap = await batchMerchantRegisterTimeMap(rows.map((r) => r.user_id));
+		const list = rows.map((item) => {
+			const uid = String(item.user_id || '').trim();
+			const regTs = (uid && regMap.has(uid) ? Number(regMap.get(uid)) : 0) || 0;
+			return {
+				id: item._id,
+				userDisplay: [item.user_name || '', item.user_mobile || ''].filter(Boolean).join('\n') || '-',
+				snTradeDisplay: `${item.device_id || '-'} / ${item.trade_no || '-'}`,
+				sn: item.device_id || '',
+				tradeNo: item.trade_no || '',
+				amount: Number(item.amount || 0),
+				amountText: `￥${Number(item.amount || 0).toFixed(2)}`,
+				businessScenario: item.paychannel_text || item.paychannel || '-',
+				auditRemark: item.flow_opt_audit_remark || '',
+				status: item.flow_opt_audit_status || 'pending',
+				statusText: flowOptRecordStatusText(item.flow_opt_audit_status || 'pending'),
+				registerTime: regTs > 0 ? formatTime(regTs) : '-',
+				createTime: formatTime(item.create_time),
+				updateTime: item.flow_opt_audit_time ? formatTime(item.flow_opt_audit_time) : '-',
+				effectiveFrom,
+				effectiveFromText: effectiveFrom > 0 ? formatTime(effectiveFrom) : ''
+			};
+		});
 
 		return {
 			code: 0,
 			message: '获取成功',
-			data: { list, total, page, pageSize }
+			data: {
+				list,
+				total,
+				page: pageNum,
+				pageSize: size,
+				effectiveFrom,
+				effectiveFromText: effectiveFrom > 0 ? formatTime(effectiveFrom) : ''
+			}
 		};
 	} catch (error) {
 		console.error('流水优化列表失败:', error);
