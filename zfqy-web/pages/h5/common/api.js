@@ -239,6 +239,11 @@ export function h5SignAgreement(payload) {
 	return merchantCall('h5SignAgreement', merchantIdentity(Object.assign({}, meta, payload)));
 }
 
+/** 打开签署弹层时预热协议底图（已有则很快返回） */
+export function h5EnsureAgreementBaseJpeg(payload = {}) {
+	return merchantCall('agreementEnsureBaseJpeg', merchantIdentity(payload || {}));
+}
+
 export function h5IncomeList() {
 	return merchantCall('h5IncomeList', merchantIdentity());
 }

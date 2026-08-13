@@ -192,7 +192,7 @@
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
 import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
-import { h5HomeDashboardCached, h5MineInfoCached, h5SignAgreement } from '@/pages/h5/common/api';
+import { h5HomeDashboardCached, h5MineInfoCached, h5SignAgreement, h5EnsureAgreementBaseJpeg } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 import { trimPdfAgreementPage, agreementPdfPageJoinGapPx } from '@/pages/h5/common/trim-image-whitespace';
 
@@ -507,6 +507,8 @@ export default {
 		async openAgreementPopup() {
 			this.agreementPdfZoom = { scale: 1, tx: 0, ty: 0 };
 			this.$refs.agreementPopup.open();
+			const agrId = String(this.agreement.agreementId || '').trim();
+			h5EnsureAgreementBaseJpeg(agrId ? { agreementId: agrId } : {}).catch(() => {});
 			await this.ensureAgreementPreviewReady();
 		},
 		onAgreementPdfWheel(e) {

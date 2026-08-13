@@ -40,7 +40,7 @@
 
 <script>
 import SignaturePad from '@/pages/h5/components/SignaturePad.vue';
-import { h5MineInfoCached, h5SignAgreement, h5InvalidateHomeCache } from '@/pages/h5/common/api';
+import { h5MineInfoCached, h5SignAgreement, h5InvalidateHomeCache, h5EnsureAgreementBaseJpeg } from '@/pages/h5/common/api';
 import { trimPdfAgreementPage, agreementPdfPageJoinGapPx } from '@/pages/h5/common/trim-image-whitespace';
 
 export default {
@@ -99,7 +99,12 @@ export default {
 				this._pendingResolve = resolve;
 				this.agreementPdfZoom = { scale: 1, tx: 0, ty: 0 };
 				this.$refs.agreementPopup.open();
-				this.$nextTick(() => this.ensureAgreementPreviewReady());
+				this.$nextTick(() => {
+					this.ensureAgreementPreviewReady();
+					// 与 PDF 预览并行预热签署底图，提交时只需盖章
+					const agrId = String(this.agreement.agreementId || '').trim();
+					h5EnsureAgreementBaseJpeg(agrId ? { agreementId: agrId } : {}).catch(() => {});
+				});
 			});
 		},
 		onPopupChange(e) {

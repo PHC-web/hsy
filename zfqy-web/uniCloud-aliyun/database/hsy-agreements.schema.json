@@ -12,6 +12,7 @@
 		"title": { "bsonType": "string", "description": "协议标题" },
 		"version": { "bsonType": "string", "description": "协议版本号" },
 		"pdf_file_id": { "bsonType": "string", "description": "协议PDF fileID/url" },
+		"base_jpeg_file_id": { "bsonType": "string", "description": "协议预渲染底图JPEG fileID（签署时盖章用，发布时生成）" },
 		"notify_all_resign": { "bsonType": "bool", "description": "是否通知全量重签", "default": false },
 		"is_current": { "bsonType": "bool", "description": "是否当前生效协议", "default": false },
 		"is_deleted": { "bsonType": "bool", "description": "软删除", "default": false },

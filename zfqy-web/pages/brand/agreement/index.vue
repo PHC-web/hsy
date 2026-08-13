@@ -17,8 +17,9 @@
 						<uni-th align="center" width="100">当前生效</uni-th>
 						<uni-th align="center" width="130">通知全员重签</uni-th>
 						<uni-th align="center" width="120">已签人数</uni-th>
+						<uni-th align="center" width="100">签署底图</uni-th>
 						<uni-th align="center" width="220">发布时间</uni-th>
-						<uni-th align="center" width="260">操作</uni-th>
+						<uni-th align="center" width="320">操作</uni-th>
 					</uni-tr>
 					<uni-tr v-for="row in list" :key="row.id">
 						<uni-td align="center">{{ row.title }}</uni-td>
@@ -26,10 +27,14 @@
 						<uni-td align="center">{{ row.isCurrent ? '是' : '否' }}</uni-td>
 						<uni-td align="center">{{ row.notifyAllResign ? '是' : '否' }}</uni-td>
 						<uni-td align="center">{{ row.signedCount }}</uni-td>
+						<uni-td align="center">{{ row.hasBaseJpeg ? '已生成' : '未生成' }}</uni-td>
 						<uni-td align="center">{{ row.createTime }}</uni-td>
 						<uni-td align="center">
 							<view class="ops-cell">
 								<button size="mini" @click="openPdf(row.pdfFileId)">查看PDF</button>
+								<button size="mini" type="warn" :disabled="!row.id" @click="rebuildBaseJpeg(row)">
+									{{ row.hasBaseJpeg ? '重生成底图' : '生成底图' }}
+								</button>
 								<button type="primary" size="mini" @click="openSignList(row)">签署列表</button>
 							</view>
 						</uni-td>
@@ -252,20 +257,49 @@ export default {
 		},
 		async submitCreate() {
 			if (!this.createForm.pdfFileId) return uni.showToast({ title: '请先上传PDF', icon: 'none' });
-			const res = await this.$request(
-				'agreementCreate',
-				{
-					title: this.createForm.title,
-					pdfFileId: this.createForm.pdfFileId,
-					notifyAllResign: this.createForm.notifyAllResign
-				},
-				{ functionName: 'brand' }
-			);
-			if (res.code !== 0) return uni.showToast({ title: res.message || '发布失败', icon: 'none' });
-			uni.showToast({ title: '发布成功', icon: 'success' });
-			this.$refs.createPopup.close();
-			this.pageInfo.currentPage = 1;
-			this.loadList();
+			uni.showLoading({ title: '发布并生成底图...', mask: true });
+			try {
+				const res = await this.$request(
+					'agreementCreate',
+					{
+						title: this.createForm.title,
+						pdfFileId: this.createForm.pdfFileId,
+						notifyAllResign: this.createForm.notifyAllResign
+					},
+					{ functionName: 'brand' }
+				);
+				if (res.code !== 0) return uni.showToast({ title: res.message || '发布失败', icon: 'none' });
+				const baseOk = res.data && res.data.baseJpegOk !== false && !!String(res.data.baseJpegFileId || '').trim();
+				uni.showToast({
+					title: baseOk ? '发布成功' : res.message || '已发布，底图未生成',
+					icon: baseOk ? 'success' : 'none',
+					duration: baseOk ? 2000 : 3500
+				});
+				this.$refs.createPopup.close();
+				this.pageInfo.currentPage = 1;
+				this.loadList();
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		async rebuildBaseJpeg(row) {
+			if (!row || !row.id) return;
+			uni.showLoading({ title: '生成底图中...', mask: true });
+			try {
+				const res = await this.$request(
+					'agreementBuildBaseJpeg',
+					{ agreementId: row.id },
+					{ functionName: 'brand' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '生成失败', icon: 'none' });
+					return;
+				}
+				uni.showToast({ title: '底图已生成', icon: 'success' });
+				this.loadList();
+			} finally {
+				uni.hideLoading();
+			}
 		},
 		openPdf(url) {
 			if (!url) return;

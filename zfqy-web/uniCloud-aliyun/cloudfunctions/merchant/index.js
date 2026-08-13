@@ -1183,22 +1183,82 @@ async function jimpSolid(width, height, color = 0xffffffff) {
 	});
 }
 
+/** 与 H5 trimPdfAgreementPage / agreementPdfPageJoinGapPx 对齐，去掉翻页大片留白 */
+function agreementPdfPageJoinGapPx(contentWidth) {
+	const w = Number(contentWidth) || 1000;
+	return Math.round(Math.min(56, Math.max(20, w * 0.034)));
+}
+
+function trimJimpPdfAgreementPage(img, pageIndex = 0, options = {}) {
+	if (!img || !img.bitmap) return img;
+	const threshold = Number(options.threshold) >= 0 ? Number(options.threshold) : 242;
+	const minContentPx = Number(options.minContentPx) >= 1 ? Number(options.minContentPx) : 24;
+	const isFirstPage = Math.max(0, parseInt(String(pageIndex), 10) || 0) === 0;
+	const w = img.bitmap.width;
+	const h = img.bitmap.height;
+	const d = img.bitmap.data;
+	const isBlankAt = (x, y) => {
+		const i = (y * w + x) * 4;
+		const a = d[i + 3];
+		if (a < 14) return true;
+		return d[i] >= threshold && d[i + 1] >= threshold && d[i + 2] >= threshold;
+	};
+	const findBottomRow = () => {
+		for (let y = h - 1; y >= 0; y -= 1) {
+			for (let x = 0; x < w; x += 1) {
+				if (!isBlankAt(x, y)) return y;
+			}
+		}
+		return -1;
+	};
+	const findTopRow = () => {
+		for (let y = 0; y < h; y += 1) {
+			for (let x = 0; x < w; x += 1) {
+				if (!isBlankAt(x, y)) return y;
+			}
+		}
+		return -1;
+	};
+	if (isFirstPage) {
+		const bottom = findBottomRow();
+		if (bottom < 0 || bottom + 1 >= h || bottom + 1 < minContentPx) return img;
+		return img.clone().crop(0, 0, w, bottom + 1);
+	}
+	const top = findTopRow();
+	const bottom = findBottomRow();
+	if (top < 0 || bottom < 0 || bottom < top) return img;
+	const newH = bottom - top + 1;
+	if (newH < minContentPx) return img;
+	if (top === 0 && bottom === h - 1) return img;
+	return img.clone().crop(0, top, w, newH);
+}
+
+const AGREEMENT_BASE_JPEG_MAX_W = 1000;
+const AGREEMENT_BASE_JPEG_QUALITY = 78;
+const AGREEMENT_PDF_RENDER_SCALE = 1.15;
+
 /**
- * 将协议 PDF 各页渲成长图 JPEG（不含新签名区；用于历史「签署版 PDF」预览迁移）
+ * PDF → 协议底图长 JPEG（裁翻页留白，不含签名区）。发布协议时预生成，签署时复用。
  */
-async function renderPdfPagesToJpegBuffer(pdfBytes) {
+async function renderPdfToBaseJpegBuffer(pdfBytes) {
 	const Jimp = require('jimp');
 	const library = await getPdfiumLibrary();
 	const document = await library.loadDocument(
 		pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes)
 	);
 	const pageImages = [];
-	const scale = 1.5;
 	try {
+		let pageIndex = 0;
 		for (const page of document.pages()) {
-			const rendered = await page.render({ scale, render: 'bitmap' });
+			const rendered = await page.render({
+				scale: AGREEMENT_PDF_RENDER_SCALE,
+				render: 'bitmap'
+			});
 			const rgba = pdfiumBgraToRgba(rendered.data, rendered.width, rendered.height);
-			pageImages.push(await jimpFromRgbaBuffer(rgba, rendered.width, rendered.height));
+			let pageImg = await jimpFromRgbaBuffer(rgba, rendered.width, rendered.height);
+			pageImg = trimJimpPdfAgreementPage(pageImg, pageIndex);
+			pageImages.push(pageImg);
+			pageIndex += 1;
 		}
 	} finally {
 		try {
@@ -1209,122 +1269,232 @@ async function renderPdfPagesToJpegBuffer(pdfBytes) {
 	}
 	if (!pageImages.length) throw new Error('协议 PDF 无页面可渲染');
 
-	const contentWidth = Math.max(1000, ...pageImages.map((p) => p.bitmap.width));
+	const rawMaxW = Math.max(...pageImages.map((p) => Number(p.bitmap.width || 0)));
+	const targetW = Math.min(AGREEMENT_BASE_JPEG_MAX_W, Math.max(1, rawMaxW));
 	const resizedPages = [];
 	for (const p of pageImages) {
 		const clone = p.clone();
-		if (clone.bitmap.width !== contentWidth) {
-			clone.resize(contentWidth, Jimp.AUTO);
+		if (clone.bitmap.width !== targetW) {
+			clone.resize(targetW, Jimp.AUTO);
 		}
 		resizedPages.push(clone);
 	}
-	const pageGap = Math.max(16, Math.round(contentWidth * 0.02));
+	const pageGap = agreementPdfPageJoinGapPx(targetW);
 	let totalHeight = 0;
 	for (let i = 0; i < resizedPages.length; i += 1) {
 		totalHeight += resizedPages[i].bitmap.height;
 		if (i < resizedPages.length - 1) totalHeight += pageGap;
 	}
 
-	const canvas = await jimpSolid(contentWidth, Math.max(1, totalHeight), 0xffffffff);
+	const canvas = await jimpSolid(targetW, Math.max(1, totalHeight), 0xffffffff);
 	let y = 0;
 	for (let i = 0; i < resizedPages.length; i += 1) {
 		canvas.composite(resizedPages[i], 0, y);
 		y += resizedPages[i].bitmap.height;
 		if (i < resizedPages.length - 1) y += pageGap;
 	}
-	if (canvas.bitmap.width > 1400) {
-		canvas.resize(1400, Jimp.AUTO);
-	}
-	return canvas.quality(82).getBufferAsync(Jimp.MIME_JPEG);
+	return canvas.quality(AGREEMENT_BASE_JPEG_QUALITY).getBufferAsync(Jimp.MIME_JPEG);
+}
+
+/** 历史签署版 PDF → 长图（复用底图渲染逻辑） */
+async function renderPdfPagesToJpegBuffer(pdfBytes) {
+	return renderPdfToBaseJpegBuffer(pdfBytes);
+}
+
+let _jimpFontCache = null;
+async function getAgreementStampFonts() {
+	if (_jimpFontCache) return _jimpFontCache;
+	const Jimp = require('jimp');
+	const [font, fontSm] = await Promise.all([
+		Jimp.loadFont(Jimp.FONT_SANS_32_BLACK),
+		Jimp.loadFont(Jimp.FONT_SANS_16_BLACK)
+	]);
+	_jimpFontCache = { font, fontSm };
+	return _jimpFontCache;
 }
 
 /**
- * 服务端：协议 PDF 渲成图 + 签名小图 → 长图 JPEG（与原先 H5 本地合成效果一致，便于列表图片预览）
+ * 底图 JPEG + 签名小图 → 签署版 JPEG（签署热路径，不再渲 PDF）
  */
-async function composeSignedAgreementJpegBuffer(pdfBytes, signParsed, meta = {}) {
+async function stampSignatureOnBaseJpegBuffer(baseJpegBuffer, signParsed, meta = {}) {
 	const Jimp = require('jimp');
-	const library = await getPdfiumLibrary();
-	const document = await library.loadDocument(
-		pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes)
-	);
-	const pageImages = [];
-	const scale = 1.5;
-	try {
-		for (const page of document.pages()) {
-			const rendered = await page.render({ scale, render: 'bitmap' });
-			const rgba = pdfiumBgraToRgba(rendered.data, rendered.width, rendered.height);
-			pageImages.push(await jimpFromRgbaBuffer(rgba, rendered.width, rendered.height));
-		}
-	} finally {
-		try {
-			document.destroy();
-		} catch (e) {
-			/* ignore */
-		}
-	}
-	if (!pageImages.length) throw new Error('协议 PDF 无页面可渲染');
-
-	const contentWidth = Math.max(1000, ...pageImages.map((p) => p.bitmap.width));
-	const resizedPages = [];
-	for (const p of pageImages) {
-		const clone = p.clone();
-		if (clone.bitmap.width !== contentWidth) {
-			clone.resize(contentWidth, Jimp.AUTO);
-		}
-		resizedPages.push(clone);
-	}
-	const pageGap = Math.max(16, Math.round(contentWidth * 0.02));
-	const signBlockHeight = 220;
-	let totalHeight = signBlockHeight;
-	for (let i = 0; i < resizedPages.length; i += 1) {
-		totalHeight += resizedPages[i].bitmap.height;
-		if (i < resizedPages.length - 1) totalHeight += pageGap;
-	}
-
+	const base = await Jimp.read(baseJpegBuffer);
+	const contentWidth = base.bitmap.width;
+	const signBlockHeight = 200;
+	const sidePad = 20;
+	const totalHeight = base.bitmap.height + signBlockHeight;
 	const canvas = await jimpSolid(contentWidth, totalHeight, 0xffffffff);
-	let y = 0;
-	for (let i = 0; i < resizedPages.length; i += 1) {
-		canvas.composite(resizedPages[i], 0, y);
-		y += resizedPages[i].bitmap.height;
-		if (i < resizedPages.length - 1) y += pageGap;
-	}
+	canvas.composite(base, 0, 0);
 
-	const blockTop = totalHeight - signBlockHeight;
-	const sidePad = 24;
-	const white = await jimpSolid(contentWidth, signBlockHeight, 0xffffffff);
-	canvas.composite(white, 0, blockTop);
-
-	// 签名区边框（与 H5 本地合成一致）；Jimp 内置字体无中文，文案用可读英文 + 时间戳
-	const border = await jimpSolid(contentWidth - sidePad * 2, signBlockHeight - 24, 0xffffffff);
-	border.scan(0, 0, border.bitmap.width, border.bitmap.height, function (x, yy, idx) {
-		const edge =
-			x < 2 || yy < 2 || x >= border.bitmap.width - 2 || yy >= border.bitmap.height - 2;
-		if (edge) {
-			this.bitmap.data[idx] = 0xd0;
-			this.bitmap.data[idx + 1] = 0xd7;
-			this.bitmap.data[idx + 2] = 0xe2;
-			this.bitmap.data[idx + 3] = 0xff;
-		}
-	});
-	canvas.composite(border, sidePad, blockTop + 12);
-
-	const font = await Jimp.loadFont(Jimp.FONT_SANS_32_BLACK);
-	const fontSm = await Jimp.loadFont(Jimp.FONT_SANS_16_BLACK);
-	canvas.print(font, sidePad + 20, blockTop + 36, 'Party B Signature');
+	const blockTop = base.bitmap.height;
+	const { font, fontSm } = await getAgreementStampFonts();
+	canvas.print(font, sidePad + 16, blockTop + 28, 'Party B Signature');
 	const signedAtText = String(meta.signedAtText || '').trim() || new Date().toISOString();
-	canvas.print(fontSm, sidePad + 20, blockTop + signBlockHeight - 48, `Signed at: ${signedAtText}`);
+	canvas.print(fontSm, sidePad + 16, blockTop + signBlockHeight - 40, `Signed at: ${signedAtText}`);
 
 	const signImg = await Jimp.read(signParsed.buffer);
-	const maxSignW = Math.min(360, Math.floor(contentWidth * 0.36));
-	signImg.resize(maxSignW, Jimp.AUTO);
-	const signX = contentWidth - sidePad - signImg.bitmap.width - 24;
-	const signY = blockTop + 40;
+	const maxSignW = Math.min(320, Math.floor(contentWidth * 0.36));
+	if (signImg.bitmap.width > maxSignW) {
+		signImg.resize(maxSignW, Jimp.AUTO);
+	}
+	const signX = contentWidth - sidePad - signImg.bitmap.width - 16;
+	const signY = blockTop + 28;
 	canvas.composite(signImg, signX, signY);
 
-	if (canvas.bitmap.width > 1400) {
-		canvas.resize(1400, Jimp.AUTO);
+	return canvas.quality(AGREEMENT_BASE_JPEG_QUALITY).getBufferAsync(Jimp.MIME_JPEG);
+}
+
+/** @deprecated 保留兼容名；新路径用 stampSignatureOnBaseJpegBuffer */
+async function composeSignedAgreementJpegBuffer(pdfBytes, signParsed, meta = {}) {
+	const base = await renderPdfToBaseJpegBuffer(pdfBytes);
+	return stampSignatureOnBaseJpegBuffer(base, signParsed, meta);
+}
+
+let _agreementBaseMemCache = { key: '', buffer: null, at: 0 };
+
+async function invalidateCurrentAgreementCache() {
+	currentAgreementCache = { at: 0, doc: undefined };
+	_agreementBaseMemCache = { key: '', buffer: null, at: 0 };
+	try {
+		await redisH5.h5RedisDel(REDIS_KEY_AGR);
+	} catch (e) {
+		/* ignore */
 	}
-	return canvas.quality(82).getBufferAsync(Jimp.MIME_JPEG);
+}
+
+async function persistAgreementBaseJpeg(agreementId, jpegBuffer) {
+	const aid = safeText(agreementId, 80) || 'agr';
+	const cloudPath = `hsy/agreement/base/${aid}_${Date.now()}.jpg`;
+	const up = await uniCloud.uploadFile({
+		cloudPath,
+		fileContent: jpegBuffer
+	});
+	const fileID = String(up.fileID || up.fileId || '').trim();
+	if (!fileID) throw new Error('协议底图上传失败（无 fileID）');
+	return fileID;
+}
+
+/**
+ * 签署前预热：已有底图则直接返回；否则生成（打开签署弹层时调用，避免提交时才渲 PDF）
+ */
+async function agreementEnsureBaseJpeg(data = {}) {
+	try {
+		let agreementId = safeText(data?.agreementId || data?.id || '', 80);
+		let doc = null;
+		if (agreementId) {
+			const docRes = await agreementCollection.doc(agreementId).get();
+			doc = docRes.data && (Array.isArray(docRes.data) ? docRes.data[0] : docRes.data);
+		} else {
+			doc = await getCurrentAgreement();
+			agreementId = safeText(doc?._id || '', 80);
+		}
+		if (!doc || !agreementId) return { code: 404, message: '当前无生效协议' };
+		if (safeText(doc.base_jpeg_file_id || '', 500)) {
+			// 预热内存缓存
+			try {
+				await ensureAgreementBaseJpegBuffer(doc, doc.pdf_file_id);
+			} catch (e) {
+				/* ignore warm errors */
+			}
+			return {
+				code: 0,
+				message: 'ok',
+				data: { agreementId, baseJpegFileId: doc.base_jpeg_file_id, ready: true, built: false }
+			};
+		}
+		return await agreementBuildBaseJpeg({ agreementId });
+	} catch (e) {
+		console.error('agreementEnsureBaseJpeg failed', e);
+		return { code: 500, message: safeText(e?.message || '协议底图准备失败', 160) };
+	}
+}
+
+/**
+ * 管理端发布协议后调用：PDF → 底图 JPEG，写入 hsy-agreements.base_jpeg_file_id
+ */
+async function agreementBuildBaseJpeg(data = {}) {
+	try {
+		const agreementId = safeText(data?.agreementId || data?.id || '', 80);
+		if (!agreementId) return { code: 400, message: '缺少协议 ID' };
+		const docRes = await agreementCollection.doc(agreementId).get();
+		const doc = docRes.data && (Array.isArray(docRes.data) ? docRes.data[0] : docRes.data);
+		if (!doc || !doc._id) return { code: 404, message: '协议不存在' };
+		const pdfRef = safeText(doc.pdf_file_id || '', 500);
+		if (!pdfRef) return { code: 400, message: '协议无 PDF 文件' };
+
+		const pdfBytes = await downloadBinaryFromFileRef(pdfRef);
+		const jpegBuffer = await renderPdfToBaseJpegBuffer(pdfBytes);
+		const baseFileId = await persistAgreementBaseJpeg(doc._id, jpegBuffer);
+		const prevBase = safeText(doc.base_jpeg_file_id || '', 500);
+		await agreementCollection.doc(doc._id).update({
+			base_jpeg_file_id: baseFileId,
+			update_time: nowTs()
+		});
+		if (prevBase && prevBase !== baseFileId && isAgreementImgCloudFileId(prevBase)) {
+			await safeDeleteAgreementCloudFile(prevBase);
+		}
+		_agreementBaseMemCache = {
+			key: `${doc._id}|${baseFileId}`,
+			buffer: jpegBuffer,
+			at: Date.now()
+		};
+		await invalidateCurrentAgreementCache();
+		return {
+			code: 0,
+			message: '协议底图已生成',
+			data: { agreementId: doc._id, baseJpegFileId: baseFileId, bytes: jpegBuffer.length }
+		};
+	} catch (e) {
+		console.error('agreementBuildBaseJpeg failed', e);
+		return { code: 500, message: safeText(e?.message || '协议底图生成失败', 160) };
+	}
+}
+
+/**
+ * 签署用：优先内存 / base_jpeg_file_id；缺失时现场生成并回写（兼容旧协议）
+ */
+async function ensureAgreementBaseJpegBuffer(agreement, pdfRefFallback = '') {
+	const agr = agreement || {};
+	const agrId = safeText(agr._id || '', 80);
+	const baseRef = safeText(agr.base_jpeg_file_id || '', 500);
+	const memKey = `${agrId}|${baseRef}`;
+	if (
+		_agreementBaseMemCache.buffer &&
+		_agreementBaseMemCache.key === memKey &&
+		Date.now() - _agreementBaseMemCache.at < 10 * 60 * 1000
+	) {
+		return _agreementBaseMemCache.buffer;
+	}
+	if (baseRef) {
+		const buf = await downloadBinaryFromFileRef(baseRef);
+		_agreementBaseMemCache = { key: memKey, buffer: buf, at: Date.now() };
+		return buf;
+	}
+	const pdfRef = safeText(pdfRefFallback || agr.pdf_file_id || '', 500);
+	if (!pdfRef) throw new Error('当前无协议底图且无 PDF');
+	const pdfBytes = await downloadBinaryFromFileRef(pdfRef);
+	const jpegBuffer = await renderPdfToBaseJpegBuffer(pdfBytes);
+	if (agrId) {
+		try {
+			const baseFileId = await persistAgreementBaseJpeg(agrId, jpegBuffer);
+			await agreementCollection.doc(agrId).update({
+				base_jpeg_file_id: baseFileId,
+				update_time: nowTs()
+			});
+			await invalidateCurrentAgreementCache();
+			_agreementBaseMemCache = {
+				key: `${agrId}|${baseFileId}`,
+				buffer: jpegBuffer,
+				at: Date.now()
+			};
+		} catch (e) {
+			console.error('ensureAgreementBaseJpegBuffer persist failed', e);
+			_agreementBaseMemCache = { key: memKey || pdfRef, buffer: jpegBuffer, at: Date.now() };
+		}
+	} else {
+		_agreementBaseMemCache = { key: pdfRef, buffer: jpegBuffer, at: Date.now() };
+	}
+	return jpegBuffer;
 }
 
 /** 历史签署版 PDF → 长图 JPEG 并回写云存储，便于管理端图片预览 */
@@ -10671,9 +10841,11 @@ async function h5MineInfo(data) {
 				},
 				agreement: {
 					needSign: agreementNeedSign,
+					agreementId: safeText(curAgreement?._id || '', 80),
 					currentVersion: safeText(curAgreement?.version || '', 40),
 					title: safeText(curAgreement?.title || '开户优惠活动计划书', 80),
 					pdfFileId: safeText(curAgreement?.pdf_file_id || '', 500),
+					hasBaseJpeg: !!safeText(curAgreement?.base_jpeg_file_id || '', 500),
 					notifyAllResign: !!curAgreement?.notify_all_resign
 				},
 				account: {
@@ -12481,7 +12653,7 @@ async function h5SignAgreement(data, event = {}) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
 
-		// 新流程：客户端只传签名小图；服务端用当前协议 PDF 合成签署版再落库
+		// 新流程：客户端只传签名小图；服务端用预生成协议底图盖章后落库（不现场渲 PDF）
 		const signParsed = parseAgreementImageInput(signatureImage);
 		if (!signParsed.ok) return { code: 400, message: signParsed.message || '签名图无效' };
 		if (signParsed.kind === 'ref') {
@@ -12497,14 +12669,8 @@ async function h5SignAgreement(data, event = {}) {
 			data?.agreementPdfFileId || curAgreement?.pdf_file_id || '',
 			500
 		);
-		if (!pdfRef) return { code: 400, message: '当前无生效协议文件，请稍后重试或联系客服' };
-
-		let pdfBytes;
-		try {
-			pdfBytes = await downloadBinaryFromFileRef(pdfRef);
-		} catch (e) {
-			console.error('h5SignAgreement download pdf', e);
-			return { code: 500, message: '下载协议正文失败，请稍后重试' };
+		if (!curAgreement && !pdfRef) {
+			return { code: 400, message: '当前无生效协议文件，请稍后重试或联系客服' };
 		}
 
 		const agreementSignedIp = resolveAgreementSignClientIp(event, data);
@@ -12514,7 +12680,8 @@ async function h5SignAgreement(data, event = {}) {
 
 		let signedJpegBuffer;
 		try {
-			signedJpegBuffer = await composeSignedAgreementJpegBuffer(pdfBytes, signParsed, {
+			const baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef);
+			signedJpegBuffer = await stampSignatureOnBaseJpegBuffer(baseJpeg, signParsed, {
 				signedAtText,
 				signedIp: agreementSignedIp
 			});
@@ -12542,7 +12709,7 @@ async function h5SignAgreement(data, event = {}) {
 			update_time: now
 		});
 		if (prevImg && prevImg !== agreementImgRef && isAgreementImgCloudFileId(prevImg)) {
-			await safeDeleteAgreementCloudFile(prevImg);
+			safeDeleteAgreementCloudFile(prevImg).catch(() => {});
 		}
 		const displayUrl = await resolveAgreementImgDisplayUrl(agreementImgRef);
 		return {
@@ -20413,6 +20580,10 @@ exports.main = async (event, context) => {
 			return await applyH5GzipIfRequested(await h5HomeDashboard(actualData), actualData);
 		case 'h5SignAgreement':
 			return await h5SignAgreement(actualData, event);
+		case 'agreementBuildBaseJpeg':
+			return await agreementBuildBaseJpeg(actualData);
+		case 'agreementEnsureBaseJpeg':
+			return await agreementEnsureBaseJpeg(actualData);
 		case 'h5RechargeOptions':
 			return await h5RechargeOptions(actualData);
 		case 'h5RechargeCreate':

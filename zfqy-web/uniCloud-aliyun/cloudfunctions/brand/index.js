@@ -31,6 +31,20 @@ exports.main = async (event, context) => {
 			return await agreementList(actualData);
 		case 'agreementSignList':
 			return await agreementSignList(actualData);
+		case 'agreementBuildBaseJpeg': {
+			try {
+				const agreementId = safeText(actualData?.agreementId || actualData?.id || '', 80);
+				if (!agreementId) return { code: 400, message: '缺少协议 ID' };
+				const buildRet = await uniCloud.callFunction({
+					name: 'merchant',
+					data: { action: 'agreementBuildBaseJpeg', data: { agreementId } }
+				});
+				return (buildRet && buildRet.result) || { code: 500, message: '底图生成无响应' };
+			} catch (e) {
+				console.error('brand agreementBuildBaseJpeg proxy failed', e);
+				return { code: 500, message: safeText(e?.message || '底图生成失败', 120) };
+			}
+		}
 		default:
 			return {
 				code: 400,
@@ -129,20 +143,56 @@ async function agreementCreate(data, event) {
 			title,
 			version,
 			pdf_file_id: pdfFileId,
+			base_jpeg_file_id: '',
 			notify_all_resign: notifyAllResign,
 			is_current: true,
 			is_deleted: false,
 			create_time: now,
 			update_time: now
 		});
+		const agreementId = String(addRes.id || '');
+		let baseJpegFileId = '';
+		let baseWarn = '';
+		try {
+			const buildRet = await uniCloud.callFunction({
+				name: 'merchant',
+				data: {
+					action: 'agreementBuildBaseJpeg',
+					data: { agreementId }
+				}
+			});
+			const br = (buildRet && buildRet.result) || {};
+			if (br.code === 0) {
+				baseJpegFileId = String((br.data && br.data.baseJpegFileId) || '').trim();
+			} else {
+				baseWarn = safeText(br.message || '协议底图生成失败', 120);
+				console.error('agreementCreate build base jpeg failed', br);
+			}
+		} catch (e) {
+			baseWarn = safeText(e?.message || '协议底图生成异常', 120);
+			console.error('agreementCreate call merchant agreementBuildBaseJpeg', e);
+		}
 		await recordOperationLog(
 			event,
 			'agreementCreate',
-			String(addRes.id || ''),
+			agreementId,
 			title,
-			`发布协议: ${title}(${version})，通知全员重签=${notifyAllResign ? '是' : '否'}`
+			`发布协议: ${title}(${version})，通知全员重签=${notifyAllResign ? '是' : '否'}，底图=${
+				baseJpegFileId ? '已生成' : `未生成(${baseWarn || '未知'})`
+			}`
 		);
-		return { code: 0, message: '发布成功', data: { id: addRes.id, version } };
+		if (baseWarn) {
+			return {
+				code: 0,
+				message: `发布成功，但协议底图生成失败：${baseWarn}。请重新发布或联系技术处理后再让用户签署。`,
+				data: { id: agreementId, version, baseJpegFileId: '', baseJpegOk: false }
+			};
+		}
+		return {
+			code: 0,
+			message: '发布成功',
+			data: { id: agreementId, version, baseJpegFileId, baseJpegOk: true }
+		};
 	} catch (error) {
 		console.error('agreementCreate failed:', error);
 		return { code: 500, message: '发布失败' };
@@ -215,6 +265,8 @@ async function agreementList(data) {
 				title: x.title || '',
 				version: x.version || '',
 				pdfFileId: x.pdf_file_id || '',
+				baseJpegFileId: x.base_jpeg_file_id || '',
+				hasBaseJpeg: !!String(x.base_jpeg_file_id || '').trim(),
 				notifyAllResign: !!x.notify_all_resign,
 				isCurrent: !!x.is_current,
 				signedCount,
