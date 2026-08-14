@@ -9349,6 +9349,22 @@ async function rechargeGiftShipmentUpdate(data, event) {
 	}
 }
 
+async function markRechargeOrderApplied(sourceOrder, custom, now, extraCustom = {}) {
+	if (!sourceOrder || !sourceOrder._id) return;
+	await uniPayOrderCollection.doc(sourceOrder._id).update({
+		custom: {
+			...custom,
+			recharge_applied: true,
+			recharge_applied_at: now,
+			...extraCustom
+		},
+		update_date: now
+	});
+}
+
+/**
+ * 同档位/更低档位重复支付：权益只认第一次，后续订单标记已处理但不叠加额度。
+ */
 async function applyRechargeByOrder(orderDoc) {
 	let sourceOrder = orderDoc || {};
 	const orderId = safeText(orderDoc?._id, 80);
@@ -9369,6 +9385,17 @@ async function applyRechargeByOrder(orderDoc) {
 	const beforePrice = Number(custom.before_price || 0);
 	const targetReward = Number(custom.target_reward || 0);
 	const beforeReward = Number(custom.before_reward || 0);
+	const curPkgPrice = Number(merchant.recharge_package_price || 0);
+	// 已生效同档或更高档：不叠加权益（真重复支付走人工退款）
+	if (targetPrice > 0 && curPkgPrice >= targetPrice) {
+		await markRechargeOrderApplied(sourceOrder, custom, now, {
+			recharge_apply_skipped: 'duplicate_same_or_lower_tier',
+			recharge_apply_skip_at: now,
+			recharge_apply_skip_cur_price: curPkgPrice
+		});
+		await invalidateH5MerchantCaches(merchant);
+		return;
+	}
 	const grantDelta = Math.max(
 		0,
 		Number(((targetReward > 0 || beforeReward > 0 ? targetReward - beforeReward : grantYuanByRechargePrice(targetPrice, biz.rechargeRules) - grantYuanByRechargePrice(beforePrice, biz.rechargeRules))).toFixed(2))
@@ -9405,17 +9432,16 @@ async function applyRechargeByOrder(orderDoc) {
 		else if (targetReward >= 5700 || Number(custom.target_quota || 0) >= 1500000 || targetPrice >= 800) nextMembershipName = '铂金会员';
 		else if (targetReward >= 3800 || Number(custom.target_quota || 0) >= 1000000 || targetPrice >= 600 || targetPrice === 0.1) nextMembershipName = '白金会员';
 	}
-	if (isNormalMemberForUpgradePointsClear(merchant)) {
-		await clearNormalMemberPointsAndFrozenOnUpgrade(merchant, {
-			now,
-			upgradeKind: 'paid_recharge',
-			targetMembershipName: nextMembershipName || targetMembershipName || '充值会员',
-			orderNo: sourceOrder.out_trade_no || sourceOrder.order_no || '',
-			operatorSource: 'h5',
-			operator: 'wxpay_notify'
-		});
-	}
-	await merchantCollection.doc(merchant._id).update({
+	const _ = db.command;
+	// 条件写：并发同档位支付时只有第一笔能写入权益
+	const claimWhere =
+		targetPrice > 0
+			? _.and([
+					{ _id: merchant._id },
+					_.or([{ recharge_package_price: _.lt(targetPrice) }, { recharge_package_price: _.eq(0) }, { recharge_package_price: _.exists(false) }])
+				])
+			: { _id: merchant._id };
+	const claim = await merchantCollection.where(claimWhere).update({
 		remaining_quota: afterRem,
 		available_reward: nextAvailableReward,
 		withdraw_quota_balance: nextAvailableReward,
@@ -9433,6 +9459,24 @@ async function applyRechargeByOrder(orderDoc) {
 		recharge_update_time: now,
 		update_time: now
 	});
+	if (!claim.updated) {
+		await markRechargeOrderApplied(sourceOrder, custom, now, {
+			recharge_apply_skipped: 'duplicate_same_or_lower_tier_race',
+			recharge_apply_skip_at: now
+		});
+		await invalidateH5MerchantCaches(merchant);
+		return;
+	}
+	if (isNormalMemberForUpgradePointsClear(merchant)) {
+		await clearNormalMemberPointsAndFrozenOnUpgrade(merchant, {
+			now,
+			upgradeKind: 'paid_recharge',
+			targetMembershipName: nextMembershipName || targetMembershipName || '充值会员',
+			orderNo: sourceOrder.out_trade_no || sourceOrder.order_no || '',
+			operatorSource: 'h5',
+			operator: 'wxpay_notify'
+		});
+	}
 	const logOperatorSource = safeText(custom.operator_source, 20) || 'h5';
 	const logOperator = safeText(custom.operator, 80) || 'wxpay_notify';
 	const logContent =
@@ -9466,14 +9510,7 @@ async function applyRechargeByOrder(orderDoc) {
 		} catch (e) {
 			console.error('maybeCreateRechargeGiftShipment failed', e);
 		}
-		await uniPayOrderCollection.doc(sourceOrder._id).update({
-			custom: {
-				...custom,
-				recharge_applied: true,
-				recharge_applied_at: now
-			},
-			update_date: now
-		});
+		await markRechargeOrderApplied(sourceOrder, custom, now);
 	}
 	await invalidateH5MerchantCaches(merchant);
 }
@@ -12968,37 +13005,6 @@ const RECHARGE_GIFT_OPTIONS = [
 	{ value: 'speaker', label: '蓝牙音响' },
 	{ value: 'scan_pos', label: '扫码POS机' }
 ];
-/** 同档位充值下单冷却：1 分钟内不允许重复创建 */
-const H5_RECHARGE_SAME_TIER_COOLDOWN_MS = 60 * 1000;
-
-function isSameRechargeTierOrder(orderCustom, pkg) {
-	const custom = orderCustom || {};
-	const targetPrice = Number(custom.target_price || 0);
-	const pkgPrice = Number(pkg?.price || 0);
-	const pkgId = safeText(pkg?.id, 40);
-	const orderPkgId = safeText(custom.package_id, 40);
-	if (orderPkgId && pkgId && orderPkgId === pkgId) return true;
-	if (targetPrice > 0 && pkgPrice > 0 && targetPrice === pkgPrice) return true;
-	return false;
-}
-
-async function findRecentSameTierRechargeOrder(merchantUserId, pkg, sinceTs) {
-	const uid = safeText(merchantUserId, 120);
-	if (!uid || !pkg) return null;
-	const recentRes = await uniPayOrderCollection
-		.where({
-			user_id: uid,
-			type: 'h5_quota_recharge',
-			is_deleted: db.command.neq(true),
-			create_date: db.command.gte(Number(sinceTs || 0))
-		})
-		.field({ custom: true, out_trade_no: true, create_date: true })
-		.orderBy('create_date', 'desc')
-		.limit(20)
-		.get();
-	return (recentRes.data || []).find((row) => isSameRechargeTierOrder(row.custom, pkg)) || null;
-}
-
 const H5_RECHARGE_PACKAGES = [
 	{ id: 'pkg_600', title: '600元', price: 600, quota: 1000000, benefitTip: '600元配置100万交易量，等于补贴市场价的3800元手续费', giftChoiceRequired: false, giftOptions: [] },
 	{ id: 'pkg_800', title: '800元', price: 800, quota: 1500000, benefitTip: '800元配置150万交易量，等于补贴市场价的5700元手续费', giftChoiceRequired: false, giftOptions: [] },
@@ -13673,10 +13679,6 @@ async function h5RechargeCreate(data, event) {
 		const addQuota = Math.max(0, Number(pkg.quota || 0) - currentQuota);
 		const payFeeFen = Math.round(payAmount * 100);
 		if (payFeeFen <= 0) return { code: 400, message: '当前档位无需支付，请选择更高档位' };
-		const dupOrder = await findRecentSameTierRechargeOrder(merchant.user_id || merchant._id, pkg, now - H5_RECHARGE_SAME_TIER_COOLDOWN_MS);
-		if (dupOrder) {
-			return { code: 400, message: '1分钟内请勿重复创建同档位充值订单' };
-		}
 
 		const orderNo = `H5R${now}${randomStr(6).toUpperCase()}`.slice(0, 28);
 		const createBody = {
