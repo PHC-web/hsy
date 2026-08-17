@@ -1,0 +1,10 @@
+[
+	{
+		"IndexName": "ym",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [{ "Name": "ym", "Direction": "1" }],
+			"MgoIsUnique": true,
+			"MgoIsSparse": false
+		}
+	}
+]

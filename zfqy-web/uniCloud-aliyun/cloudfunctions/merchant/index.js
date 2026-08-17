@@ -37,6 +37,7 @@ const subsidyEngine = require('./subsidy-engine.js');
 const refundClawback = require('./refund-clawback.js');
 const redisH5 = require('./redis-h5.js');
 const { tradeMemberBucketForMerchant } = require('./trade-member-bucket.js');
+const adminHomeWithdrawRate = require('./admin-home-withdraw-rate.js');
 /** Redis 键：与云函数多实例共享热点，未开通 Redis 时自动跳过 */
 const REDIS_KEY_QUOTA_PKGS = 'hsy:h5:quota:pkgs';
 const REDIS_KEY_PRODUCTS = 'hsy:products:list';
@@ -54,8 +55,8 @@ const REDIS_EX_H5_SILVER_TRADE_SEC = 45;
 const REDIS_EX_H5_RECHARGE_HINT_SEC = 25;
 /** 管理端交易账单列表缓存（秒），减轻重复筛选下的云函数+DB 压力 */
 const REDIS_EX_TRADE_BILL_SEC = 22;
-const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v4';
-const REDIS_KEY_ADMIN_HOME_SUMMARY_LAST = 'hsy:admin:home:summary:v4:last';
+const REDIS_KEY_ADMIN_HOME_SUMMARY = 'hsy:admin:home:summary:v5';
+const REDIS_KEY_ADMIN_HOME_SUMMARY_LAST = 'hsy:admin:home:summary:v5:last';
 const REDIS_KEY_ADMIN_HOME_PREVIEW = 'hsy:admin:home:preview:v1';
 const REDIS_KEY_ADMIN_HOME_PREVIEW_LAST = 'hsy:admin:home:preview:v1:last';
 const REDIS_KEY_ADMIN_HOME_META = 'hsy:admin:home:meta:v1';
@@ -64,6 +65,8 @@ const REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP = 'hsy:admin:home:withdrawTop20:v1';
 const REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP_LAST = 'hsy:admin:home:withdrawTop20:v1:last';
 const REDIS_KEY_ADMIN_HOME_PENDING_FROZEN = 'hsy:admin:home:pendingFrozen:v1';
 const REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST = 'hsy:admin:home:pendingFrozen:v1:last';
+const REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE = 'hsy:admin:home:withdrawRateMonthly:v2';
+const REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE_LAST = 'hsy:admin:home:withdrawRateMonthly:v2:last';
 const REDIS_KEY_ADMIN_MEMBERSHIP_TIER = 'hsy:admin:membership:tier:counts:v1';
 /** 定时每 15 分钟预热；正式 key TTL 覆盖多轮 cron；last 长留作刷新空窗回退 */
 const REDIS_EX_ADMIN_HOME_SUMMARY_SEC = 1800;
@@ -72,6 +75,7 @@ const REDIS_EX_ADMIN_HOME_TREND_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_META_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_WITHDRAW_TOP_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_PENDING_FROZEN_SEC = 1800;
+const REDIS_EX_ADMIN_HOME_WITHDRAW_RATE_SEC = 1800;
 const REDIS_EX_ADMIN_HOME_LAST_SEC = 7 * 24 * 3600;
 const REDIS_EX_ADMIN_MEMBERSHIP_TIER_SEC = 1800;
 const ADMIN_HOME_SUMMARY_CACHE_MS = 45000;
@@ -121,6 +125,10 @@ function isAdminHomePendingFrozenPayload(p) {
 		Array.isArray(p.frozenMonths) &&
 		(p.pendingWithdrawTotal != null || p.pendingWithdrawTotal === 0)
 	);
+}
+
+function isAdminHomeWithdrawRatePayload(p) {
+	return adminHomeWithdrawRate.isAdminHomeWithdrawRatePayload(p);
 }
 
 async function adminHomeRedisGetLiveOrLast(liveKey, lastKey, isValid) {
@@ -3693,6 +3701,88 @@ async function adminSumTradeAmountCardAligned(cardBase, extraAnd = []) {
 	return Number(sum.toFixed(2));
 }
 
+/**
+ * 风险管理：未审核 + 审核不通过（审核通过已进刷卡记录，不重复）
+ * 口径对齐 risk 列表：is_risk_trade + stats_eligible + real
+ */
+async function adminSumRiskPendingRejectedAmount(extraAnd = []) {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const parts = [
+		{ is_risk_trade: true },
+		{ stats_eligible: true },
+		{ trade_type: 'real' },
+		{ is_deleted: _.neq(true) },
+		{ risk_audit_status: _.in(['pending', 'rejected']) },
+		{ amount: _.gt(0) }
+	];
+	for (const x of Array.isArray(extraAnd) ? extraAnd : []) {
+		if (x) parts.push(x);
+	}
+	try {
+		const agg = await machineTradeCollection
+			.aggregate()
+			.match(_.and(parts))
+			.group({ _id: null, total: $.sum('$amount') })
+			.end();
+		return Number(((((agg || {}).data || [])[0] || {}).total || 0).toFixed(2));
+	} catch (e) {
+		console.error('adminSumRiskPendingRejectedAmount', e);
+		return 0;
+	}
+}
+
+/**
+ * 流水优化：未审核 + 审核不通过（审核通过已进刷卡记录，不重复）
+ * 口径对齐优化列表主体：is_flow_opt_trade + 非风险 + stats_eligible + real
+ */
+async function adminSumFlowOptPendingRejectedAmount(extraAnd = []) {
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const parts = [
+		{ is_flow_opt_trade: true },
+		{ is_risk_trade: _.neq(true) },
+		{ stats_eligible: true },
+		{ trade_type: 'real' },
+		{ is_deleted: _.neq(true) },
+		{ flow_opt_audit_status: _.in(['pending', 'rejected']) },
+		{ amount: _.gt(0) }
+	];
+	for (const x of Array.isArray(extraAnd) ? extraAnd : []) {
+		if (x) parts.push(x);
+	}
+	try {
+		const agg = await machineTradeCollection
+			.aggregate()
+			.match(_.and(parts))
+			.group({ _id: null, total: $.sum('$amount') })
+			.end();
+		return Number(((((agg || {}).data || [])[0] || {}).total || 0).toFixed(2));
+	} catch (e) {
+		console.error('adminSumFlowOptPendingRejectedAmount', e);
+		return 0;
+	}
+}
+
+/** 总刷卡 = 常规(刷卡记录) + 风险未过审 + 优化未过审 */
+async function adminSumHomeTotalTradeBreakdown(cardBase, extraAnd = []) {
+	const [regularAmount, riskAmount, flowOptAmount] = await Promise.all([
+		cardBase && cardBase.ok
+			? adminSumTradeAmountCardAligned(cardBase, extraAnd).catch((e) => {
+					console.error('adminSumHomeTotalTradeBreakdown regular', e);
+					return 0;
+				})
+			: Promise.resolve(0),
+		adminSumRiskPendingRejectedAmount(extraAnd),
+		adminSumFlowOptPendingRejectedAmount(extraAnd)
+	]);
+	const regular = Number(Number(regularAmount || 0).toFixed(2));
+	const risk = Number(Number(riskAmount || 0).toFixed(2));
+	const flowOpt = Number(Number(flowOptAmount || 0).toFixed(2));
+	const total = Number((regular + risk + flowOpt).toFixed(2));
+	return { regularAmount: regular, riskAmount: risk, flowOptAmount: flowOpt, totalAmount: total };
+}
+
 async function adminCountTradesCardAligned(cardBase, extraAnd = []) {
 	const $ = db.command.aggregate;
 	if (!cardBase || !cardBase.ok) return 0;
@@ -4813,6 +4903,7 @@ async function invalidateAdminHomeSummaryCache() {
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_META);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_WITHDRAW_TOP);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_PENDING_FROZEN);
+	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE);
 	await redisH5.h5RedisDel(REDIS_KEY_ADMIN_MEMBERSHIP_TIER);
 	await redisH5.h5RedisDel(redisKeyAdminHomeTrendAllTime());
 	for (const t of ADMIN_HOME_TREND_RANGE_TYPES) {
@@ -4997,14 +5088,12 @@ async function adminHomeSummary(data = {}) {
 				return { data: [] };
 			});
 
-		const tradeTotalPromise = cardBase.ok
-			? adminSumTradeAmountCardAligned(cardBase)
-					.then((total) => ({ data: [{ total }] }))
-					.catch((e) => {
-						console.error('adminHomeSummary tradeAgg', e);
-						return { data: [] };
-					})
-			: Promise.resolve({ data: [] });
+		const tradeTotalPromise = adminSumHomeTotalTradeBreakdown(cardBase)
+			.then((pack) => ({ data: [pack] }))
+			.catch((e) => {
+				console.error('adminHomeSummary tradeBreakdown', e);
+				return { data: [] };
+			});
 
 		const tradeSplitPromise = cardBase.ok
 			? adminSumTradeAmountByBucketCardAligned(cardBase)
@@ -5103,24 +5192,43 @@ async function adminHomeSummary(data = {}) {
 		let boundMerchantTradeAmountMember = 0;
 		let boundMerchantTradeAmountNonMember = 0;
 		let tradeUnbucketed = 0;
-		if (cardBase.ok) {
-			boundMerchantTradeAmount = Number(Number((((tradeAgg.data || [])[0] || {}).total || 0)).toFixed(2));
-			for (const row of tradeSplitAgg.data || []) {
-				const key = row._id;
-				const t = Number(Number((row.total || 0)).toFixed(2));
-				if (key === 'member') boundMerchantTradeAmountMember = t;
-				else if (key === 'non_member') boundMerchantTradeAmountNonMember = t;
-				else tradeUnbucketed = Number((tradeUnbucketed + t).toFixed(2));
-			}
-			if (tradeUnbucketed > 0) {
-				boundMerchantTradeAmountNonMember = Number(
-					(boundMerchantTradeAmountNonMember + tradeUnbucketed).toFixed(2)
-				);
-			}
-			const tradeSplitSum = Number(
-				(boundMerchantTradeAmountMember + boundMerchantTradeAmountNonMember).toFixed(2)
+		let regularTradeAmount = 0;
+		let riskTradeAmount = 0;
+		let flowOptTradeAmount = 0;
+		const tradePack = (tradeAgg.data || [])[0] || {};
+		if (tradePack && (tradePack.totalAmount != null || tradePack.regularAmount != null)) {
+			regularTradeAmount = Number(Number(tradePack.regularAmount || 0).toFixed(2));
+			riskTradeAmount = Number(Number(tradePack.riskAmount || 0).toFixed(2));
+			flowOptTradeAmount = Number(Number(tradePack.flowOptAmount || 0).toFixed(2));
+			boundMerchantTradeAmount = Number(
+				Number(
+					tradePack.totalAmount != null
+						? tradePack.totalAmount
+						: regularTradeAmount + riskTradeAmount + flowOptTradeAmount
+				).toFixed(2)
 			);
-			if (tradeSplitSum > 0) boundMerchantTradeAmount = tradeSplitSum;
+		}
+		// 会员/非会员刷卡仍按「常规流水（刷卡记录）」分桶
+		for (const row of tradeSplitAgg.data || []) {
+			const key = row._id;
+			const t = Number(Number((row.total || 0)).toFixed(2));
+			if (key === 'member') boundMerchantTradeAmountMember = t;
+			else if (key === 'non_member') boundMerchantTradeAmountNonMember = t;
+			else tradeUnbucketed = Number((tradeUnbucketed + t).toFixed(2));
+		}
+		if (tradeUnbucketed > 0) {
+			boundMerchantTradeAmountNonMember = Number(
+				(boundMerchantTradeAmountNonMember + tradeUnbucketed).toFixed(2)
+			);
+		}
+		const tradeSplitSum = Number(
+			(boundMerchantTradeAmountMember + boundMerchantTradeAmountNonMember).toFixed(2)
+		);
+		if (tradeSplitSum > 0) {
+			regularTradeAmount = tradeSplitSum;
+			boundMerchantTradeAmount = Number(
+				(regularTradeAmount + riskTradeAmount + flowOptTradeAmount).toFixed(2)
+			);
 		}
 
 		const totalRechargeAmount = Number((Number((((rechargeAgg.data || [])[0] || {}).total || 0)) / 100).toFixed(2));
@@ -5136,9 +5244,13 @@ async function adminHomeSummary(data = {}) {
 			boundMerchantTradeAmount,
 			boundMerchantTradeAmountMember,
 			boundMerchantTradeAmountNonMember,
+			regularTradeAmount,
+			riskTradeAmount,
+			flowOptTradeAmount,
 			totalRechargeAmount,
 			totalRefundAmount,
 			_paidMatch: 'is_paid+arrival_received',
+			_tradeTotalFormula: 'regular+risk_pending_rejected+flow_opt_pending_rejected',
 			_unbucketedFolded: {
 				arrived: arrivedWithdrawAmountUnbucketed,
 				pending: pendingUnbucketed,
@@ -5496,15 +5608,60 @@ async function refreshAdminHomePendingFrozenCache() {
 	return payload;
 }
 
+function buildAdminHomeWithdrawRateDeps() {
+	return {
+		db,
+		withdrawCollection,
+		incomePacketCollection,
+		machineTradeCollection,
+		shanghaiYearMonthFromTs,
+		addCalendarMonthsYm,
+		ymToDisplayLabel,
+		nowTs,
+		buildCardRecordAlignedTradeBaseWhere,
+		adminSumTradeAmountCardAligned,
+		adminSumRiskPendingRejectedAmount,
+		adminSumFlowOptPendingRejectedAmount,
+		adminSumHomeTotalTradeBreakdown,
+		computeAdminHomePendingFrozen,
+		adminHomeRedisSetLiveAndLast,
+		REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE,
+		REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE_LAST,
+		REDIS_EX_ADMIN_HOME_WITHDRAW_RATE_SEC,
+		historyMonths: 4,
+		async loadPendingFrozenCached() {
+			const pack = await adminHomeRedisGetLiveOrLast(
+				REDIS_KEY_ADMIN_HOME_PENDING_FROZEN,
+				REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST,
+				isAdminHomePendingFrozenPayload
+			);
+			return pack && pack.data ? pack.data : null;
+		}
+	};
+}
+
+async function refreshAdminHomeWithdrawRateCache() {
+	return adminHomeWithdrawRate.refreshAdminHomeWithdrawRateCache(buildAdminHomeWithdrawRateDeps());
+}
+
+async function adminHomeMonthMetricsBackfill(data = {}) {
+	try {
+		return await adminHomeWithdrawRate.adminHomeMonthMetricsBackfill(buildAdminHomeWithdrawRateDeps(), data);
+	} catch (e) {
+		console.error('adminHomeMonthMetricsBackfill', e);
+		return { code: 500, message: e?.message || '月度提现率回填失败' };
+	}
+}
+
 /**
- * 定时预热：写入 Redis。parts 可选 preview / summary / trend / withdrawTop / pendingFrozen
+ * 定时预热：写入 Redis。parts 可选 preview / summary / trend / withdrawTop / pendingFrozen / withdrawRate
  * rangeTypes 仅对 trend 生效，默认四档全刷（建议 cron 分次调用避免超时）
  */
 async function adminHomeCacheRefresh(data = {}) {
 	const partsRaw = Array.isArray(data.parts) ? data.parts.map((x) => String(x || '').trim()) : [];
 	const parts = partsRaw.length
 		? new Set(partsRaw)
-		: new Set(['preview', 'summary', 'trend', 'withdrawTop', 'pendingFrozen']);
+		: new Set(['preview', 'summary', 'trend', 'withdrawTop', 'pendingFrozen', 'withdrawRate']);
 	const rangeTypes = Array.isArray(data.rangeTypes) && data.rangeTypes.length
 		? data.rangeTypes.map((x) => String(x || '').trim()).filter(Boolean)
 		: ADMIN_HOME_TREND_RANGE_TYPES.slice();
@@ -5515,6 +5672,7 @@ async function adminHomeCacheRefresh(data = {}) {
 		summary: false,
 		withdrawTop: false,
 		pendingFrozen: false,
+		withdrawRate: false,
 		trendAllTime: false,
 		trends: {}
 	};
@@ -5538,6 +5696,11 @@ async function adminHomeCacheRefresh(data = {}) {
 		if (parts.has('pendingFrozen')) {
 			await refreshAdminHomePendingFrozenCache();
 			out.pendingFrozen = true;
+		}
+		if (parts.has('withdrawRate')) {
+			// 依赖 pendingFrozen 缓存做预测；若本次未刷冻结，仍可读 :last
+			await refreshAdminHomeWithdrawRateCache();
+			out.withdrawRate = true;
 		}
 		if (parts.has('trend') || parts.has('trendAllTime')) {
 			if (ADMIN_HOME_TREND_STATS_DISABLED) {
@@ -5600,7 +5763,7 @@ async function adminHomeCacheRefresh(data = {}) {
 async function adminHomeCacheGet(data = {}) {
 	try {
 		const rangeType = String(data.rangeType || '30d').trim() || '30d';
-		const [previewPack, summaryPack, trendPack, withdrawTopPack, pendingFrozenPack, metaPack] =
+		const [previewPack, summaryPack, trendPack, withdrawTopPack, pendingFrozenPack, withdrawRatePack, metaPack] =
 			await Promise.all([
 				adminHomeRedisGetLiveOrLast(
 					REDIS_KEY_ADMIN_HOME_PREVIEW,
@@ -5627,6 +5790,11 @@ async function adminHomeCacheGet(data = {}) {
 					REDIS_KEY_ADMIN_HOME_PENDING_FROZEN_LAST,
 					isAdminHomePendingFrozenPayload
 				),
+				adminHomeRedisGetLiveOrLast(
+					REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE,
+					REDIS_KEY_ADMIN_HOME_WITHDRAW_RATE_LAST,
+					isAdminHomeWithdrawRatePayload
+				),
 				adminHomeRedisGetLiveOrLast(REDIS_KEY_ADMIN_HOME_META, REDIS_KEY_ADMIN_HOME_META_LAST)
 			]);
 		const preview = previewPack.data;
@@ -5634,13 +5802,15 @@ async function adminHomeCacheGet(data = {}) {
 		let trend = trendPack.data;
 		const withdrawTop = withdrawTopPack.data;
 		const pendingFrozen = pendingFrozenPack.data;
+		const withdrawRate = withdrawRatePack.data;
 		const meta = metaPack.data;
 		const hit = {
 			preview: isAdminHomePreviewPayload(preview),
 			summary: isAdminHomeSummaryPayload(summary),
 			trend: isAdminHomeTrendPayload(trend),
 			withdrawTop: isAdminHomeWithdrawTopPayload(withdrawTop),
-			pendingFrozen: isAdminHomePendingFrozenPayload(pendingFrozen)
+			pendingFrozen: isAdminHomePendingFrozenPayload(pendingFrozen),
+			withdrawRate: isAdminHomeWithdrawRatePayload(withdrawRate)
 		};
 		// 临时关闭数据统计：始终返回空趋势，避免前端再触发 trend 预热
 		if (ADMIN_HOME_TREND_STATS_DISABLED) {
@@ -5652,16 +5822,23 @@ async function adminHomeCacheGet(data = {}) {
 			summary: hit.summary && summaryPack.from === 'last',
 			trend: ADMIN_HOME_TREND_STATS_DISABLED ? false : hit.trend && trendPack.from === 'last',
 			withdrawTop: hit.withdrawTop && withdrawTopPack.from === 'last',
-			pendingFrozen: hit.pendingFrozen && pendingFrozenPack.from === 'last'
+			pendingFrozen: hit.pendingFrozen && pendingFrozenPack.from === 'last',
+			withdrawRate: hit.withdrawRate && withdrawRatePack.from === 'last'
 		};
 		const allHit =
-			hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen;
+			hit.preview &&
+			hit.summary &&
+			hit.trend &&
+			hit.withdrawTop &&
+			hit.pendingFrozen &&
+			hit.withdrawRate;
 		const anyStale = !!(
 			stale.preview ||
 			stale.summary ||
 			stale.trend ||
 			stale.withdrawTop ||
-			stale.pendingFrozen
+			stale.pendingFrozen ||
+			stale.withdrawRate
 		);
 		const redisAlive = !!(redisH5.h5RedisAlive && redisH5.h5RedisAlive());
 		return {
@@ -5673,6 +5850,7 @@ async function adminHomeCacheGet(data = {}) {
 				trend: hit.trend ? trend : null,
 				withdrawTop: hit.withdrawTop ? withdrawTop : null,
 				pendingFrozen: hit.pendingFrozen ? pendingFrozen : null,
+				withdrawRate: hit.withdrawRate ? withdrawRate : null,
 				rangeType,
 				updatedAt: Number((meta && meta.updatedAt) || 0) || 0,
 				cacheHit: hit,
@@ -5683,6 +5861,7 @@ async function adminHomeCacheGet(data = {}) {
 					trend: trendPack.from,
 					withdrawTop: withdrawTopPack.from,
 					pendingFrozen: pendingFrozenPack.from,
+					withdrawRate: withdrawRatePack.from,
 					meta: metaPack.from
 				},
 				redisAlive
@@ -20994,6 +21173,8 @@ exports.main = async (event, context) => {
 			return await adminHomeCacheRefresh(actualData);
 		case 'adminHomeBackfillBuckets':
 			return await adminHomeBackfillBuckets(actualData);
+		case 'adminHomeMonthMetricsBackfill':
+			return await adminHomeMonthMetricsBackfill(actualData);
 		case 'adminMerchantRefundWindow':
 			return await adminMerchantRefundWindow(actualData);
 		case 'financeMerchantFlowList':

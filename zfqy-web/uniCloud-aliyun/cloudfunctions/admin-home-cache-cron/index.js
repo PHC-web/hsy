@@ -2,7 +2,7 @@
 
 // 管理端首页统计 Redis 预热。
 // 阿里云定时触发器（控制台粘贴整段）：["cron:0 */15 * * * *"]
-// 超时建议 ≥ 300s；写入 merchant：preview / summary / withdrawTop / pendingFrozen / trend
+// 超时建议 ≥ 300s；写入 merchant：preview / summary / withdrawTop / pendingFrozen / withdrawRate / trend
 
 async function callMerchant(action, data = {}) {
 	const res = await uniCloud.callFunction({
@@ -25,6 +25,7 @@ exports.main = async (event) => {
 		summary: false,
 		withdrawTop: false,
 		pendingFrozen: false,
+		withdrawRate: false,
 		trends: {}
 	};
 
@@ -44,14 +45,29 @@ exports.main = async (event) => {
 		summary.withdrawTop = !!(base.data && base.data.withdrawTop);
 		summary.pendingFrozen = !!(base.data && base.data.pendingFrozen);
 
+		// 月度提现率单独刷：依赖 pendingFrozen 缓存，且可能扫 1～2 个自然月流水
+		const wr = await callMerchant('adminHomeCacheRefresh', {
+			parts: ['withdrawRate']
+		});
+		summary.withdrawRate = !!(wr && wr.code === 0 && wr.data && wr.data.withdrawRate);
+		if (!summary.withdrawRate) {
+			console.error('[admin-home-cache-cron] withdrawRate fail', wr && wr.message);
+		}
+
 		// 临时关闭：首页「数据统计」趋势/历史累计聚合（与 merchant ADMIN_HOME_TREND_STATS_DISABLED 对齐）
 		const TREND_STATS_DISABLED = true;
 		if (TREND_STATS_DISABLED) {
 			summary.trendAllTime = true;
 			summary.trends = { today: true, week: true, month: true, '30d': true, skipped: true };
+			const baseOk =
+				summary.preview &&
+				summary.summary &&
+				summary.withdrawTop &&
+				summary.pendingFrozen &&
+				summary.withdrawRate;
 			return {
-				code: 0,
-				message: 'ok_trend_disabled',
+				code: baseOk ? 0 : 207,
+				message: baseOk ? 'ok_trend_disabled' : 'partial',
 				data: summary
 			};
 		}
@@ -84,6 +100,7 @@ exports.main = async (event) => {
 			summary.summary &&
 			summary.withdrawTop &&
 			summary.pendingFrozen &&
+			summary.withdrawRate &&
 			allTrendOk;
 		return {
 			code: ok ? 0 : 207,

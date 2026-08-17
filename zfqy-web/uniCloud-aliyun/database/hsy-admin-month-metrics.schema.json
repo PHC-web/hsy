@@ -1,0 +1,61 @@
+{
+	"bsonType": "object",
+	"required": ["ym", "create_time", "update_time"],
+	"permission": { "read": true, "create": true, "update": true, "delete": false },
+	"properties": {
+		"_id": { "description": "主键" },
+		"ym": { "bsonType": "string", "description": "自然月 YYYY-MM（北京时间）", "trim": "both" },
+		"trade_amount": {
+			"bsonType": "number",
+			"description": "当月总刷卡=常规+风险未过审+优化未过审",
+			"default": 0
+		},
+		"trade_regular_amount": {
+			"bsonType": "number",
+			"description": "当月常规流水（刷卡记录）",
+			"default": 0
+		},
+		"trade_risk_amount": {
+			"bsonType": "number",
+			"description": "当月风险未审核+审核不通过金额",
+			"default": 0
+		},
+		"trade_flow_opt_amount": {
+			"bsonType": "number",
+			"description": "当月优化未审核+审核不通过金额",
+			"default": 0
+		},
+		"withdraw_amount": {
+			"bsonType": "number",
+			"description": "当月已到账提现金额（payable，is_paid+received）",
+			"default": 0
+		},
+		"claimed_points": {
+			"bsonType": "number",
+			"description": "当月领取积分（hsy-income-packets claimed）",
+			"default": 0
+		},
+		"unconverted_points": {
+			"bsonType": "number",
+			"description": "当月积分未换成提现估算 max(0, claimed-withdraw)",
+			"default": 0
+		},
+		"conversion_ratio": {
+			"bsonType": "number",
+			"description": "当月提现/领取积分比",
+			"default": 0
+		},
+		"rate_per_wan": {
+			"bsonType": "number",
+			"description": "提现率：withdraw/trade*10000，元/万",
+			"default": 0
+		},
+		"sealed": {
+			"bsonType": "bool",
+			"description": "已封存：cron 不再重算历史月",
+			"default": false
+		},
+		"create_time": { "bsonType": "timestamp" },
+		"update_time": { "bsonType": "timestamp" }
+	}
+}

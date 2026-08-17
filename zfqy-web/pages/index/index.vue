@@ -142,6 +142,20 @@
 								<view class="returns-metric-value">{{ withdrawRatePerWan }}</view>
 							</view>
 						</view>
+						<view class="returns-metrics returns-metrics--breakdown">
+							<view class="returns-metric">
+								<view class="returns-metric-label">常规流水</view>
+								<view class="returns-metric-value">{{ toMoney(dashboard.regularTradeAmount) }}</view>
+							</view>
+							<view class="returns-metric">
+								<view class="returns-metric-label">风险流水</view>
+								<view class="returns-metric-value">{{ toMoney(dashboard.riskTradeAmount) }}</view>
+							</view>
+							<view class="returns-metric">
+								<view class="returns-metric-label">优化流水</view>
+								<view class="returns-metric-value">{{ toMoney(dashboard.flowOptTradeAmount) }}</view>
+							</view>
+						</view>
 						<view class="returns-tier-wrap">
 							<view class="returns-metrics returns-metrics--tier">
 								<view class="returns-metric">
@@ -185,7 +199,7 @@
 			<view class="panel-wrap pending-frozen-panel">
 				<view class="preview-panel-head">
 					<view class="panel-title mb0">待提现 / 冻结金额</view>
-					<view class="preview-panel-hint">待提现为全平台账号积分；冻结按月为未领分片生效额（含优化后）</view>
+					<!-- <view class="preview-panel-hint">待提现为全平台账号积分；冻结按月为未领分片生效额（含优化后）</view> -->
 				</view>
 				<view class="pending-frozen-grid">
 					<view class="pending-frozen-card pending-frozen-card--pending">
@@ -202,6 +216,51 @@
 						<text class="pending-frozen-value">{{ toMoney(m.amount) }}</text>
 					</view>
 				</view>
+			</view>
+
+			<view class="panel-wrap withdraw-rate-panel">
+				<view class="preview-panel-head">
+					<view class="panel-title mb0">月度提现率</view>
+					<!-- <view class="preview-panel-hint">
+					过审刷卡口径已扩展：总刷卡=常规+风险未过审+优化未过审；提现率按总刷卡计算
+					</view> -->
+				</view>
+				<view class="withdraw-rate-section-label">历史月份</view>
+				<view v-if="!withdrawRatePanel.history.length" class="withdraw-rate-empty">暂无历史月数据，等待缓存预热或回填</view>
+				<view v-else class="withdraw-rate-grid">
+					<view
+						v-for="m in withdrawRatePanel.history"
+						:key="'h-' + m.ym"
+						class="withdraw-rate-card"
+						:class="m.isCurrent || !m.sealed ? 'withdraw-rate-card--open' : 'withdraw-rate-card--sealed'"
+					>
+						<text class="withdraw-rate-month">{{ m.label }}</text>
+						<text class="withdraw-rate-main">{{ formatYuanPerWan(m.ratePerWan) }}</text>
+						<text class="withdraw-rate-sub">提现 {{ toMoney(m.withdrawAmount) }}</text>
+						<text class="withdraw-rate-sub">总刷卡 {{ toMoney(m.tradeAmount) }}</text>
+						<text class="withdraw-rate-sub">常规 {{ toMoney(m.regularAmount) }}</text>
+						<text class="withdraw-rate-sub">风险 {{ toMoney(m.riskAmount) }} / 优化 {{ toMoney(m.flowOptAmount) }}</text>
+						<text class="withdraw-rate-sub">领取积分 {{ toMoney(m.claimedPoints) }}</text>
+						<text class="withdraw-rate-sub">未提现约 {{ toMoney(m.unconvertedPoints) }}</text>
+					</view>
+				</view>
+				<view class="withdraw-rate-section-label withdraw-rate-section-label--forecast">未来预测</view>
+				<view v-if="!withdrawRatePanel.forecast.length" class="withdraw-rate-empty">暂无预测</view>
+				<view v-else class="withdraw-rate-grid">
+					<view
+						v-for="m in withdrawRatePanel.forecast"
+						:key="'f-' + m.ym"
+						class="withdraw-rate-card withdraw-rate-card--forecast"
+					>
+						<text class="withdraw-rate-month">{{ m.label }}</text>
+						<text class="withdraw-rate-main">{{ formatYuanPerWan(m.ratePerWan) }}</text>
+						<text class="withdraw-rate-sub">预估提现 {{ toMoney(m.withdrawAmount) }}</text>
+						<text class="withdraw-rate-sub">预估刷卡 {{ toMoney(m.tradeAmount) }}</text>
+						<text class="withdraw-rate-sub">可提积分池 {{ toMoney(m.pointsExpected) }}</text>
+						<text class="withdraw-rate-sub">分片释放 {{ toMoney(m.frozenRelease) }}</text>
+					</view>
+				</view>
+				<view v-if="withdrawRatePanel.methodNote" class="withdraw-rate-note">{{ withdrawRatePanel.methodNote }}</view>
 			</view>
 
 			<view class="panel-wrap withdraw-top-panel">
@@ -342,6 +401,9 @@
 					boundMerchantTradeAmount: 0,
 					boundMerchantTradeAmountMember: 0,
 					boundMerchantTradeAmountNonMember: 0,
+					regularTradeAmount: 0,
+					riskTradeAmount: 0,
+					flowOptTradeAmount: 0,
 					totalRechargeAmount: 0,
 					totalRefundAmount: 0,
 					membershipCounts: {
@@ -400,6 +462,12 @@
 				pendingFrozen: {
 					pendingWithdrawTotal: 0,
 					frozenMonths: []
+				},
+				withdrawRatePanel: {
+					history: [],
+					forecast: [],
+					methodNote: '',
+					pendingWithdrawTotal: 0
 				}
 			};
 		},
@@ -533,6 +601,9 @@
 					d.boundMerchantTradeAmount = Number(sum.boundMerchantTradeAmount || 0);
 					d.boundMerchantTradeAmountMember = Number(sum.boundMerchantTradeAmountMember || 0);
 					d.boundMerchantTradeAmountNonMember = Number(sum.boundMerchantTradeAmountNonMember || 0);
+					d.regularTradeAmount = Number(sum.regularTradeAmount || 0);
+					d.riskTradeAmount = Number(sum.riskTradeAmount || 0);
+					d.flowOptTradeAmount = Number(sum.flowOptTradeAmount || 0);
 					d.totalRechargeAmount = Number(sum.totalRechargeAmount || 0);
 					d.totalRefundAmount = Number(sum.totalRefundAmount || 0);
 					d.membershipCounts = Object.assign(
@@ -619,11 +690,42 @@
 					}))
 				};
 			},
+			formatYuanPerWan(v) {
+				const n = Number(v);
+				if (!Number.isFinite(n)) return '0.00元/万';
+				return `${n.toFixed(2)}元/万`;
+			},
+			applyWithdrawRate(payload) {
+				if (!payload || typeof payload !== 'object') return;
+				const mapRow = (m, kind) => ({
+					ym: String(m.ym || ''),
+					label: String(m.label || m.ym || ''),
+					ratePerWan: Number(m.ratePerWan || 0),
+					tradeAmount: Number(m.tradeAmount != null ? m.tradeAmount : m.tradeForecast || 0),
+					regularAmount: Number(m.regularAmount || 0),
+					riskAmount: Number(m.riskAmount || 0),
+					flowOptAmount: Number(m.flowOptAmount || 0),
+					withdrawAmount: Number(m.withdrawAmount != null ? m.withdrawAmount : m.withdrawForecast || 0),
+					claimedPoints: Number(m.claimedPoints || 0),
+					unconvertedPoints: Number(m.unconvertedPoints || 0),
+					pointsExpected: Number(m.pointsExpected || 0),
+					frozenRelease: Number(m.frozenRelease || 0),
+					sealed: !!m.sealed,
+					isCurrent: !!m.isCurrent,
+					kind: kind || m.kind || 'history'
+				});
+				this.withdrawRatePanel = {
+					history: (Array.isArray(payload.history) ? payload.history : []).map((m) => mapRow(m, 'history')),
+					forecast: (Array.isArray(payload.forecast) ? payload.forecast : []).map((m) => mapRow(m, 'forecast')),
+					methodNote: String(payload.methodNote || ''),
+					pendingWithdrawTotal: Number(payload.pendingWithdrawTotal || 0)
+				};
+			},
 			async warmHomeCacheInBackground(rangeType, parts) {
 				const list =
 					Array.isArray(parts) && parts.length
 						? parts.filter((p) => p !== 'trend')
-						: ['preview', 'summary', 'withdrawTop', 'pendingFrozen'];
+						: ['preview', 'summary', 'withdrawTop', 'pendingFrozen', 'withdrawRate'];
 				if (!list.length) return;
 				try {
 					const payload = { parts: list };
@@ -658,7 +760,8 @@
 						hit.summary ||
 						hit.trend ||
 						hit.withdrawTop ||
-						hit.pendingFrozen
+						hit.pendingFrozen ||
+						hit.withdrawRate
 					);
 					const kickWarm = (parts) => {
 						// 临时关闭数据统计：不要再请求 trend 预热（会超时刷错误日志）
@@ -669,16 +772,24 @@
 						);
 					};
 					if (!hasRemote) {
-						kickWarm(['preview', 'summary', 'withdrawTop', 'pendingFrozen']);
+						kickWarm(['preview', 'summary', 'withdrawTop', 'pendingFrozen', 'withdrawRate']);
 						this.scheduleHomeStatsRetryIfStale(true);
 					} else if (
-						!(hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen)
+						!(
+							hit.preview &&
+							hit.summary &&
+							hit.trend &&
+							hit.withdrawTop &&
+							hit.pendingFrozen &&
+							hit.withdrawRate
+						)
 					) {
 						const baseParts = [];
 						if (!hit.preview) baseParts.push('preview');
 						if (!hit.summary) baseParts.push('summary');
 						if (!hit.withdrawTop) baseParts.push('withdrawTop');
 						if (!hit.pendingFrozen) baseParts.push('pendingFrozen');
+						if (!hit.withdrawRate) baseParts.push('withdrawRate');
 						if (baseParts.length) kickWarm(baseParts);
 					}
 
@@ -689,11 +800,19 @@
 						if (local.trend) await this.applyTrendPayload(local.trend);
 						if (local.withdrawTop) this.applyWithdrawTop(local.withdrawTop);
 						if (local.pendingFrozen) this.applyPendingFrozen(local.pendingFrozen);
+						if (local.withdrawRate) this.applyWithdrawRate(local.withdrawRate);
 						if (local.updatedAt) this.homeCacheUpdatedAt = local.updatedAt;
 						this.scheduleHomeStatsRetryIfStale(true);
 						if (
 							!silent &&
-							!(local.preview || local.summary || local.trend || local.withdrawTop || local.pendingFrozen)
+							!(
+								local.preview ||
+								local.summary ||
+								local.trend ||
+								local.withdrawTop ||
+								local.pendingFrozen ||
+								local.withdrawRate
+							)
 						) {
 							uni.showToast({ title: (res && res.message) || '首页缓存读取失败', icon: 'none' });
 						}
@@ -706,10 +825,12 @@
 					const trend = d.trend || local.trend || null;
 					const withdrawTop = d.withdrawTop || local.withdrawTop || null;
 					const pendingFrozen = d.pendingFrozen || local.pendingFrozen || null;
+					const withdrawRate = d.withdrawRate || local.withdrawRate || null;
 					if (preview || summary) this.applyPreviewAndSummary(preview, summary);
 					if (trend) await this.applyTrendPayload(trend);
 					if (withdrawTop) this.applyWithdrawTop(withdrawTop);
 					if (pendingFrozen) this.applyPendingFrozen(pendingFrozen);
+					if (withdrawRate) this.applyWithdrawRate(withdrawRate);
 					const updatedAt = Number(d.updatedAt || local.updatedAt || 0) || 0;
 					this.homeCacheUpdatedAt = updatedAt;
 					const nextLocal = {};
@@ -718,6 +839,7 @@
 					if (d.trend) nextLocal.trend = d.trend;
 					if (d.withdrawTop) nextLocal.withdrawTop = d.withdrawTop;
 					if (d.pendingFrozen) nextLocal.pendingFrozen = d.pendingFrozen;
+					if (d.withdrawRate) nextLocal.withdrawRate = d.withdrawRate;
 					if (updatedAt) nextLocal.updatedAt = updatedAt;
 					if (Object.keys(nextLocal).length) this.rememberHomeCacheLocal(rangeType, nextLocal);
 
@@ -726,13 +848,21 @@
 					}
 
 					const needRetry =
-						!(hit.preview && hit.summary && hit.trend && hit.withdrawTop && hit.pendingFrozen) ||
+						!(
+							hit.preview &&
+							hit.summary &&
+							hit.trend &&
+							hit.withdrawTop &&
+							hit.pendingFrozen &&
+							hit.withdrawRate
+						) ||
 						!!(
 							stale.preview ||
 							stale.summary ||
 							stale.trend ||
 							stale.withdrawTop ||
-							stale.pendingFrozen
+							stale.pendingFrozen ||
+							stale.withdrawRate
 						);
 					this.scheduleHomeStatsRetryIfStale(needRetry);
 				} catch (err) {
@@ -744,10 +874,18 @@
 					if (local.trend) await this.applyTrendPayload(local.trend);
 					if (local.withdrawTop) this.applyWithdrawTop(local.withdrawTop);
 					if (local.pendingFrozen) this.applyPendingFrozen(local.pendingFrozen);
+					if (local.withdrawRate) this.applyWithdrawRate(local.withdrawRate);
 					this.scheduleHomeStatsRetryIfStale(true);
 					if (
 						!silent &&
-						!(local.preview || local.summary || local.trend || local.withdrawTop || local.pendingFrozen)
+						!(
+							local.preview ||
+							local.summary ||
+							local.trend ||
+							local.withdrawTop ||
+							local.pendingFrozen ||
+							local.withdrawRate
+						)
 					) {
 						uni.showModal({
 							content: err.message || '首页数据加载失败',
@@ -1198,6 +1336,106 @@
 	}
 }
 
+.withdraw-rate-panel .mb0 {
+	margin-bottom: 0;
+}
+
+.withdraw-rate-section-label {
+	margin-top: 14px;
+	margin-bottom: 8px;
+	font-size: 13px;
+	font-weight: 600;
+	color: #334155;
+}
+
+.withdraw-rate-section-label--forecast {
+	margin-top: 18px;
+}
+
+.withdraw-rate-empty {
+	font-size: 12px;
+	color: #94a3b8;
+	padding: 8px 0 4px;
+}
+
+.withdraw-rate-grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 10px;
+	width: 100%;
+}
+
+@media (max-width: 1100px) {
+	.withdraw-rate-grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 560px) {
+	.withdraw-rate-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+.withdraw-rate-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+	width: 100%;
+	box-sizing: border-box;
+	padding: 12px 12px 10px;
+	border-radius: 12px;
+	background: #f8fafc;
+	border: 1px solid rgba(148, 163, 184, 0.28);
+}
+
+.withdraw-rate-card--open {
+	background: linear-gradient(160deg, #fff7ed 0%, #f8fafc 100%);
+	border-color: rgba(234, 88, 12, 0.25);
+}
+
+.withdraw-rate-card--sealed {
+	background: linear-gradient(160deg, #f8fafc 0%, #f1f5f9 100%);
+}
+
+.withdraw-rate-card--forecast {
+	background: linear-gradient(160deg, #eff6ff 0%, #f8fafc 100%);
+	border-color: rgba(37, 99, 235, 0.28);
+}
+
+.withdraw-rate-month {
+	font-size: 12px;
+	color: #64748b;
+	font-weight: 600;
+}
+
+.withdraw-rate-main {
+	font-size: 18px;
+	font-weight: 700;
+	color: #0f172a;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.3;
+}
+
+.withdraw-rate-card--forecast .withdraw-rate-main {
+	color: #1d4ed8;
+}
+
+.withdraw-rate-sub {
+	font-size: 11px;
+	color: #64748b;
+	line-height: 1.35;
+	font-variant-numeric: tabular-nums;
+}
+
+.withdraw-rate-note {
+	margin-top: 12px;
+	font-size: 12px;
+	color: #94a3b8;
+	line-height: 1.55;
+}
+
 .withdraw-top-table-wrap {
 	margin-top: 14px;
 	overflow-x: auto;
@@ -1625,6 +1863,22 @@
 		min-width: 0;
 		grid-template-columns: repeat(3, minmax(0, 1fr));
 		gap: 10px 12px;
+	}
+
+	.returns-metrics--breakdown {
+		box-sizing: border-box;
+		display: grid;
+		width: 100%;
+		min-width: 0;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		gap: 10px 12px;
+		padding-top: 4px;
+	}
+
+	.returns-metrics--breakdown .returns-metric-value {
+		font-size: clamp(12px, 1.2vw, 15px);
+		font-weight: 600;
+		opacity: 0.96;
 	}
 
 	.returns-tier-wrap {
