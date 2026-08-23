@@ -16650,10 +16650,92 @@ async function recalcAndPersistFrozenAmountForMerchantById(merchantIdOrUserId) {
 }
 
 /**
+ * 从 hsy-points-slice-state 读取未领分片的 effective_amount，按目标月汇总。
+ * 与后台「冻结金额」、积分优化设计一致（对外一律用 effective）。
+ * @returns {{ buckets: Record<string, number>, curYm: string, fromSlice: boolean }}
+ */
+async function loadEffectivePendingReturnBucketsFromSliceState(merchantUserId, nowTsVal) {
+	const uid = String(merchantUserId || '').trim();
+	const now = nowTsVal || nowTs();
+	const curYm = shanghaiYearMonthFromTs(now);
+	const buckets = {};
+	if (!uid) return { buckets, curYm, fromSlice: false };
+
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const sliceCol = db.collection('hsy-points-slice-state');
+
+	let hasLedger = false;
+	try {
+		const anyRes = await sliceCol
+			.where(_.and([{ merchant_user_id: uid }, { is_deleted: _.neq(true) }]))
+			.limit(1)
+			.get();
+		hasLedger = !!(anyRes.data && anyRes.data.length);
+	} catch (e) {
+		console.error('loadEffectivePendingReturnBucketsFromSliceState ledger check', e);
+	}
+
+	if (!hasLedger) return { buckets, curYm, fromSlice: false };
+
+	try {
+		const sumAgg = await sliceCol
+			.aggregate()
+			.match(
+				_.and([
+					{ merchant_user_id: uid },
+					{ is_deleted: _.neq(true) },
+					{ is_claimed: _.neq(true) },
+					{ target_ym: _.gte(curYm) }
+				])
+			)
+			.group({ _id: '$target_ym', total: $.sum('$effective_amount') })
+			.end();
+		for (const row of (sumAgg && sumAgg.data) || []) {
+			const ym = String(row._id || '').trim();
+			const pts = Number(Number(row.total || 0).toFixed(4));
+			if (ym && pts > 0.0001) buckets[ym] = pts;
+		}
+	} catch (e) {
+		console.error('loadEffectivePendingReturnBucketsFromSliceState agg', e);
+	}
+	return { buckets, curYm, fromSlice: true };
+}
+
+/** 待返积分页响应：当前月起列表 + 合计 + 未来月冻结 */
+function buildPendingReturnPointsPayload(buckets, curYm, opts = {}) {
+	const months = Object.keys(buckets || {}).sort();
+	const list = months.map((ym) => {
+		const pts = buckets[ym];
+		return {
+			month: ym,
+			monthLabel: ymToDisplayLabel(ym),
+			points: Number(Number(pts || 0).toFixed(4))
+		};
+	});
+	let totalUpcoming = 0;
+	for (const x of list) totalUpcoming += x.points;
+	const futureDeferredFrozenYuan = sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm);
+	const fromSlice = !!opts.fromSlice;
+	const ruleNote =
+		opts.ruleNote ||
+		(fromSlice
+			? '统计说明：仅统计当前月及之后未领取部分；每领取一部分相应减少。待领取但未领取的额度请在「收益」页查看。'
+			: '统计说明：展示各月应返积分扣除已在「收益」页领取的部分；每领取一部分相应减少，全部领完则不再显示该月。待领取但未领取的额度请在「收益」页查看。');
+	return {
+		currentMonth: curYm,
+		list,
+		totalUpcoming: Number(totalUpcoming.toFixed(4)),
+		futureDeferredFrozenYuan,
+		ruleNote,
+		fromSlice
+	};
+}
+
+/**
  * H5 待返积分汇总口径：
- * - 流水按 5 期释放（每期约 20%），计入交易当月及后续月份；
- * - 单笔低于约 13.16 元（5×0.01÷0.0038）不产生可领取积分。
- * 仅汇总当前月及之后月份（理论值，不含已过期月份）。
+ * - 有分片账本：未领片的 effective_amount（含积分优化/登录周优化），与后台冻结金额一致；
+ * - 无分片账本：回退流水理论分期，扣除已领取的分期待返。
  */
 async function h5PendingReturnPoints(data) {
 	try {
@@ -16662,64 +16744,56 @@ async function h5PendingReturnPoints(data) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		const now = nowTs();
-		const tradeRows = await subsidyEngine.fetchAllQueryPages(
-			db,
-			'hsy-machine-trades',
-			subsidyEngine.buildEligibleSubsidyTradeWhere(db, merchantUserId),
-			{
-				field: { amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true },
-				orderBy: { field: 'create_time', direction: 'asc' }
-			}
-		);
-		const deferredPackets = await subsidyEngine.fetchAllQueryPages(
-			db,
-			'hsy-income-packets',
-			{
-				merchant_user_id: merchantUserId,
-				is_deleted: false,
-				subsidy_kind: 'release_pool_history'
-			},
-			{
-				field: {
-					month_no: true,
-					subsidy_flow_month: true,
-					subsidy_block_index: true,
-					subsidy_kind: true,
-					status: true,
-					amount: true
+
+		const slicePack = await loadEffectivePendingReturnBucketsFromSliceState(merchantUserId, now);
+		let buckets = slicePack.buckets;
+		let curYm = slicePack.curYm;
+		let fromSlice = slicePack.fromSlice;
+
+		if (!fromSlice) {
+			const tradeRows = await subsidyEngine.fetchAllQueryPages(
+				db,
+				'hsy-machine-trades',
+				subsidyEngine.buildEligibleSubsidyTradeWhere(db, merchantUserId),
+				{
+					field: { amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true },
+					orderBy: { field: 'create_time', direction: 'asc' }
 				}
-			}
-		);
-		const bizPending = await getBizSettings();
-		const { buckets, curYm } = computeDeferredPendingReturnBuckets(
-			tradeRows,
-			deferredPackets,
-			now,
-			bizPending.optimizeConfig
-		);
-		const months = Object.keys(buckets).sort();
-		const list = months.map((ym) => {
-			const pts = buckets[ym];
-			return {
-				month: ym,
-				monthLabel: ymToDisplayLabel(ym),
-				points: Number(pts.toFixed(4))
-			};
-		});
-		let totalUpcoming = 0;
-		for (const x of list) totalUpcoming += x.points;
-		const futureDeferredFrozenYuan = sumFutureDeferredFrozenYuanFromBuckets(buckets, curYm);
+			);
+			const deferredPackets = await subsidyEngine.fetchAllQueryPages(
+				db,
+				'hsy-income-packets',
+				{
+					merchant_user_id: merchantUserId,
+					is_deleted: false,
+					subsidy_kind: 'release_pool_history'
+				},
+				{
+					field: {
+						month_no: true,
+						subsidy_flow_month: true,
+						subsidy_block_index: true,
+						subsidy_kind: true,
+						status: true,
+						amount: true
+					}
+				}
+			);
+			const bizPending = await getBizSettings();
+			const theory = computeDeferredPendingReturnBuckets(
+				tradeRows,
+				deferredPackets,
+				now,
+				bizPending.optimizeConfig
+			);
+			buckets = theory.buckets;
+			curYm = theory.curYm;
+		}
+
 		return {
 			code: 0,
 			message: 'ok',
-			data: {
-				currentMonth: curYm,
-				list,
-				totalUpcoming: Number(totalUpcoming.toFixed(4)),
-				futureDeferredFrozenYuan,
-				ruleNote:
-					'统计说明：待返积分按「积分明细」同口径计算，展示各月应返积分扣除已在「收益」页领取的部分；每领取一部分相应减少，全部领完则不再显示该月。待领取但未领取的额度请在「收益」页查看。'
-			}
+			data: buildPendingReturnPointsPayload(buckets, curYm, { fromSlice })
 		};
 	} catch (e) {
 		console.error('h5PendingReturnPoints failed', e);
