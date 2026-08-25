@@ -15,7 +15,7 @@
 		<view class="uni-container">
 			<view class="page-intro">
 				<text class="page-title">充值赠品发货</text>
-				<text class="page-sub">1000 元档及 0.2 元测试档用户选择的蓝牙音响 / 扫码POS机，请维护快递单号与签收状态</text>
+				<text class="page-sub">998 元档及 0.2 元测试档用户选择的蓝牙音响 / 扫码POS机，请维护快递单号与签收状态</text>
 			</view>
 			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">

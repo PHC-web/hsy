@@ -94,6 +94,7 @@
 import { h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefreshHomeCache } from '@/pages/h5/common/api';
 import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
+import { isDiamondRechargePrice } from '@/common/recharge-tiers';
 
 export default {
 	components: { H5AgreementSignSheet },
@@ -161,7 +162,7 @@ export default {
 			if (name.includes('铂金')) return 'pkg-desc--platinum';
 			if (name.includes('黄金')) return 'pkg-desc--gold';
 			const price = Number(item?.price || 0);
-			if (price >= 1000 || price === 0.2) return 'pkg-desc--diamond';
+			if (isDiamondRechargePrice(price)) return 'pkg-desc--diamond';
 			if (price >= 800) return 'pkg-desc--white-gold';
 			if (price >= 600 || price === 0.1) return 'pkg-desc--gold';
 			return 'pkg-desc--default';
@@ -283,7 +284,7 @@ export default {
 		resolveTierByPrice(priceRaw, pkg) {
 			const price = Number(priceRaw || 0);
 			let out;
-			if (price >= 1000 || price === 0.2) out = { tier: 'diamond', name: '钻石会员' };
+			if (isDiamondRechargePrice(price)) out = { tier: 'diamond', name: '钻石会员' };
 			else if (price >= 800) out = { tier: 'platinum', name: '铂金会员' };
 			else if (price >= 600 || price === 0.1) out = { tier: 'white_gold', name: '白金会员' };
 			else out = { tier: 'normal', name: '会员' };

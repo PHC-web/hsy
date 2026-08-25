@@ -125,6 +125,7 @@
 import { h5HomeDashboardCached } from '@/pages/h5/common/api';
 import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
+import { isDiamondRechargePrice } from '@/common/recharge-tiers';
 
 export default {
 	components: { H5AgreementSignSheet },
@@ -179,7 +180,7 @@ export default {
 				const n = String(p.membershipName || '').trim();
 				if (n) return n;
 				const price = Number(p.price || 0);
-				if (price >= 1000) return '钻石会员';
+				if (isDiamondRechargePrice(price)) return '钻石会员';
 				if (price >= 800) return '铂金会员';
 				if (price >= 600) return '白金会员';
 				return '';

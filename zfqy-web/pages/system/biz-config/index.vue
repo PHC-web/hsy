@@ -137,7 +137,7 @@
 					</view>
 				</view>
 				<view class="period-block">
-					<text class="period-title">1000 元钻石会员</text>
+					<text class="period-title">998 元钻石会员</text>
 					<view class="form-grid">
 						<view class="field">
 							<text class="label">每日上限(积分)</text>

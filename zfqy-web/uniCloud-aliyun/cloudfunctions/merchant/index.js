@@ -146,8 +146,26 @@ async function adminHomeRedisSetLiveAndLast(liveKey, lastKey, obj, liveExSec) {
 	await redisH5.h5RedisSetJson(lastKey, obj, REDIS_EX_ADMIN_HOME_LAST_SEC);
 	return okLive;
 }
-/** 0.2 元测试套餐 id：权益与 1000 元档一致，用于测赠品选择/发货 */
+/** 0.2 元测试套餐 id：权益与钻石档（998 元）一致，用于测赠品选择/发货 */
 const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
+/** 钻石会员充值价（元）；历史 1000 元档仍按 >= 此价识别为钻石 */
+const DIAMOND_RECHARGE_PRICE = 998;
+const DIAMOND_QUOTA_PACKAGE_ID = 'pkg_998';
+const LEGACY_DIAMOND_QUOTA_PACKAGE_ID = 'pkg_1000';
+
+function isDiamondRechargePriceYuan(price) {
+	const p = Number(price || 0);
+	return p >= DIAMOND_RECHARGE_PRICE || p === 0.2;
+}
+
+function isRechargeGiftPriceYuan(price) {
+	return Number(Number(price || 0).toFixed(2)) === DIAMOND_RECHARGE_PRICE;
+}
+
+function resolveEffectiveDiamondPriceYuan(price, pkgId) {
+	if (String(pkgId || '').trim() === H5_RECHARGE_TEST_AS_1000_PKG_ID) return DIAMOND_RECHARGE_PRICE;
+	return Number(price || 0);
+}
 
 /**
  * H5 首页/我的：可选 gzip+base64 减小 callFunction 响应体。需 params.cmp=1 且体量大，否则不压缩。
@@ -2003,6 +2021,144 @@ function buildMonthlyClaimedSummaryFromPackets(packets) {
 		});
 }
 
+async function merchantUpgradePointsClearLogs(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const limit = Number(data?.limit || 20);
+		const list = await loadMerchantUpgradePointsClearLogs(merchant, limit);
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				merchant: {
+					id: merchant._id,
+					userId: merchant.user_id || merchant._id,
+					name: String(merchant.wx_nickname || merchant.mobile || merchant._id)
+				},
+				list
+			}
+		};
+	} catch (e) {
+		console.error('merchantUpgradePointsClearLogs failed', e);
+		return { code: 500, message: '获取升级清零留底失败' };
+	}
+}
+
+/**
+ * 存量补跑：会员已升级但当时未执行完整清零（待提现/冻结/分片账本/未领红包）。
+ * 单商户定向；先 dryRun 预览，确认后 apply: true。
+ */
+async function adminRetroactiveUpgradePointsClear(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const force = data.force === true;
+		const merchantUserId = safeText(data?.merchantUserId || data?.userId || data?.merchantId || '', 80);
+		if (!merchantUserId) return { code: 400, message: '请传 merchantUserId' };
+
+		const merchant = await getMerchantByIdOrUserId(merchantUserId);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+
+		const withdrawRole = resolveH5WithdrawRole(merchant);
+		if (withdrawRole === 'normal_member') {
+			return { code: 400, message: '该商户仍为普通会员，不适用升级清零补跑' };
+		}
+
+		const retroactiveUpgradeAt = parseRetroactiveUpgradeAt(data?.upgradeAt || data?.originalUpgradeAt || '');
+		const preview = await readMerchantUpgradeResidualSnapshot(merchant);
+
+		if (!preview.hasResidual && !force) {
+			return {
+				code: 0,
+				message: apply && !dryRun ? '无需补跑：未发现残留余额' : 'dry-run：未发现残留余额',
+				data: {
+					dryRun: !(apply && !dryRun),
+					apply: !!(apply && !dryRun),
+					preview,
+					skipped: true,
+					operator: typeof getOperator === 'function' ? getOperator(event) : ''
+				}
+			};
+		}
+
+		if (!force && apply && !dryRun) {
+			const _ = db.command;
+			const uid = String(merchant.user_id || merchant._id);
+			const mid = String(merchant._id || '');
+			const existRes = await operationLogCollection
+				.where(
+					_.and([
+						{ action: MEMBER_UPGRADE_POINTS_CLEAR_ACTION },
+						{ retroactive_backfill: true },
+						_.or([{ user_id: uid }, { target_id: mid }])
+					])
+				)
+				.limit(1)
+				.get();
+			if ((existRes.data || []).length) {
+				return {
+					code: 409,
+					message: '已存在补跑清零记录，若需重跑请传 force: true',
+					data: { preview, existingLogId: existRes.data[0]._id }
+				};
+			}
+		}
+
+		if (!apply || dryRun) {
+			return {
+				code: 0,
+				message: 'dry-run 完成（未写库）',
+				data: {
+					dryRun: true,
+					apply: false,
+					merchantUserId: preview.merchantUserId,
+					upgradeAt: retroactiveUpgradeAt > 0 ? formatTime(retroactiveUpgradeAt) : '',
+					preview,
+					operator: typeof getOperator === 'function' ? getOperator(event) : ''
+				}
+			};
+		}
+
+		const targetMembershipName =
+			safeText(data?.targetMembershipName || preview.membershipName || '', 40) ||
+			(withdrawRole === 'silver_member' ? '白银会员' : '充值会员');
+		const now = nowTs();
+		const result = await clearNormalMemberPointsAndFrozenOnUpgrade(merchant, {
+			now,
+			upgradeKind: 'retroactive_backfill',
+			upgradeClearReason: 'member_upgrade_points_clear_retroactive',
+			targetMembershipName,
+			retroactiveUpgradeAt,
+			operatorSource: 'admin',
+			operator: typeof getOperator === 'function' ? getOperator(event) : 'admin_script',
+			orderNo: safeText(data?.note || data?.orderNo || '', 64)
+		});
+
+		const merchantAfter = await getMerchantByIdOrUserId(merchantUserId);
+		const afterPreview = merchantAfter ? await readMerchantUpgradeResidualSnapshot(merchantAfter) : null;
+
+		return {
+			code: 0,
+			message: '补跑清零完成',
+			data: {
+				dryRun: false,
+				apply: true,
+				merchantUserId: preview.merchantUserId,
+				upgradeAt: retroactiveUpgradeAt > 0 ? formatTime(retroactiveUpgradeAt) : '',
+				before: preview,
+				cleared: result,
+				after: afterPreview,
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminRetroactiveUpgradePointsClear failed', e);
+		return { code: 500, message: safeText(e?.message || '升级清零补跑失败', 180) };
+	}
+}
+
 async function merchantPointsMonthlyInsight(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
@@ -2333,6 +2489,12 @@ async function merchantPointsMonthlyInsight(data) {
 				deferredPerMonth: Number(deferred.toFixed(4))
 			};
 		});
+		let upgradeClearLogs = [];
+		try {
+			upgradeClearLogs = await loadMerchantUpgradePointsClearLogs(merchant, 15);
+		} catch (eLog) {
+			console.error('merchantPointsMonthlyInsight upgradeClearLogs', eLog);
+		}
 		return {
 			code: 0,
 			message: 'ok',
@@ -2348,7 +2510,8 @@ async function merchantPointsMonthlyInsight(data) {
 				sliceDetails,
 				tradeSamples,
 				history,
-				future
+				future,
+				upgradeClearLogs
 			}
 		};
 	} catch (e) {
@@ -4868,7 +5031,7 @@ function merchantHasOrphanRechargeMembership(merchant, packages = []) {
 
 /**
  * 首页会员分档人数（与业务口径一致，非 H5 展示名）：
- * 黄金会员＝600 元档；白金会员＝800 元档；钻石＝1000 元档。
+ * 黄金会员＝600 元档；白金会员＝800 元档；钻石＝998 元档。
  */
 function resolveAdminHomeMembershipCategory(merchant, packages = []) {
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
@@ -4881,10 +5044,9 @@ function resolveAdminHomeMembershipCategory(merchant, packages = []) {
 	const pkg =
 		pickRechargePackage(merchant.recharge_package_id, list) ||
 		getRechargePackageByPrice(merchant.recharge_package_price, list);
-	let price = Number((pkg && pkg.price) || merchant.recharge_package_price || 0);
-	if (pkg && pkg.id === H5_RECHARGE_TEST_AS_1000_PKG_ID) price = 1000;
+	let price = resolveEffectiveDiamondPriceYuan((pkg && pkg.price) || merchant.recharge_package_price || 0, pkg && pkg.id);
 
-	if (price >= 1000 || tier === 'diamond' || name.includes('钻石')) return 'diamond';
+	if (isDiamondRechargePriceYuan(price) || tier === 'diamond' || name.includes('钻石')) return 'diamond';
 	if (price >= 800 || tier === 'platinum' || name.includes('铂金')) return 'white_gold';
 	if (price >= 600 || price === 0.1 || tier === 'white_gold' || name.includes('黄金') || name.includes('白金')) {
 		return 'gold';
@@ -9607,7 +9769,7 @@ async function applyRechargeByOrder(orderDoc) {
 	const targetMembershipName = safeText(custom.target_membership_name || '', 40);
 	let nextMembershipName = targetMembershipName;
 	if (!nextMembershipName) {
-		if (targetReward >= 7600 || Number(custom.target_quota || 0) >= 2000000 || targetPrice >= 1000) nextMembershipName = '钻石会员';
+		if (targetReward >= 7600 || Number(custom.target_quota || 0) >= 2000000 || isDiamondRechargePriceYuan(targetPrice)) nextMembershipName = '钻石会员';
 		else if (targetReward >= 5700 || Number(custom.target_quota || 0) >= 1500000 || targetPrice >= 800) nextMembershipName = '铂金会员';
 		else if (targetReward >= 3800 || Number(custom.target_quota || 0) >= 1000000 || targetPrice >= 600 || targetPrice === 0.1) nextMembershipName = '白金会员';
 	}
@@ -11311,10 +11473,10 @@ const DEFAULT_RECHARGE_RULES = [
 	{ price: 600, rewardYuan: 3800, quota: 1000000, tip: '600元配置100万交易量，等于补贴市场价的3800元手续费' },
 	{ price: 800, rewardYuan: 5700, quota: 1500000, tip: '800元配置150万交易量，等于补贴市场价的5700元手续费' },
 	{
-		price: 1000,
+		price: DIAMOND_RECHARGE_PRICE,
 		rewardYuan: 7600,
 		quota: 2000000,
-		tip: '1000元配置200万交易量，等于补贴市场价的7600元手续费；另可在充值页任选蓝牙音响或扫码POS机一台（支付成功后发货）'
+		tip: '998元配置200万交易量，等于补贴市场价的7600元手续费；另可在充值页任选蓝牙音响或扫码POS机一台（支付成功后发货）'
 	}
 ];
 /** H5「退款与周期」页规则说明，支持占位符 {cycleDays}、{windowDays}、{penaltyRate}（与参数配置中锁定周期/窗口/违约金一致） */
@@ -11369,7 +11531,7 @@ const DEFAULT_BIZ_SETTINGS = {
 	 * 会员分档日/周累计提现上限（积分=元；0=不限制）
 	 * - exchangeCoupon：兑换券/兑换码开通的非付费会员（业务所称「兑换券铂金」等）
 	 * - paidGoldPlatinum：600 元黄金 / 800 元白金（含历史白金/铂金命名）
-	 * - paidDiamond：1000 元钻石
+	 * - paidDiamond：998 元钻石
 	 * 周=北京时间周一至周日
 	 */
 	withdrawPeriodLimits: {
@@ -11761,9 +11923,9 @@ function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES)
 	if (p === 0.1 && rules.length) {
 		p = Number(rules[0].price || 0);
 	}
-	// 0.2 元测试档与 1000 元档同权益（含赠品流程）
+	// 0.2 元测试档与钻石档（998 元）同权益（含赠品流程）
 	if (p === 0.2) {
-		p = 1000;
+		p = DIAMOND_RECHARGE_PRICE;
 	}
 	let reward = 0;
 	for (const rule of rules) {
@@ -11774,7 +11936,7 @@ function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES)
 			for (const dr of defaultRules) {
 				if (pricePoint >= Number(dr.price || 0)) defaultReward = Number(dr.rewardYuan || 0);
 			}
-			// 配置被误改为 0 时，回退到系统默认奖励档位，保证 600/800/1000 档可正常展示奖励值
+			// 配置被误改为 0 时，回退到系统默认奖励档位，保证 600/800/998 档可正常展示奖励值
 			reward = Math.max(configuredReward, defaultReward);
 		}
 	}
@@ -11944,10 +12106,9 @@ function h5MembershipInfo(merchant, packages = null) {
 	}
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
 	const pkg = pickRechargePackage(merchant.recharge_package_id, list) || getRechargePackageByPrice(merchant.recharge_package_price, list);
-	let price = Number((pkg && pkg.price) || merchant.recharge_package_price || 0);
-	if (pkg && pkg.id === H5_RECHARGE_TEST_AS_1000_PKG_ID) price = 1000;
+	let price = resolveEffectiveDiamondPriceYuan((pkg && pkg.price) || merchant.recharge_package_price || 0, pkg && pkg.id);
 	let out;
-	if (price >= 1000) {
+	if (isDiamondRechargePriceYuan(price)) {
 		out = { tier: 'diamond', name: '钻石会员', accent: '#38bdf8' };
 	} else if (price >= 800) {
 		out = { tier: 'platinum', name: '铂金会员', accent: '#c084fc' };
@@ -12041,21 +12202,296 @@ function isNormalMemberForUpgradePointsClear(merchant) {
 }
 
 const MEMBER_UPGRADE_POINTS_CLEAR_ACTION = 'member_upgrade_points_clear';
+const UPGRADE_POINTS_CLEAR_REASON = 'member_upgrade_points_clear';
+
+function effectiveSliceAmountRow(row) {
+	if (!row) return 0;
+	let eff = Number(row.effective_amount);
+	if (!Number.isFinite(eff)) {
+		if (row.manual_amount != null && row.manual_amount !== '') eff = Number(row.manual_amount);
+		else eff = Number(row.system_amount != null ? row.system_amount : row.original_amount || 0);
+	}
+	return Number(Number(eff || 0).toFixed(4));
+}
+
+/** 升级清零：软删未领分片账本，并按目标月汇总留底 */
+async function snapshotAndClearMerchantSliceLedgerOnUpgrade(merchantUserId, now, clearReason = UPGRADE_POINTS_CLEAR_REASON) {
+	const uid = String(merchantUserId || '').trim();
+	const empty = { byTargetYm: {}, slices: [], totalEffective: 0, clearedCount: 0 };
+	if (!uid) return empty;
+
+	const _ = db.command;
+	const sliceCol = db.collection('hsy-points-slice-state');
+	const rows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-points-slice-state',
+		_.and([{ merchant_user_id: uid }, { is_deleted: _.neq(true) }, { is_claimed: _.neq(true) }]),
+		{
+			field: {
+				target_ym: true,
+				source_ym: true,
+				slice_index: true,
+				effective_amount: true,
+				manual_amount: true,
+				system_amount: true,
+				original_amount: true,
+				packet_id: true
+			}
+		}
+	);
+
+	const byTargetYm = {};
+	const slices = [];
+	let totalEffective = 0;
+	for (const row of rows || []) {
+		const eff = effectiveSliceAmountRow(row);
+		const targetYm = String(row.target_ym || '').trim();
+		if (targetYm) byTargetYm[targetYm] = Number(((byTargetYm[targetYm] || 0) + eff).toFixed(4));
+		totalEffective += eff;
+		slices.push({
+			_id: row._id,
+			target_ym: targetYm,
+			source_ym: String(row.source_ym || ''),
+			slice_index: Number(row.slice_index || 0),
+			effective_amount: eff,
+			packet_id: String(row.packet_id || '')
+		});
+	}
+	totalEffective = Number(totalEffective.toFixed(4));
+
+	const CHUNK = 25;
+	for (let i = 0; i < slices.length; i += CHUNK) {
+		const chunk = slices.slice(i, i + CHUNK);
+		await Promise.all(
+			chunk.map((s) =>
+				sliceCol.doc(s._id).update({
+					is_deleted: true,
+					effective_amount: 0,
+					system_amount: 0,
+					manual_amount: null,
+					packet_id: '',
+					packet_status: 'void_upgrade',
+					upgrade_clear_at: now,
+					upgrade_clear_reason: clearReason,
+					update_time: now
+				})
+			)
+		);
+	}
+
+	return { byTargetYm, slices, totalEffective, clearedCount: slices.length };
+}
+
+/** 升级清零：作废收益页未领取红包 */
+async function cancelPendingIncomePacketsOnUpgrade(merchantUserId, now, clearReason = UPGRADE_POINTS_CLEAR_REASON) {
+	const uid = String(merchantUserId || '').trim();
+	if (!uid) return { count: 0, totalAmount: 0, details: [] };
+
+	const rows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-income-packets',
+		{ merchant_user_id: uid, is_deleted: false, status: 'pending' },
+		{
+			field: {
+				amount: true,
+				title: true,
+				month_no: true,
+				subsidy_kind: true,
+				subsidy_flow_month: true
+			}
+		}
+	);
+
+	const details = [];
+	let totalAmount = 0;
+	for (const p of rows || []) {
+		const amt = Number(Number(p.amount || 0).toFixed(4));
+		totalAmount += amt;
+		await incomePacketCollection.doc(p._id).update({
+			status: 'expired',
+			amount: 0,
+			optimize_void: true,
+			upgrade_clear_at: now,
+			upgrade_clear_reason: clearReason,
+			update_time: now
+		});
+		details.push({
+			_id: p._id,
+			title: String(p.title || ''),
+			month_no: String(p.month_no || ''),
+			subsidy_kind: String(p.subsidy_kind || ''),
+			subsidy_flow_month: String(p.subsidy_flow_month || ''),
+			amount: amt
+		});
+	}
+	return { count: details.length, totalAmount: Number(totalAmount.toFixed(4)), details };
+}
+
+function formatUpgradeClearSliceYmText(byTargetYm) {
+	const parts = Object.keys(byTargetYm || {})
+		.sort()
+		.map((ym) => `${ym}月${Number(byTargetYm[ym] || 0).toFixed(2)}元`);
+	return parts.length ? parts.join('、') : '无';
+}
+
+async function loadMerchantUpgradePointsClearLogs(merchant, limit = 15) {
+	const uid = String((merchant && (merchant.user_id || merchant._id)) || '').trim();
+	if (!uid) return [];
+	const _ = db.command;
+	const mid = merchant && merchant._id ? String(merchant._id) : '';
+	const where = mid
+		? _.and([
+				{ action: MEMBER_UPGRADE_POINTS_CLEAR_ACTION },
+				_.or([{ user_id: uid }, { target_id: mid }])
+			])
+		: _.and([{ action: MEMBER_UPGRADE_POINTS_CLEAR_ACTION }, { user_id: uid }]);
+	const res = await operationLogCollection
+		.where(where)
+		.orderBy('create_time', 'desc')
+		.limit(Math.min(50, Math.max(1, Number(limit) || 15)))
+		.get();
+	return (res.data || []).map((row) => ({
+		id: row._id,
+		time: formatTime(row.create_time),
+		upgradeKind: String(row.upgrade_kind || ''),
+		targetMembershipName: String(row.target_membership_name || ''),
+		clearedAccountPoints: Number(row.cleared_account_points || 0),
+		clearedFrozenAmount: Number(row.cleared_frozen_amount || 0),
+		clearedPendingWithdraw: Number(row.cleared_pending_withdraw || 0),
+		clearedSliceTotal: Number(row.cleared_slice_effective_total || 0),
+		clearedSliceByTargetYm: row.cleared_slice_by_target_ym || {},
+		clearedSliceCount: Number(row.cleared_slice_count || 0),
+		clearedPendingPacketCount: Number(row.cleared_pending_packet_count || 0),
+		clearedPendingPacketAmount: Number(row.cleared_pending_packet_amount || 0),
+		content: String(row.content || ''),
+		platformNo: String(row.platform_no || '')
+	}));
+}
 
 function upgradeKindLabelForPointsClear(kind) {
 	const map = {
 		exchange_code_silver: '兑换码开通白银',
-		paid_recharge: '付费升级充值会员'
+		paid_recharge: '付费升级充值会员',
+		retroactive_backfill: '升级补跑'
 	};
 	return map[String(kind || '')] || String(kind || '会员升级');
 }
 
+function parseRetroactiveUpgradeAt(raw) {
+	if (raw == null || raw === '') return 0;
+	if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+	const s = String(raw).trim();
+	if (!s) return 0;
+	if (/^\d{10,13}$/.test(s)) {
+		const n = Number(s);
+		return n < 1e12 ? n * 1000 : n;
+	}
+	const iso = s.includes('T') ? s : `${s.replace(' ', 'T')}+08:00`;
+	const t = Date.parse(iso);
+	return Number.isFinite(t) ? t : 0;
+}
+
+/** 读取商户升级后仍残留的待提现/冻结/分片/红包（不写库） */
+async function readMerchantUpgradeResidualSnapshot(merchant) {
+	const merchantUserId = String(merchant.user_id || merchant._id || '');
+	const beforeAp = normalizePendingBalance(merchant);
+	const beforeFrozen = Number(Number(merchant.frozen_amount || 0).toFixed(4));
+	const beforePendingWithdraw = Number(Number(merchant.pending_withdraw || 0).toFixed(4));
+	const _ = db.command;
+	const sliceRows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-points-slice-state',
+		_.and([{ merchant_user_id: merchantUserId }, { is_deleted: _.neq(true) }, { is_claimed: _.neq(true) }]),
+		{
+			field: {
+				target_ym: true,
+				source_ym: true,
+				slice_index: true,
+				effective_amount: true,
+				manual_amount: true,
+				system_amount: true,
+				original_amount: true,
+				packet_id: true
+			}
+		}
+	);
+	const byTargetYm = {};
+	const slices = [];
+	let totalEffective = 0;
+	for (const row of sliceRows || []) {
+		const eff = effectiveSliceAmountRow(row);
+		const targetYm = String(row.target_ym || '').trim();
+		if (targetYm) byTargetYm[targetYm] = Number(((byTargetYm[targetYm] || 0) + eff).toFixed(4));
+		totalEffective += eff;
+		slices.push({
+			_id: row._id,
+			target_ym: targetYm,
+			source_ym: String(row.source_ym || ''),
+			slice_index: Number(row.slice_index || 0),
+			effective_amount: eff
+		});
+	}
+	const packetRows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-income-packets',
+		{ merchant_user_id: merchantUserId, is_deleted: false, status: 'pending' },
+		{ field: { amount: true, title: true, month_no: true, subsidy_kind: true, subsidy_flow_month: true } }
+	);
+	let packetTotal = 0;
+	const packets = (packetRows || []).map((p) => {
+		const amt = Number(Number(p.amount || 0).toFixed(4));
+		packetTotal += amt;
+		return {
+			_id: p._id,
+			title: String(p.title || ''),
+			month_no: String(p.month_no || ''),
+			subsidy_kind: String(p.subsidy_kind || ''),
+			amount: amt
+		};
+	});
+	const boundMachines = await listBoundMachinesByMerchant(merchant);
+	const machines = (boundMachines || []).map((m) => ({
+		_id: m._id,
+		device_id: m.device_id || '',
+		frozen_amount: Number(Number(m.frozen_amount || 0).toFixed(4))
+	}));
+	const machineFrozenTotal = Number(machines.reduce((s, m) => s + m.frozen_amount, 0).toFixed(4));
+	const hasResidual =
+		beforeAp > 0 ||
+		beforeFrozen > 0 ||
+		beforePendingWithdraw > 0 ||
+		totalEffective > 0 ||
+		packetTotal > 0 ||
+		machineFrozenTotal > 0;
+	return {
+		merchantUserId,
+		merchantId: merchant._id,
+		merchantName: merchant.wx_nickname || merchant.mobile || merchantUserId,
+		membershipName: String(merchant.membership_name || ''),
+		withdrawRole: resolveH5WithdrawRole(merchant),
+		clearedAccountPoints: beforeAp,
+		clearedFrozenAmount: beforeFrozen,
+		clearedPendingWithdraw: beforePendingWithdraw,
+		sliceByTargetYm: byTargetYm,
+		sliceTotal: Number(totalEffective.toFixed(4)),
+		sliceCount: slices.length,
+		sliceSample: slices.slice(0, 40),
+		pendingPacketCount: packets.length,
+		pendingPacketTotal: Number(packetTotal.toFixed(4)),
+		pendingPacketSample: packets.slice(0, 30),
+		machineFrozenTotal,
+		machines: machines.filter((m) => m.frozen_amount > 0),
+		hasResidual
+	};
+}
+
 /**
- * 普通会员升级为白银（兑换码）或黄金/白金/钻石（付费）时，清除已领取的账号积分（待提现）与冻结金额。
+ * 普通会员升级为白银（兑换码）或黄金/白金/钻石（付费）时，清除已领取的账号积分（待提现）、冻结金额、分片账本与未领红包。
  * 白银付费升档、充值会员之间升档不调用本函数。
  */
 async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 	if (!merchant || !merchant._id) return { cleared: false, reason: 'no_merchant' };
+	const merchantUserId = String(merchant.user_id || merchant._id || '');
 	const beforeAp = normalizePendingBalance(merchant);
 	const beforeFrozen = Number(Number(merchant.frozen_amount || 0).toFixed(4));
 	const beforePendingWithdraw = Number(Number(merchant.pending_withdraw || 0).toFixed(4));
@@ -12063,6 +12499,17 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 	const targetMembershipName = safeText(ctx.targetMembershipName || '', 40) || '会员';
 	const upgradeKind = safeText(ctx.upgradeKind || '', 40);
 	const kindLabel = upgradeKindLabelForPointsClear(upgradeKind);
+	const clearReason = safeText(ctx.upgradeClearReason || '', 64) || UPGRADE_POINTS_CLEAR_REASON;
+	const retroactiveUpgradeAt = parseRetroactiveUpgradeAt(ctx.retroactiveUpgradeAt);
+	const retroSuffix =
+		retroactiveUpgradeAt > 0
+			? `（补跑清零，原升级于 ${formatTime(retroactiveUpgradeAt)}）`
+			: safeText(ctx.retroactiveNote || '', 120)
+				? `（${safeText(ctx.retroactiveNote, 120)}）`
+				: '';
+
+	const sliceClear = await snapshotAndClearMerchantSliceLedgerOnUpgrade(merchantUserId, now, clearReason);
+	const packetClear = await cancelPendingIncomePacketsOnUpgrade(merchantUserId, now, clearReason);
 
 	const merchantPatch = {
 		account_points: 0,
@@ -12087,7 +12534,14 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 		});
 	}
 
-	const content = `普通会员${kindLabel}至${targetMembershipName}：清除账号积分（待提现）${beforeAp.toFixed(2)} 元、冻结金额 ${beforeFrozen.toFixed(2)} 元`;
+	const sliceYmText = formatUpgradeClearSliceYmText(sliceClear.byTargetYm);
+	const content = [
+		`普通会员${kindLabel}至${targetMembershipName}：`,
+		`清除待提现 ${beforeAp.toFixed(2)} 元`,
+		`冻结字段 ${beforeFrozen.toFixed(2)} 元`,
+		sliceClear.clearedCount > 0 ? `分片账本 ${sliceClear.totalEffective.toFixed(2)} 元（${sliceClear.clearedCount}片，${sliceYmText}）` : '分片账本 0 元',
+		packetClear.count > 0 ? `未领红包 ${packetClear.totalAmount.toFixed(2)} 元（${packetClear.count}个）` : '未领红包 0 元'
+	].join('；') + retroSuffix;
 	await operationLogCollection.add({
 		user_id: merchant.user_id || merchant._id,
 		user_name: merchant.wx_nickname || merchant.mobile || 'H5用户',
@@ -12100,9 +12554,18 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 		operator: safeText(ctx.operator || 'system', 40) || 'system',
 		upgrade_kind: upgradeKind,
 		target_membership_name: targetMembershipName,
+		retroactive_backfill: upgradeKind === 'retroactive_backfill' || retroactiveUpgradeAt > 0,
+		original_upgrade_at: retroactiveUpgradeAt > 0 ? retroactiveUpgradeAt : null,
 		cleared_account_points: beforeAp,
 		cleared_frozen_amount: beforeFrozen,
 		cleared_pending_withdraw: beforePendingWithdraw,
+		cleared_slice_effective_total: sliceClear.totalEffective,
+		cleared_slice_by_target_ym: sliceClear.byTargetYm,
+		cleared_slice_count: sliceClear.clearedCount,
+		cleared_slice_detail: (sliceClear.slices || []).slice(0, 80),
+		cleared_pending_packet_count: packetClear.count,
+		cleared_pending_packet_amount: packetClear.totalAmount,
+		cleared_pending_packet_detail: (packetClear.details || []).slice(0, 50),
 		platform_no: safeText(ctx.orderNo || ctx.redeemCode || '', 64),
 		before_merchant_snapshot: {
 			account_points: beforeAp,
@@ -12114,11 +12577,20 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 		create_time: now
 	});
 
+	try {
+		await invalidateH5MerchantCaches(merchant);
+	} catch (e) {
+		console.error('clearNormalMemberPointsAndFrozenOnUpgrade invalidate cache', e);
+	}
+
 	return {
 		cleared: true,
 		clearedAccountPoints: beforeAp,
 		clearedFrozenAmount: beforeFrozen,
-		clearedPendingWithdraw: beforePendingWithdraw
+		clearedPendingWithdraw: beforePendingWithdraw,
+		clearedSliceTotal: sliceClear.totalEffective,
+		clearedSliceByTargetYm: sliceClear.byTargetYm,
+		clearedPendingPacketAmount: packetClear.totalAmount
 	};
 }
 
@@ -12337,17 +12809,15 @@ function h5WithdrawOutsideHoursMessage() {
 
 /** 用于分档提现日/周限额：解析套餐价格（元） */
 function resolveWithdrawPackagePriceYuan(merchant) {
-	let price = Number(merchant?.recharge_package_price || 0);
 	const pid = safeText(merchant?.recharge_package_id || '', 40);
-	if (pid === H5_RECHARGE_TEST_AS_1000_PKG_ID) price = 1000;
-	return price;
+	return resolveEffectiveDiamondPriceYuan(merchant?.recharge_package_price || 0, pid);
 }
 
 /**
  * 提现日/周累计限额分档：
  * - exchangeCoupon：兑换券/兑换码开通的非付费会员（业务「兑换券铂金」）
  * - paidGoldPlatinum：600 黄金 / 800 白金
- * - paidDiamond：1000 钻石
+ * - paidDiamond：998 元钻石
  */
 function resolveWithdrawPeriodLimitGroup(merchant) {
 	if (!merchant) return '';
@@ -12363,7 +12833,7 @@ function resolveWithdrawPeriodLimitGroup(merchant) {
 	}
 	const price = resolveWithdrawPackagePriceYuan(merchant);
 	const name = String(merchant.membership_name || '').trim();
-	if (price >= 1000 || name.includes('钻石')) return 'paidDiamond';
+	if (isDiamondRechargePriceYuan(price) || name.includes('钻石')) return 'paidDiamond';
 	if (
 		price >= 600 ||
 		price === 0.1 ||
@@ -13178,8 +13648,8 @@ async function h5SignAgreement(data, event = {}) {
 }
 
 
-/** 满额充值档（默认 1000 元）可二选一实物赠品，需在下单时传入 rechargeGiftType */
-const RECHARGE_GIFT_PRICE = 1000;
+/** 满额充值档（默认 998 元）可二选一实物赠品，需在下单时传入 rechargeGiftType */
+const RECHARGE_GIFT_PRICE = DIAMOND_RECHARGE_PRICE;
 const RECHARGE_GIFT_OPTIONS = [
 	{ value: 'speaker', label: '蓝牙音响' },
 	{ value: 'scan_pos', label: '扫码POS机' }
@@ -13188,11 +13658,11 @@ const H5_RECHARGE_PACKAGES = [
 	{ id: 'pkg_600', title: '600元', price: 600, quota: 1000000, benefitTip: '600元配置100万交易量，等于补贴市场价的3800元手续费', giftChoiceRequired: false, giftOptions: [] },
 	{ id: 'pkg_800', title: '800元', price: 800, quota: 1500000, benefitTip: '800元配置150万交易量，等于补贴市场价的5700元手续费', giftChoiceRequired: false, giftOptions: [] },
 	{
-		id: 'pkg_1000',
-		title: '1000元',
-		price: 1000,
+		id: DIAMOND_QUOTA_PACKAGE_ID,
+		title: '998元',
+		price: DIAMOND_RECHARGE_PRICE,
 		quota: 2000000,
-		benefitTip: '1000元配置200万交易量，等于补贴市场价的7600元手续费；另可任选蓝牙音响或扫码POS机一台（支付成功后由后台发货）',
+		benefitTip: '998元配置200万交易量，等于补贴市场价的7600元手续费；另可任选蓝牙音响或扫码POS机一台（支付成功后由后台发货）',
 		giftChoiceRequired: true,
 		giftOptions: RECHARGE_GIFT_OPTIONS
 	}
@@ -13220,11 +13690,11 @@ const DEFAULT_QUOTA_PACKAGES = [
 		membership_name: '白金会员'
 	},
 	{
-		package_id: 'pkg_1000',
-		title: '升级 1000 元',
+		package_id: DIAMOND_QUOTA_PACKAGE_ID,
+		title: '升级 998 元',
 		bonus_quota: '¥2000000.00',
 		real_quota: 7600,
-		price: 1000,
+		price: DIAMOND_RECHARGE_PRICE,
 		description:
 			'每180天自动更新200万收款交易量奖励额度，提现奖励高达7600（政策周期 5 年）',
 		membership_name: '钻石会员'
@@ -13363,6 +13833,39 @@ async function ensureDefaultQuotaPackages() {
 		if (ex.data && ex.data.length) continue;
 		await quotaCollection.add({ ...item, create_time: now, update_time: now, is_deleted: false });
 	}
+	await deprecateLegacyDiamondQuotaPackageIfNeeded();
+}
+
+/** 已有 pkg_998 时自动软删遗留 pkg_1000，避免 H5 出现双钻石档 */
+async function deprecateLegacyDiamondQuotaPackageIfNeeded() {
+	const now = nowTs();
+	const has998 = await quotaCollection
+		.where({ package_id: DIAMOND_QUOTA_PACKAGE_ID, is_deleted: false })
+		.limit(1)
+		.get();
+	if (!has998.data || !has998.data.length) return;
+	const legacy = await quotaCollection
+		.where({ package_id: LEGACY_DIAMOND_QUOTA_PACKAGE_ID, is_deleted: false })
+		.limit(1)
+		.get();
+	if (!legacy.data || !legacy.data.length) return;
+	await quotaCollection.doc(legacy.data[0]._id).update({
+		is_deleted: true,
+		deprecate_reason: 'superseded_by_pkg_998',
+		update_time: now
+	});
+	await invalidateH5QuotaPackagesCache();
+}
+
+function stripDeprecatedQuotaPackages(list = []) {
+	const arr = Array.isArray(list) ? list : [];
+	const has998 = arr.some((x) => String(x?.id || x?.package_id || '').trim() === DIAMOND_QUOTA_PACKAGE_ID);
+	if (!has998) return arr;
+	return arr.filter((x) => String(x?.id || x?.package_id || '').trim() !== LEGACY_DIAMOND_QUOTA_PACKAGE_ID);
+}
+
+function finalizeRechargePackageList(list = []) {
+	return stripDeprecatedQuotaPackages(stripTestRechargePackages(list));
 }
 
 const RECHARGE_PKG_LIST_TTL_MS = 60000;
@@ -13374,11 +13877,11 @@ function stripTestRechargePackages(list = []) {
 async function loadRechargePackagesFromQuota() {
 	const t = nowTs();
 	if (rechargePackagesListCache.data && t - rechargePackagesListCache.at < RECHARGE_PKG_LIST_TTL_MS) {
-		return stripTestRechargePackages(rechargePackagesListCache.data);
+		return finalizeRechargePackageList(rechargePackagesListCache.data);
 	}
 	const rList = await redisH5.h5RedisGetJson(REDIS_KEY_QUOTA_PKGS);
 	if (rList && Array.isArray(rList) && rList.length) {
-		const clean = stripTestRechargePackages(rList);
+		const clean = finalizeRechargePackageList(rList);
 		rechargePackagesListCache = { at: t, data: clean };
 		return clean;
 	}
@@ -13410,12 +13913,12 @@ async function loadRechargePackagesFromQuota() {
 					name: p.name,
 					image: p.images && p.images.length ? p.images[0] : ''
 				})),
-			giftChoiceRequired: Number(x.price || 0) === RECHARGE_GIFT_PRICE,
-			giftOptions: Number(x.price || 0) === RECHARGE_GIFT_PRICE ? RECHARGE_GIFT_OPTIONS : []
+			giftChoiceRequired: isRechargeGiftPriceYuan(x.price),
+			giftOptions: isRechargeGiftPriceYuan(x.price) ? RECHARGE_GIFT_OPTIONS : []
 		}))
 		.filter((x) => x.id && x.price > 0)
 		.sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || a.price - b.price);
-	const out = !core.length ? H5_RECHARGE_PACKAGES : core;
+	const out = finalizeRechargePackageList(!core.length ? H5_RECHARGE_PACKAGES : core);
 	rechargePackagesListCache = { at: t, data: out };
 	await redisH5.h5RedisSetJson(REDIS_KEY_QUOTA_PKGS, out, REDIS_EX_QUOTA_SEC);
 	return out;
@@ -13470,8 +13973,8 @@ function buildRechargePackagesFromRules(rechargeRules = DEFAULT_RECHARGE_RULES) 
 			price: Number(x.price || 0),
 			quota: Number(x.quota || 0),
 			benefitTip: String(x.tip || '').trim(),
-			giftChoiceRequired: Number(x.price || 0) === RECHARGE_GIFT_PRICE,
-			giftOptions: Number(x.price || 0) === RECHARGE_GIFT_PRICE ? RECHARGE_GIFT_OPTIONS : []
+			giftChoiceRequired: isRechargeGiftPriceYuan(x.price),
+			giftOptions: isRechargeGiftPriceYuan(x.price) ? RECHARGE_GIFT_OPTIONS : []
 		}))
 		.filter((x) => x.price > 0)
 		.sort((a, b) => a.price - b.price);
@@ -13661,7 +14164,7 @@ function resolveRechargePackageQuotaAndReward(merchant, rechargeRules = DEFAULT_
 	const price = resolveRechargePriceForReward(merchant, rechargeRules);
 	if (reward <= 0) reward = grantYuanByRechargePrice(price, rechargeRules);
 	if (quota <= 0) {
-		if (reward >= 7600 || price >= 1000) quota = 2000000;
+		if (reward >= 7600 || isDiamondRechargePriceYuan(price)) quota = 2000000;
 		else if (reward >= 5700 || price >= 800) quota = 1500000;
 		else if (reward >= 3800 || price >= 600 || price === 0.1) quota = 1000000;
 	}
@@ -17614,7 +18117,7 @@ async function runDataCorrectTaskChunk(task, chunkSize = 120) {
 				const reward = Number(row.recharge_package_reward || 0);
 				const quota = Number(row.estimated_free_quota || row.recharge_package_quota || 0);
 				const price = Number(row.recharge_package_price || 0);
-				if (reward >= 7600 || quota >= 2000000 || price >= 1000) normalizedMembershipName = '钻石会员';
+				if (reward >= 7600 || quota >= 2000000 || isDiamondRechargePriceYuan(price)) normalizedMembershipName = '钻石会员';
 				else if (reward >= 5700 || quota >= 1500000 || price >= 800) normalizedMembershipName = '铂金会员';
 				else if (reward >= 3800 || quota >= 1000000 || price >= 600 || price === 0.1) normalizedMembershipName = '白金会员';
 			}
@@ -21191,6 +21694,8 @@ exports.main = async (event, context) => {
 			return await updateSwitch(actualData);
 		case 'merchantPointsMonthlyInsight':
 			return await merchantPointsMonthlyInsight(actualData);
+		case 'merchantUpgradePointsClearLogs':
+			return await merchantUpgradePointsClearLogs(actualData);
 		case 'merchantAgreementImage':
 			return await merchantAgreementImage(actualData);
 		case 'merchantAgreementClear':
@@ -21295,6 +21800,8 @@ exports.main = async (event, context) => {
 			return await adminClearFlowOptBeforeEffectiveFrom(actualData, event);
 		case 'adminFloorMerchantPointsBalances':
 			return await adminFloorMerchantPointsBalances(actualData, event);
+		case 'adminRetroactiveUpgradePointsClear':
+			return await adminRetroactiveUpgradePointsClear(actualData, event);
 		case 'adminAgreementImgMigrateToCloud':
 			return await adminAgreementImgMigrateToCloud(actualData, event);
 		case 'rechargeGiftShipmentList':

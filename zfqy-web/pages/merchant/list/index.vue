@@ -312,6 +312,23 @@
 						</view>
 						<view v-else class="points-empty">暂无交易抽样</view>
 					</view>
+					<view class="points-section">
+						<view class="points-section-hd">F. 会员升级清零留底</view>
+						<view class="points-rule-tip points-rule-tip--compact">
+							<text>普通会员升级为白银/黄金/白金/钻石时，待提现、冻结金额、分片账本与未领红包将全部清零，以下记录供与商户核对说明。</text>
+						</view>
+						<view v-if="pointsInsight.upgradeClearLogs && pointsInsight.upgradeClearLogs.length" class="points-claimed-list">
+							<view v-for="row in pointsInsight.upgradeClearLogs" :key="`ucl_${row.id}`" class="points-claimed-block">
+								<view class="points-claimed-row">
+									<text class="points-claimed-main">{{ row.time }} → {{ row.targetMembershipName || '会员' }}</text>
+								</view>
+								<view class="points-claimed-sub">
+									<text class="points-claimed-detail">{{ row.content || formatUpgradeClearSummary(row) }}</text>
+								</view>
+							</view>
+						</view>
+						<view v-else class="points-empty">暂无升级清零记录</view>
+					</view>
 				</scroll-view>
 				<view class="points-insight-actions">
 					<button size="mini" @click="closePointsInsight">关闭</button>
@@ -439,6 +456,7 @@
 
 <script>
 import { exportAgreementImageToPdf, sanitizeFileName } from './agreement-pdf-export.js';
+import { isRechargeGiftPrice } from '@/common/recharge-tiers';
 
 export default {
 	data() {
@@ -1298,7 +1316,7 @@ export default {
 					rewardText: Number(x.realQuota || 0).toFixed(0),
 					priceText: Number(x.price || 0).toFixed(2),
 					desc: x.description || x.briefIntro || '',
-					giftChoiceRequired: Number(x.price || 0) === 1000
+					giftChoiceRequired: isRechargeGiftPrice(x.price)
 				}));
 				if (this.offlinePackages.length) {
 					this.onOfflinePackagePick(this.offlinePackages[0]);
@@ -1373,7 +1391,7 @@ export default {
 		async openPointsInsight(item) {
 			if (!item || !item.userId) return;
 			this.pointsInsightLoading = true;
-			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, monthlyOverview: [], monthlyClaimedSummary: [], sliceDetails: [], tradeSamples: [] };
+			this.pointsInsight = { title: `${item.wxUser || item.userId} 积分明细`, monthlyOverview: [], monthlyClaimedSummary: [], sliceDetails: [], tradeSamples: [], upgradeClearLogs: [] };
 			this.$refs.pointsInsightPopup.open();
 			try {
 				const res = await this.$request(
@@ -1391,7 +1409,8 @@ export default {
 					monthlyOverview: d.monthlyOverview || [],
 					monthlyClaimedSummary: d.monthlyClaimedSummary || [],
 					sliceDetails: d.sliceDetails || [],
-					tradeSamples: d.tradeSamples || []
+					tradeSamples: d.tradeSamples || [],
+					upgradeClearLogs: d.upgradeClearLogs || []
 				};
 			} finally {
 				this.pointsInsightLoading = false;
@@ -1742,6 +1761,24 @@ export default {
 						`目标月 ${x.targetYm}：${this.formatInsightPoints(x.points)} 分来自 ${this.formatInsightSourceMonth(x.sourceYm)}`
 				)
 				.join('；');
+		},
+		formatUpgradeClearSummary(row) {
+			if (!row) return '';
+			const parts = [];
+			if (Number(row.clearedPendingWithdraw) > 0) parts.push(`待提现 ${Number(row.clearedPendingWithdraw).toFixed(2)} 元`);
+			if (Number(row.clearedFrozenAmount) > 0) parts.push(`冻结 ${Number(row.clearedFrozenAmount).toFixed(2)} 元`);
+			if (Number(row.clearedSliceTotal) > 0) {
+				const ym = row.clearedSliceByTargetYm || {};
+				const ymText = Object.keys(ym)
+					.sort()
+					.map((k) => `${k}月${Number(ym[k] || 0).toFixed(2)}元`)
+					.join('、');
+				parts.push(`分片账本 ${Number(row.clearedSliceTotal).toFixed(2)} 元${ymText ? `（${ymText}）` : ''}`);
+			}
+			if (Number(row.clearedPendingPacketAmount) > 0) {
+				parts.push(`未领红包 ${Number(row.clearedPendingPacketAmount).toFixed(2)} 元（${Number(row.clearedPendingPacketCount || 0)}个）`);
+			}
+			return parts.length ? parts.join('；') : '无余额清零';
 		},
 		async openRefundWindow(item) {
 			if (!item || !item.id) return;
