@@ -146,25 +146,120 @@ async function adminHomeRedisSetLiveAndLast(liveKey, lastKey, obj, liveExSec) {
 	await redisH5.h5RedisSetJson(lastKey, obj, REDIS_EX_ADMIN_HOME_LAST_SEC);
 	return okLive;
 }
-/** 0.2 元测试套餐 id：权益与钻石档（998 元）一致，用于测赠品选择/发货 */
-const H5_RECHARGE_TEST_AS_1000_PKG_ID = 'pkg_0_2';
-/** 钻石会员充值价（元）；历史 1000 元档仍按 >= 此价识别为钻石 */
-const DIAMOND_RECHARGE_PRICE = 998;
-const DIAMOND_QUOTA_PACKAGE_ID = 'pkg_998';
-const LEGACY_DIAMOND_QUOTA_PACKAGE_ID = 'pkg_1000';
+/** 0.2 元测试套餐 id：权益对齐配置中「需选赠品」的最高档（通常为钻石） */
+const H5_RECHARGE_TEST_GIFT_PKG_ID = 'pkg_0_2';
+/** @deprecated 兼容旧引用，等同 H5_RECHARGE_TEST_GIFT_PKG_ID */
+const H5_RECHARGE_TEST_AS_1000_PKG_ID = H5_RECHARGE_TEST_GIFT_PKG_ID;
 
-function isDiamondRechargePriceYuan(price) {
-	const p = Number(price || 0);
-	return p >= DIAMOND_RECHARGE_PRICE || p === 0.2;
+/** 由会员名称（额度包配置 membership_name）解析档位，不按价格写死 */
+function membershipMetaFromName(name) {
+	const n = String(name || '').trim();
+	if (n.includes('钻石')) {
+		return {
+			tier: 'diamond',
+			accent: '#38bdf8',
+			periodGroup: 'paidDiamond',
+			adminCategory: 'diamond',
+			defaultName: '钻石会员'
+		};
+	}
+	if (n.includes('铂金')) {
+		return {
+			tier: 'platinum',
+			accent: '#c084fc',
+			periodGroup: 'paidGoldPlatinum',
+			adminCategory: 'white_gold',
+			defaultName: '铂金会员'
+		};
+	}
+	if (n.includes('黄金')) {
+		return {
+			tier: 'white_gold',
+			accent: '#fcd34d',
+			periodGroup: 'paidGoldPlatinum',
+			adminCategory: 'gold',
+			defaultName: '黄金会员'
+		};
+	}
+	if (n.includes('白金')) {
+		return {
+			tier: 'white_gold',
+			accent: '#fcd34d',
+			periodGroup: 'paidGoldPlatinum',
+			adminCategory: 'gold',
+			defaultName: '白金会员'
+		};
+	}
+	if (n.includes('白银')) {
+		return {
+			tier: 'silver',
+			accent: '#c0cbd9',
+			periodGroup: 'exchangeCoupon',
+			adminCategory: 'silver',
+			defaultName: '白银会员'
+		};
+	}
+	return {
+		tier: 'normal',
+		accent: '#94a3b8',
+		periodGroup: '',
+		adminCategory: 'normal',
+		defaultName: n || '普通会员'
+	};
 }
 
-function isRechargeGiftPriceYuan(price) {
-	return Number(Number(price || 0).toFixed(2)) === DIAMOND_RECHARGE_PRICE;
+/** 是否需选实物赠品：以套餐配置（关联商品 / 必选数量）为准，不按价格 */
+function packageRequiresGiftChoice(pkg) {
+	if (!pkg) return false;
+	if (pkg.giftChoiceRequired === true) return true;
+	if (pkg.giftChoiceRequired === false) return false;
+	const pickRequired = Number(pkg.pickRequired != null ? pkg.pickRequired : pkg.pick_required || 0);
+	const pickTotal = Number(pkg.pickTotal != null ? pkg.pickTotal : pkg.pick_total || 0);
+	const related = Array.isArray(pkg.relatedProductIds)
+		? pkg.relatedProductIds
+		: Array.isArray(pkg.related_product_ids)
+			? pkg.related_product_ids
+			: Array.isArray(pkg.relatedProducts)
+				? pkg.relatedProducts
+				: [];
+	return pickRequired > 0 || (pickTotal > 0 && related.length > 0);
 }
 
-function resolveEffectiveDiamondPriceYuan(price, pkgId) {
-	if (String(pkgId || '').trim() === H5_RECHARGE_TEST_AS_1000_PKG_ID) return DIAMOND_RECHARGE_PRICE;
-	return Number(price || 0);
+function packageMembershipName(pkg) {
+	return safeText((pkg && (pkg.membershipName || pkg.membership_name)) || '', 40);
+}
+
+/** 测试档 / 赠品锚点：取配置中需赠品的最高价套餐，否则取名称含「钻石」的最高价套餐 */
+function findConfigGiftAnchorPackage(packages = []) {
+	const list = Array.isArray(packages) ? packages : [];
+	const byPriceDesc = (a, b) => Number(b.price || 0) - Number(a.price || 0);
+	const giftPkgs = list.filter((p) => packageRequiresGiftChoice(p)).sort(byPriceDesc);
+	if (giftPkgs.length) return giftPkgs[0];
+	const diamondPkgs = list
+		.filter((p) => packageMembershipName(p).includes('钻石'))
+		.sort(byPriceDesc);
+	return diamondPkgs[0] || null;
+}
+
+function resolveMerchantConfiguredPackage(merchant, packages = []) {
+	if (!merchant) return null;
+	const list = Array.isArray(packages) && packages.length ? packages : [];
+	const byId = pickRechargePackage(merchant.recharge_package_id, list);
+	if (byId) return byId;
+	const byPrice = getRechargePackageByPrice(merchant.recharge_package_price, list);
+	if (byPrice) return byPrice;
+	const pid = safeText(merchant.recharge_package_id || '', 40);
+	if (pid === H5_RECHARGE_TEST_GIFT_PKG_ID) return findConfigGiftAnchorPackage(list);
+	return null;
+}
+
+function membershipNameFromConfiguredPackage(pkg, packages = []) {
+	const direct = packageMembershipName(pkg);
+	if (direct) return direct;
+	if (pkg && safeText(pkg.id || '', 40) === H5_RECHARGE_TEST_GIFT_PKG_ID) {
+		return packageMembershipName(findConfigGiftAnchorPackage(packages));
+	}
+	return '';
 }
 
 /**
@@ -2681,7 +2776,7 @@ async function offlineFirstRecharge(data, event) {
 		const pkg = pickRechargePackage(packageId, rechargePackages);
 		if (!pkg) return { code: 404, message: '套餐不存在或已下架' };
 
-		const giftRequired = Boolean(pkg.giftChoiceRequired) || Number(pkg.price) === RECHARGE_GIFT_PRICE;
+		const giftRequired = packageRequiresGiftChoice(pkg);
 		let rechargeGiftLabel = '';
 		if (giftRequired) {
 			if (rechargeGiftType !== 'speaker' && rechargeGiftType !== 'scan_pos') {
@@ -5030,8 +5125,7 @@ function merchantHasOrphanRechargeMembership(merchant, packages = []) {
 }
 
 /**
- * 首页会员分档人数（与业务口径一致，非 H5 展示名）：
- * 黄金会员＝600 元档；白金会员＝800 元档；钻石＝998 元档。
+ * 首页会员分档人数：优先商户/套餐配置的 membership_name，不按写死价格分档。
  */
 function resolveAdminHomeMembershipCategory(merchant, packages = []) {
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
@@ -5041,16 +5135,18 @@ function resolveAdminHomeMembershipCategory(merchant, packages = []) {
 	const tier = String(info.tier || 'normal');
 	const name = String(info.name || '');
 	if (tier === 'silver' || hasH5SilverMemberIdentity(merchant)) return 'silver';
-	const pkg =
-		pickRechargePackage(merchant.recharge_package_id, list) ||
-		getRechargePackageByPrice(merchant.recharge_package_price, list);
-	let price = resolveEffectiveDiamondPriceYuan((pkg && pkg.price) || merchant.recharge_package_price || 0, pkg && pkg.id);
 
-	if (isDiamondRechargePriceYuan(price) || tier === 'diamond' || name.includes('钻石')) return 'diamond';
-	if (price >= 800 || tier === 'platinum' || name.includes('铂金')) return 'white_gold';
-	if (price >= 600 || price === 0.1 || tier === 'white_gold' || name.includes('黄金') || name.includes('白金')) {
-		return 'gold';
-	}
+	const fromName = membershipMetaFromName(name).adminCategory;
+	if (fromName && fromName !== 'normal') return fromName;
+
+	const pkg = resolveMerchantConfiguredPackage(merchant, list);
+	const pkgName = membershipNameFromConfiguredPackage(pkg, list);
+	const fromPkg = membershipMetaFromName(pkgName).adminCategory;
+	if (fromPkg && fromPkg !== 'normal') return fromPkg;
+
+	if (tier === 'diamond') return 'diamond';
+	if (tier === 'platinum') return 'white_gold';
+	if (tier === 'white_gold' || tier === 'gold') return 'gold';
 	return 'normal';
 }
 
@@ -9587,11 +9683,14 @@ function wxAckFail(msg) {
 
 async function maybeCreateRechargeGiftShipment(orderDoc, merchant, now) {
 	const custom = orderDoc.custom || {};
-	const targetPrice = Number(custom.target_price || 0);
-	const pkgId = safeText(custom.package_id, 40);
-	if (targetPrice !== RECHARGE_GIFT_PRICE && pkgId !== H5_RECHARGE_TEST_AS_1000_PKG_ID) return;
 	const giftType = safeText(custom.recharge_gift_type, 20);
 	if (giftType !== 'speaker' && giftType !== 'scan_pos') return;
+	const pkgId = safeText(custom.package_id, 40);
+	const packages = await loadRechargePackagesFromQuota();
+	const pkg =
+		pickRechargePackage(pkgId, packages) ||
+		(pkgId === H5_RECHARGE_TEST_GIFT_PKG_ID ? findConfigGiftAnchorPackage(packages) : null);
+	if (pkg && !packageRequiresGiftChoice(pkg) && pkgId !== H5_RECHARGE_TEST_GIFT_PKG_ID) return;
 	const orderNo = safeText(orderDoc.out_trade_no || orderDoc.order_no, 40);
 	if (!orderNo) return;
 	const dup = await rechargeGiftShipmentCollection.where({ order_no: orderNo }).limit(1).get();
@@ -9769,9 +9868,14 @@ async function applyRechargeByOrder(orderDoc) {
 	const targetMembershipName = safeText(custom.target_membership_name || '', 40);
 	let nextMembershipName = targetMembershipName;
 	if (!nextMembershipName) {
-		if (targetReward >= 7600 || Number(custom.target_quota || 0) >= 2000000 || isDiamondRechargePriceYuan(targetPrice)) nextMembershipName = '钻石会员';
-		else if (targetReward >= 5700 || Number(custom.target_quota || 0) >= 1500000 || targetPrice >= 800) nextMembershipName = '铂金会员';
-		else if (targetReward >= 3800 || Number(custom.target_quota || 0) >= 1000000 || targetPrice >= 600 || targetPrice === 0.1) nextMembershipName = '白金会员';
+		const packages = await loadRechargePackagesFromQuota();
+		const pkg =
+			pickRechargePackage(custom.package_id, packages) ||
+			getRechargePackageByPrice(targetPrice, packages) ||
+			(safeText(custom.package_id, 40) === H5_RECHARGE_TEST_GIFT_PKG_ID
+				? findConfigGiftAnchorPackage(packages)
+				: null);
+		nextMembershipName = membershipNameFromConfiguredPackage(pkg, packages);
 	}
 	const _ = db.command;
 	// 条件写：并发同档位支付时只有第一笔能写入权益
@@ -11473,10 +11577,10 @@ const DEFAULT_RECHARGE_RULES = [
 	{ price: 600, rewardYuan: 3800, quota: 1000000, tip: '600元配置100万交易量，等于补贴市场价的3800元手续费' },
 	{ price: 800, rewardYuan: 5700, quota: 1500000, tip: '800元配置150万交易量，等于补贴市场价的5700元手续费' },
 	{
-		price: DIAMOND_RECHARGE_PRICE,
+		price: 1000,
 		rewardYuan: 7600,
 		quota: 2000000,
-		tip: '998元配置200万交易量，等于补贴市场价的7600元手续费；另可在充值页任选蓝牙音响或扫码POS机一台（支付成功后发货）'
+		tip: '1000元配置200万交易量，等于补贴市场价的7600元手续费；另可在充值页任选蓝牙音响或扫码POS机一台（支付成功后发货）'
 	}
 ];
 /** H5「退款与周期」页规则说明，支持占位符 {cycleDays}、{windowDays}、{penaltyRate}（与参数配置中锁定周期/窗口/违约金一致） */
@@ -11531,7 +11635,7 @@ const DEFAULT_BIZ_SETTINGS = {
 	 * 会员分档日/周累计提现上限（积分=元；0=不限制）
 	 * - exchangeCoupon：兑换券/兑换码开通的非付费会员（业务所称「兑换券铂金」等）
 	 * - paidGoldPlatinum：600 元黄金 / 800 元白金（含历史白金/铂金命名）
-	 * - paidDiamond：998 元钻石
+	 * - paidDiamond：名称含「钻石」的付费会员（价格以额度包配置为准）
 	 * 周=北京时间周一至周日
 	 */
 	withdrawPeriodLimits: {
@@ -11919,13 +12023,13 @@ function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES)
 	let p = Number(price || 0);
 	const defaultRules = (Array.isArray(DEFAULT_RECHARGE_RULES) ? DEFAULT_RECHARGE_RULES : []).slice().sort((a, b) => a.price - b.price);
 	const rules = (Array.isArray(rechargeRules) ? rechargeRules : DEFAULT_RECHARGE_RULES).slice().sort((a, b) => a.price - b.price);
-	// 0.1 元测试档与 600 档同权益：奖励计算按首档正式套餐金额处理
+	// 0.1 元测试档：对齐配置中最低正式档
 	if (p === 0.1 && rules.length) {
 		p = Number(rules[0].price || 0);
 	}
-	// 0.2 元测试档与钻石档（998 元）同权益（含赠品流程）
-	if (p === 0.2) {
-		p = DIAMOND_RECHARGE_PRICE;
+	// 0.2 元测试档：对齐配置中最高正式档（通常为钻石）
+	if (p === 0.2 && rules.length) {
+		p = Number(rules[rules.length - 1].price || 0);
 	}
 	let reward = 0;
 	for (const rule of rules) {
@@ -11936,7 +12040,7 @@ function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES)
 			for (const dr of defaultRules) {
 				if (pricePoint >= Number(dr.price || 0)) defaultReward = Number(dr.rewardYuan || 0);
 			}
-			// 配置被误改为 0 时，回退到系统默认奖励档位，保证 600/800/998 档可正常展示奖励值
+			// 配置被误改为 0 时，回退到系统默认奖励档位
 			reward = Math.max(configuredReward, defaultReward);
 		}
 	}
@@ -12105,22 +12209,13 @@ function h5MembershipInfo(merchant, packages = null) {
 		return { tier, name: persistedName, accent };
 	}
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
-	const pkg = pickRechargePackage(merchant.recharge_package_id, list) || getRechargePackageByPrice(merchant.recharge_package_price, list);
-	let price = resolveEffectiveDiamondPriceYuan((pkg && pkg.price) || merchant.recharge_package_price || 0, pkg && pkg.id);
-	let out;
-	if (isDiamondRechargePriceYuan(price)) {
-		out = { tier: 'diamond', name: '钻石会员', accent: '#38bdf8' };
-	} else if (price >= 800) {
-		out = { tier: 'platinum', name: '铂金会员', accent: '#c084fc' };
-	} else if (price >= 600 || price === 0.1) {
-		out = { tier: 'white_gold', name: '白金会员', accent: '#fcd34d' };
-	} else {
-		out = { tier: 'normal', name: '普通会员', accent: '#94a3b8' };
+	const pkg = resolveMerchantConfiguredPackage(merchant, list);
+	const pkgName = membershipNameFromConfiguredPackage(pkg, list);
+	if (pkgName) {
+		const meta = membershipMetaFromName(pkgName);
+		return { tier: meta.tier, name: pkgName, accent: meta.accent };
 	}
-	const custom = pkg && String(pkg.membershipName || '').trim();
-	if (custom) {
-		return { ...out, name: custom };
-	}
+	let out = { tier: 'normal', name: '普通会员', accent: '#94a3b8' };
 	// 兑换码白银会员：非充值会员时首页也应展示会员身份
 	if (out.tier === 'normal' && hasH5SilverMemberIdentity(merchant)) {
 		return { tier: 'silver', name: '白银会员', accent: '#c0cbd9' };
@@ -12809,15 +12904,14 @@ function h5WithdrawOutsideHoursMessage() {
 
 /** 用于分档提现日/周限额：解析套餐价格（元） */
 function resolveWithdrawPackagePriceYuan(merchant) {
-	const pid = safeText(merchant?.recharge_package_id || '', 40);
-	return resolveEffectiveDiamondPriceYuan(merchant?.recharge_package_price || 0, pid);
+	return Number(merchant?.recharge_package_price || 0);
 }
 
 /**
- * 提现日/周累计限额分档：
- * - exchangeCoupon：兑换券/兑换码开通的非付费会员（业务「兑换券铂金」）
- * - paidGoldPlatinum：600 黄金 / 800 白金
- * - paidDiamond：998 元钻石
+ * 提现日/周累计限额分档：按会员名称/套餐配置，不按写死价格。
+ * - exchangeCoupon：兑换券/兑换码开通的非付费会员
+ * - paidGoldPlatinum：黄金 / 白金 / 铂金
+ * - paidDiamond：钻石
  */
 function resolveWithdrawPeriodLimitGroup(merchant) {
 	if (!merchant) return '';
@@ -12831,18 +12925,9 @@ function resolveWithdrawPeriodLimitGroup(merchant) {
 		}
 		return '';
 	}
-	const price = resolveWithdrawPackagePriceYuan(merchant);
 	const name = String(merchant.membership_name || '').trim();
-	if (isDiamondRechargePriceYuan(price) || name.includes('钻石')) return 'paidDiamond';
-	if (
-		price >= 600 ||
-		price === 0.1 ||
-		name.includes('黄金') ||
-		name.includes('白金') ||
-		name.includes('铂金')
-	) {
-		return 'paidGoldPlatinum';
-	}
+	const fromName = membershipMetaFromName(name).periodGroup;
+	if (fromName === 'paidDiamond' || fromName === 'paidGoldPlatinum') return fromName;
 	return 'paidGoldPlatinum';
 }
 
@@ -13648,23 +13733,27 @@ async function h5SignAgreement(data, event = {}) {
 }
 
 
-/** 满额充值档（默认 998 元）可二选一实物赠品，需在下单时传入 rechargeGiftType */
-const RECHARGE_GIFT_PRICE = DIAMOND_RECHARGE_PRICE;
+/** 充值套餐可选实物赠品选项（是否必选由额度包关联商品/必选数量配置决定） */
 const RECHARGE_GIFT_OPTIONS = [
 	{ value: 'speaker', label: '蓝牙音响' },
 	{ value: 'scan_pos', label: '扫码POS机' }
 ];
+/** 仅空库初始化兜底；正式环境以 hsy-quota-packages 配置为准，不会覆盖已有数据 */
 const H5_RECHARGE_PACKAGES = [
-	{ id: 'pkg_600', title: '600元', price: 600, quota: 1000000, benefitTip: '600元配置100万交易量，等于补贴市场价的3800元手续费', giftChoiceRequired: false, giftOptions: [] },
-	{ id: 'pkg_800', title: '800元', price: 800, quota: 1500000, benefitTip: '800元配置150万交易量，等于补贴市场价的5700元手续费', giftChoiceRequired: false, giftOptions: [] },
+	{ id: 'pkg_600', title: '600元', price: 600, quota: 1000000, membershipName: '黄金会员', benefitTip: '600元配置100万交易量，等于补贴市场价的3800元手续费', giftChoiceRequired: false, giftOptions: [], pickRequired: 0, pickTotal: 0, relatedProductIds: [] },
+	{ id: 'pkg_800', title: '800元', price: 800, quota: 1500000, membershipName: '白金会员', benefitTip: '800元配置150万交易量，等于补贴市场价的5700元手续费', giftChoiceRequired: false, giftOptions: [], pickRequired: 0, pickTotal: 0, relatedProductIds: [] },
 	{
-		id: DIAMOND_QUOTA_PACKAGE_ID,
-		title: '998元',
-		price: DIAMOND_RECHARGE_PRICE,
+		id: 'pkg_1000',
+		title: '1000元',
+		price: 1000,
 		quota: 2000000,
-		benefitTip: '998元配置200万交易量，等于补贴市场价的7600元手续费；另可任选蓝牙音响或扫码POS机一台（支付成功后由后台发货）',
+		membershipName: '钻石会员',
+		benefitTip: '1000元配置200万交易量，等于补贴市场价的7600元手续费；另可任选蓝牙音响或扫码POS机一台（支付成功后由后台发货）',
 		giftChoiceRequired: true,
-		giftOptions: RECHARGE_GIFT_OPTIONS
+		giftOptions: RECHARGE_GIFT_OPTIONS,
+		pickRequired: 1,
+		pickTotal: 2,
+		relatedProductIds: []
 	}
 ];
 
@@ -13690,11 +13779,11 @@ const DEFAULT_QUOTA_PACKAGES = [
 		membership_name: '白金会员'
 	},
 	{
-		package_id: DIAMOND_QUOTA_PACKAGE_ID,
-		title: '升级 998 元',
+		package_id: 'pkg_1000',
+		title: '升级 1000 元',
 		bonus_quota: '¥2000000.00',
 		real_quota: 7600,
-		price: DIAMOND_RECHARGE_PRICE,
+		price: 1000,
 		description:
 			'每180天自动更新200万收款交易量奖励额度，提现奖励高达7600（政策周期 5 年）',
 		membership_name: '钻石会员'
@@ -13826,46 +13915,18 @@ function parseSortOrder(raw, fallback = 0) {
 	return Math.trunc(n);
 }
 
+/** 仅当库中无任何未删除额度包时 seed 一次；之后完全以后台配置为准，绝不按固定 id 补种 */
 async function ensureDefaultQuotaPackages() {
+	const cnt = await quotaCollection.where({ is_deleted: false }).count();
+	if (Number(cnt.total || 0) > 0) return;
 	const now = nowTs();
 	for (const item of DEFAULT_QUOTA_PACKAGES) {
-		const ex = await quotaCollection.where({ package_id: item.package_id, is_deleted: false }).limit(1).get();
-		if (ex.data && ex.data.length) continue;
 		await quotaCollection.add({ ...item, create_time: now, update_time: now, is_deleted: false });
 	}
-	await deprecateLegacyDiamondQuotaPackageIfNeeded();
-}
-
-/** 已有 pkg_998 时自动软删遗留 pkg_1000，避免 H5 出现双钻石档 */
-async function deprecateLegacyDiamondQuotaPackageIfNeeded() {
-	const now = nowTs();
-	const has998 = await quotaCollection
-		.where({ package_id: DIAMOND_QUOTA_PACKAGE_ID, is_deleted: false })
-		.limit(1)
-		.get();
-	if (!has998.data || !has998.data.length) return;
-	const legacy = await quotaCollection
-		.where({ package_id: LEGACY_DIAMOND_QUOTA_PACKAGE_ID, is_deleted: false })
-		.limit(1)
-		.get();
-	if (!legacy.data || !legacy.data.length) return;
-	await quotaCollection.doc(legacy.data[0]._id).update({
-		is_deleted: true,
-		deprecate_reason: 'superseded_by_pkg_998',
-		update_time: now
-	});
-	await invalidateH5QuotaPackagesCache();
-}
-
-function stripDeprecatedQuotaPackages(list = []) {
-	const arr = Array.isArray(list) ? list : [];
-	const has998 = arr.some((x) => String(x?.id || x?.package_id || '').trim() === DIAMOND_QUOTA_PACKAGE_ID);
-	if (!has998) return arr;
-	return arr.filter((x) => String(x?.id || x?.package_id || '').trim() !== LEGACY_DIAMOND_QUOTA_PACKAGE_ID);
 }
 
 function finalizeRechargePackageList(list = []) {
-	return stripDeprecatedQuotaPackages(stripTestRechargePackages(list));
+	return stripTestRechargePackages(list);
 }
 
 const RECHARGE_PKG_LIST_TTL_MS = 60000;
@@ -13890,32 +13951,41 @@ async function loadRechargePackagesFromQuota() {
 	const productsMap = new Map((products || []).map((x) => [String(x.id), x]));
 	const res = await quotaCollection.where({ is_deleted: false }).orderBy('price', 'asc').limit(200).get();
 	const core = (res.data || [])
-		.map((x) => ({
-			id: safeText(x.package_id, 40),
-			title: safeText(x.title, 80) || buildQuotaPackageTitle(x.price),
-			price: Number(x.price || 0),
-			sortOrder: parseSortOrder(x.sort_order, Number(x.price || 0)),
-			quota: parseBonusQuotaYuan(x.bonus_quota),
-			rewardYuan: Number(x.real_quota || 0),
-			benefitTip: safeText(x.description, 300),
-			benefitText: quotaPackageDescriptionForH5(x.description),
-			benefitDisplay: parseQuotaPackageH5Display(x.description, x),
-			homeBenefitTip: safeText(x.brief_intro, 300) || safeText(x.description, 300),
-			membershipName: safeText(x.membership_name, 40),
-			relatedProductIds: Array.isArray(x.related_product_ids) ? x.related_product_ids.map((s) => safeText(s, 80)).filter(Boolean) : [],
-			pickTotal: Number(x.pick_total || 0),
-			pickRequired: Number(x.pick_required || 0),
-			relatedProducts: (Array.isArray(x.related_product_ids) ? x.related_product_ids : [])
-				.map((id) => productsMap.get(String(id)))
-				.filter(Boolean)
-				.map((p) => ({
-					id: p.id,
-					name: p.name,
-					image: p.images && p.images.length ? p.images[0] : ''
-				})),
-			giftChoiceRequired: isRechargeGiftPriceYuan(x.price),
-			giftOptions: isRechargeGiftPriceYuan(x.price) ? RECHARGE_GIFT_OPTIONS : []
-		}))
+		.map((x) => {
+			const relatedProductIds = Array.isArray(x.related_product_ids)
+				? x.related_product_ids.map((s) => safeText(s, 80)).filter(Boolean)
+				: [];
+			const row = {
+				id: safeText(x.package_id, 40),
+				title: safeText(x.title, 80) || buildQuotaPackageTitle(x.price),
+				price: Number(x.price || 0),
+				sortOrder: parseSortOrder(x.sort_order, Number(x.price || 0)),
+				quota: parseBonusQuotaYuan(x.bonus_quota),
+				rewardYuan: Number(x.real_quota || 0),
+				benefitTip: safeText(x.description, 300),
+				benefitText: quotaPackageDescriptionForH5(x.description),
+				benefitDisplay: parseQuotaPackageH5Display(x.description, x),
+				homeBenefitTip: safeText(x.brief_intro, 300) || safeText(x.description, 300),
+				membershipName: safeText(x.membership_name, 40),
+				relatedProductIds,
+				pickTotal: Number(x.pick_total || 0),
+				pickRequired: Number(x.pick_required || 0),
+				relatedProducts: relatedProductIds
+					.map((id) => productsMap.get(String(id)))
+					.filter(Boolean)
+					.map((p) => ({
+						id: p.id,
+						name: p.name,
+						image: p.images && p.images.length ? p.images[0] : ''
+					}))
+			};
+			const giftChoiceRequired = packageRequiresGiftChoice(row);
+			return {
+				...row,
+				giftChoiceRequired,
+				giftOptions: giftChoiceRequired ? RECHARGE_GIFT_OPTIONS : []
+			};
+		})
 		.filter((x) => x.id && x.price > 0)
 		.sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || a.price - b.price);
 	const out = finalizeRechargePackageList(!core.length ? H5_RECHARGE_PACKAGES : core);
@@ -13972,9 +14042,14 @@ function buildRechargePackagesFromRules(rechargeRules = DEFAULT_RECHARGE_RULES) 
 			title: `${Number(x.price || 0)}元`,
 			price: Number(x.price || 0),
 			quota: Number(x.quota || 0),
+			rewardYuan: Number(x.rewardYuan || 0),
+			membershipName: '',
 			benefitTip: String(x.tip || '').trim(),
-			giftChoiceRequired: isRechargeGiftPriceYuan(x.price),
-			giftOptions: isRechargeGiftPriceYuan(x.price) ? RECHARGE_GIFT_OPTIONS : []
+			giftChoiceRequired: false,
+			giftOptions: [],
+			pickRequired: 0,
+			pickTotal: 0,
+			relatedProductIds: []
 		}))
 		.filter((x) => x.price > 0)
 		.sort((a, b) => a.price - b.price);
@@ -14162,11 +14237,20 @@ function resolveRechargePackageQuotaAndReward(merchant, rechargeRules = DEFAULT_
 	let quota = Number(merchant?.recharge_package_quota || 0);
 	if (quota <= 0) quota = Number(merchant?.estimated_free_quota || 0);
 	const price = resolveRechargePriceForReward(merchant, rechargeRules);
+	const rules = (Array.isArray(rechargeRules) ? rechargeRules : DEFAULT_RECHARGE_RULES)
+		.slice()
+		.sort((a, b) => Number(b.price || 0) - Number(a.price || 0));
 	if (reward <= 0) reward = grantYuanByRechargePrice(price, rechargeRules);
 	if (quota <= 0) {
-		if (reward >= 7600 || isDiamondRechargePriceYuan(price)) quota = 2000000;
-		else if (reward >= 5700 || price >= 800) quota = 1500000;
-		else if (reward >= 3800 || price >= 600 || price === 0.1) quota = 1000000;
+		for (const rule of rules) {
+			const rulePrice = Number(rule.price || 0);
+			const ruleReward = Number(rule.rewardYuan || 0);
+			const ruleQuota = Number(rule.quota || 0);
+			if (ruleQuota > 0 && (price >= rulePrice || (ruleReward > 0 && reward >= ruleReward))) {
+				quota = ruleQuota;
+				break;
+			}
+		}
 	}
 	return {
 		reward: Number(Number(reward || 0).toFixed(2)),
@@ -14336,7 +14420,7 @@ async function h5RechargeCreate(data, event) {
 		const giftTypeRaw = safeText(data?.rechargeGiftType || data?.giftType, 20);
 		let rechargeGiftType = '';
 		let rechargeGiftLabel = '';
-		const giftRequired = Boolean(pkg.giftChoiceRequired) || Number(pkg.price) === RECHARGE_GIFT_PRICE;
+		const giftRequired = packageRequiresGiftChoice(pkg);
 		if (giftRequired) {
 			if (giftTypeRaw !== 'speaker' && giftTypeRaw !== 'scan_pos') {
 				return { code: 400, message: '请选择赠品：蓝牙音响或扫码POS机' };
@@ -18057,6 +18141,7 @@ async function runDataCorrectTaskChunk(task, chunkSize = 120) {
 			estimated_free_quota: true,
 			recharge_package_quota: true,
 			recharge_package_price: true,
+			recharge_package_id: true,
 			available_reward: true,
 			withdraw_quota_balance: true,
 			account_points: true,
@@ -18088,6 +18173,7 @@ async function runDataCorrectTaskChunk(task, chunkSize = 120) {
 	}
 	const frozenByUid = await batchComputeFutureDeferredFrozenForMerchants(rows, nowTs());
 	const withdrawnByUid = await batchComputeReceivedWithdrawAmountForMerchants(rows);
+	const packages = await loadRechargePackagesFromQuota();
 	let correctedFrozen = Number(task.corrected_frozen || 0);
 	let correctedWithdrawn = Number(task.corrected_withdrawn || 0);
 	let correctedMerchantBase = Number(task.corrected_merchant_base || 0);
@@ -18114,12 +18200,14 @@ async function runDataCorrectTaskChunk(task, chunkSize = 120) {
 		let normalizedOpenedAt = Number(row.recharge_update_time || 0);
 		if (totalRechargeYuan > 0) {
 			if (!normalizedMembershipName || normalizedMembershipName === '普通会员') {
-				const reward = Number(row.recharge_package_reward || 0);
-				const quota = Number(row.estimated_free_quota || row.recharge_package_quota || 0);
 				const price = Number(row.recharge_package_price || 0);
-				if (reward >= 7600 || quota >= 2000000 || isDiamondRechargePriceYuan(price)) normalizedMembershipName = '钻石会员';
-				else if (reward >= 5700 || quota >= 1500000 || price >= 800) normalizedMembershipName = '铂金会员';
-				else if (reward >= 3800 || quota >= 1000000 || price >= 600 || price === 0.1) normalizedMembershipName = '白金会员';
+				const pkgId = safeText(row.recharge_package_id || '', 40);
+				const pkg =
+					pickRechargePackage(pkgId, packages) ||
+					getRechargePackageByPrice(price, packages) ||
+					(pkgId === H5_RECHARGE_TEST_GIFT_PKG_ID ? findConfigGiftAnchorPackage(packages) : null);
+				normalizedMembershipName =
+					membershipNameFromConfiguredPackage(pkg, packages) || normalizedMembershipName || '普通会员';
 			}
 			if (!normalizedOpenedAt) normalizedOpenedAt = Number(row.recharge_cycle_start || row.update_time || nowTs());
 		} else {

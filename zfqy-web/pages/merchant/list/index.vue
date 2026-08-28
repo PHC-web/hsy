@@ -456,7 +456,7 @@
 
 <script>
 import { exportAgreementImageToPdf, sanitizeFileName } from './agreement-pdf-export.js';
-import { isRechargeGiftPrice } from '@/common/recharge-tiers';
+import { packageRequiresGiftChoice } from '@/common/recharge-tiers';
 
 export default {
 	data() {
@@ -1316,7 +1316,7 @@ export default {
 					rewardText: Number(x.realQuota || 0).toFixed(0),
 					priceText: Number(x.price || 0).toFixed(2),
 					desc: x.description || x.briefIntro || '',
-					giftChoiceRequired: isRechargeGiftPrice(x.price)
+					giftChoiceRequired: packageRequiresGiftChoice(x)
 				}));
 				if (this.offlinePackages.length) {
 					this.onOfflinePackagePick(this.offlinePackages[0]);

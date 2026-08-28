@@ -94,7 +94,7 @@
 import { h5RechargeOptions, h5RechargeCreate, h5RechargeConfirm, h5RefreshHomeCache } from '@/pages/h5/common/api';
 import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
-import { isDiamondRechargePrice } from '@/common/recharge-tiers';
+import { packageDescTierClass as resolvePackageDescTierClass, resolveTierByPackage } from '@/common/recharge-tiers';
 
 export default {
 	components: { H5AgreementSignSheet },
@@ -156,16 +156,7 @@ export default {
 			return String(item.benefitText || '').trim();
 		},
 		packageDescTierClass(item) {
-			const name = String(item?.membershipName || '').trim();
-			if (name.includes('钻石')) return 'pkg-desc--diamond';
-			if (name.includes('白金')) return 'pkg-desc--white-gold';
-			if (name.includes('铂金')) return 'pkg-desc--platinum';
-			if (name.includes('黄金')) return 'pkg-desc--gold';
-			const price = Number(item?.price || 0);
-			if (isDiamondRechargePrice(price)) return 'pkg-desc--diamond';
-			if (price >= 800) return 'pkg-desc--white-gold';
-			if (price >= 600 || price === 0.1) return 'pkg-desc--gold';
-			return 'pkg-desc--default';
+			return resolvePackageDescTierClass(item);
 		},
 		async initPage() {
 			this.rechargeReady = false;
@@ -282,15 +273,7 @@ export default {
 			});
 		},
 		resolveTierByPrice(priceRaw, pkg) {
-			const price = Number(priceRaw || 0);
-			let out;
-			if (isDiamondRechargePrice(price)) out = { tier: 'diamond', name: '钻石会员' };
-			else if (price >= 800) out = { tier: 'platinum', name: '铂金会员' };
-			else if (price >= 600 || price === 0.1) out = { tier: 'white_gold', name: '白金会员' };
-			else out = { tier: 'normal', name: '会员' };
-			const custom = pkg && String(pkg.membershipName || pkg.membership_name || '').trim();
-			if (custom) return { ...out, name: custom };
-			return out;
+			return resolveTierByPackage(pkg || { price: priceRaw });
 		}
 	}
 };

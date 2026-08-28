@@ -124,7 +124,7 @@
 					</view>
 				</view>
 				<view class="period-block">
-					<text class="period-title">600 元黄金会员 + 800 元白金会员</text>
+					<text class="period-title">黄金 / 白金 / 铂金会员（按额度包会员名称）</text>
 					<view class="form-grid">
 						<view class="field">
 							<text class="label">每日上限(积分)</text>
@@ -137,7 +137,7 @@
 					</view>
 				</view>
 				<view class="period-block">
-					<text class="period-title">998 元钻石会员</text>
+					<text class="period-title">钻石会员（按额度包会员名称）</text>
 					<view class="form-grid">
 						<view class="field">
 							<text class="label">每日上限(积分)</text>

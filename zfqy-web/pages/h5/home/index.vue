@@ -125,7 +125,7 @@
 import { h5HomeDashboardCached } from '@/pages/h5/common/api';
 import H5AgreementSignSheet from '@/pages/h5/components/H5AgreementSignSheet.vue';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
-import { isDiamondRechargePrice } from '@/common/recharge-tiers';
+import { packageMembershipName, packageRequiresGiftChoice } from '@/common/recharge-tiers';
 
 export default {
 	components: { H5AgreementSignSheet },
@@ -170,21 +170,13 @@ export default {
 			return Number(this.withdrawContext.silverMonthTradeYuan || 0).toFixed(2);
 		},
 		hasGiftPackage() {
-			return (this.prestorePackages || []).some((x) => x && x.giftChoiceRequired);
+			return (this.prestorePackages || []).some((x) => packageRequiresGiftChoice(x));
 		},
 		/** 含实物赠品的档位对应的会员名称，如（钻石会员专享）或（白金会员、钻石会员专享） */
 		giftExclusiveSuffix() {
-			const pkgs = (this.prestorePackages || []).filter((x) => x && x.giftChoiceRequired);
+			const pkgs = (this.prestorePackages || []).filter((x) => x && packageRequiresGiftChoice(x));
 			if (!pkgs.length) return '';
-			const tierLabel = (p) => {
-				const n = String(p.membershipName || '').trim();
-				if (n) return n;
-				const price = Number(p.price || 0);
-				if (isDiamondRechargePrice(price)) return '钻石会员';
-				if (price >= 800) return '铂金会员';
-				if (price >= 600) return '白金会员';
-				return '';
-			};
+			const tierLabel = (p) => packageMembershipName(p) || '';
 			const names = [...new Set(pkgs.map(tierLabel).filter(Boolean))];
 			if (!names.length) return '（专享）';
 			return `（${names.join('、')}专享）`;
