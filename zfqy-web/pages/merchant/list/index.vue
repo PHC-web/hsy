@@ -588,7 +588,16 @@ export default {
 		},
 		offlineGiftRequired() {
 			const pkg = (this.offlinePackages || []).find((x) => x.value === this.offlineForm.packageId);
-			return !!(pkg && pkg.giftChoiceRequired);
+			if (!pkg) return false;
+			return packageRequiresGiftChoice({
+				id: pkg.value,
+				packageId: pkg.value,
+				membershipName: pkg.membershipName,
+				pickRequired: pkg.pickRequired,
+				pickTotal: pkg.pickTotal,
+				relatedProductIds: pkg.relatedProductIds,
+				giftChoiceRequired: pkg.giftChoiceRequired
+			});
 		},
 		/** 按目标待返月分组，与积分优化页一致 */
 		sliceGroupsByMonth() {
@@ -1309,15 +1318,32 @@ export default {
 					return;
 				}
 				const rows = (ret.data?.list || []).filter((x) => Number(x.price || 0) > 0);
-				this.offlinePackages = rows.map((x) => ({
-					value: x.packageId || x.id,
-					title: x.title || '',
-					membershipName: x.membershipName || '',
-					rewardText: Number(x.realQuota || 0).toFixed(0),
-					priceText: Number(x.price || 0).toFixed(2),
-					desc: x.description || x.briefIntro || '',
-					giftChoiceRequired: packageRequiresGiftChoice(x)
-				}));
+				this.offlinePackages = rows.map((x) => {
+					const packageId = String(x.packageId || x.id || '').trim();
+					const membershipName = String(x.membershipName || '').trim();
+					const giftChoiceRequired = packageRequiresGiftChoice({
+						id: packageId,
+						package_id: packageId,
+						packageId,
+						membershipName,
+						membership_name: membershipName,
+						pickRequired: x.pickRequired,
+						pickTotal: x.pickTotal,
+						relatedProductIds: x.relatedProductIds
+					});
+					return {
+						value: packageId,
+						title: x.title || '',
+						membershipName,
+						rewardText: Number(x.realQuota || 0).toFixed(0),
+						priceText: Number(x.price || 0).toFixed(2),
+						desc: x.description || x.briefIntro || '',
+						pickRequired: Number(x.pickRequired || 0),
+						pickTotal: Number(x.pickTotal || 0),
+						relatedProductIds: Array.isArray(x.relatedProductIds) ? x.relatedProductIds : [],
+						giftChoiceRequired
+					};
+				});
 				if (this.offlinePackages.length) {
 					this.onOfflinePackagePick(this.offlinePackages[0]);
 				}

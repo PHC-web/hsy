@@ -26,19 +26,20 @@ export function packageMembershipName(pkg) {
 	return String((pkg && (pkg.membershipName || pkg.membership_name)) || '').trim();
 }
 
-/** 是否需选赠品：看套餐配置，不看价格 */
+/** 是否需选赠品：仅看额度包配置（关联商品 / 必选·可选数量），不按会员名称或价格 */
 export function packageRequiresGiftChoice(pkg) {
 	if (!pkg) return false;
 	if (pkg.giftChoiceRequired === true) return true;
-	if (pkg.giftChoiceRequired === false) return false;
 	const pickRequired = Number(pkg.pickRequired != null ? pkg.pickRequired : pkg.pick_required || 0);
 	const pickTotal = Number(pkg.pickTotal != null ? pkg.pickTotal : pkg.pick_total || 0);
 	const related = Array.isArray(pkg.relatedProductIds)
 		? pkg.relatedProductIds
 		: Array.isArray(pkg.related_product_ids)
 			? pkg.related_product_ids
-			: [];
-	return pickRequired > 0 || (pickTotal > 0 && related.length > 0);
+			: Array.isArray(pkg.relatedProducts)
+				? pkg.relatedProducts
+				: [];
+	return pickRequired > 0 || (pickTotal > 0 && related.length > 0) || related.length > 0;
 }
 
 export function resolveTierByPackage(pkg) {

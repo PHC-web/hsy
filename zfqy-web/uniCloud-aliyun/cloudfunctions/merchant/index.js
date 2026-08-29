@@ -208,11 +208,10 @@ function membershipMetaFromName(name) {
 	};
 }
 
-/** 是否需选实物赠品：以套餐配置（关联商品 / 必选数量）为准，不按价格 */
+/** 是否需选实物赠品：仅看额度包配置（关联商品 / 必选·可选数量），不按会员名或价格 */
 function packageRequiresGiftChoice(pkg) {
 	if (!pkg) return false;
 	if (pkg.giftChoiceRequired === true) return true;
-	if (pkg.giftChoiceRequired === false) return false;
 	const pickRequired = Number(pkg.pickRequired != null ? pkg.pickRequired : pkg.pick_required || 0);
 	const pickTotal = Number(pkg.pickTotal != null ? pkg.pickTotal : pkg.pick_total || 0);
 	const related = Array.isArray(pkg.relatedProductIds)
@@ -222,23 +221,19 @@ function packageRequiresGiftChoice(pkg) {
 			: Array.isArray(pkg.relatedProducts)
 				? pkg.relatedProducts
 				: [];
-	return pickRequired > 0 || (pickTotal > 0 && related.length > 0);
+	return pickRequired > 0 || (pickTotal > 0 && related.length > 0) || related.length > 0;
 }
 
 function packageMembershipName(pkg) {
 	return safeText((pkg && (pkg.membershipName || pkg.membership_name)) || '', 40);
 }
 
-/** 测试档 / 赠品锚点：取配置中需赠品的最高价套餐，否则取名称含「钻石」的最高价套餐 */
+/** 测试档 / 赠品锚点：取配置中「需选赠品」的最高价套餐 */
 function findConfigGiftAnchorPackage(packages = []) {
 	const list = Array.isArray(packages) ? packages : [];
 	const byPriceDesc = (a, b) => Number(b.price || 0) - Number(a.price || 0);
 	const giftPkgs = list.filter((p) => packageRequiresGiftChoice(p)).sort(byPriceDesc);
-	if (giftPkgs.length) return giftPkgs[0];
-	const diamondPkgs = list
-		.filter((p) => packageMembershipName(p).includes('钻石'))
-		.sort(byPriceDesc);
-	return diamondPkgs[0] || null;
+	return giftPkgs[0] || null;
 }
 
 function resolveMerchantConfiguredPackage(merchant, packages = []) {
@@ -9684,13 +9679,8 @@ function wxAckFail(msg) {
 async function maybeCreateRechargeGiftShipment(orderDoc, merchant, now) {
 	const custom = orderDoc.custom || {};
 	const giftType = safeText(custom.recharge_gift_type, 20);
+	// 订单已带赠品选择时必须落库，勿再按当前套餐配置二次拦截（配置/Redis 变更会导致漏单）
 	if (giftType !== 'speaker' && giftType !== 'scan_pos') return;
-	const pkgId = safeText(custom.package_id, 40);
-	const packages = await loadRechargePackagesFromQuota();
-	const pkg =
-		pickRechargePackage(pkgId, packages) ||
-		(pkgId === H5_RECHARGE_TEST_GIFT_PKG_ID ? findConfigGiftAnchorPackage(packages) : null);
-	if (pkg && !packageRequiresGiftChoice(pkg) && pkgId !== H5_RECHARGE_TEST_GIFT_PKG_ID) return;
 	const orderNo = safeText(orderDoc.out_trade_no || orderDoc.order_no, 40);
 	if (!orderNo) return;
 	const dup = await rechargeGiftShipmentCollection.where({ order_no: orderNo }).limit(1).get();
@@ -9698,21 +9688,216 @@ async function maybeCreateRechargeGiftShipment(orderDoc, merchant, now) {
 	const giftLabel =
 		safeText(custom.recharge_gift_label, 40) ||
 		(giftType === 'speaker' ? '蓝牙音响' : '扫码POS机');
+	const mid = merchant && merchant._id ? String(merchant._id) : String(custom.merchant_id || '');
+	let m = merchant;
+	if ((!m || !m.wx_nickname) && mid) {
+		try {
+			m = (await getMerchantByIdOrUserId(mid)) || merchant || {};
+		} catch (e) {
+			m = merchant || {};
+		}
+	}
+	m = m || {};
 	await rechargeGiftShipmentCollection.add({
-		merchant_id: String(merchant._id || ''),
-		merchant_user_id: String(merchant.user_id || merchant._id || ''),
+		merchant_id: mid,
+		merchant_user_id: String(m.user_id || m._id || custom.merchant_user_id || ''),
 		order_no: orderNo,
 		gift_type: giftType,
 		gift_label: giftLabel,
-		wx_nickname: safeText(merchant.wx_nickname, 80),
-		mobile: safeText(merchant.mobile, 30),
-		device_id: safeText(merchant.device_id, 80),
-		brand_name: safeText(merchant.brand_name, 80),
+		wx_nickname: safeText(m.wx_nickname, 80),
+		mobile: safeText(m.mobile, 30),
+		device_id: safeText(m.device_id, 80),
+		brand_name: safeText(m.brand_name, 80),
 		tracking_no: '',
 		receipt_status: 'pending',
 		create_time: now,
 		update_time: now
 	});
+}
+
+function isDiamondRechargeOrderCustom(custom = {}) {
+	const pkgId = safeText(custom.package_id, 40);
+	const pkgTitle = safeText(custom.package_title, 80);
+	const membership = safeText(custom.target_membership_name, 40);
+	const price = Number(custom.target_price || 0);
+	return (
+		membership.includes('钻石') ||
+		pkgId === 'pkg_1000' ||
+		pkgId === 'pkg_998' ||
+		/1000|998/.test(pkgTitle) ||
+		price >= 998
+	);
+}
+
+/** 北京时间某日 00:00:00 ~ 23:59:59.999；date=YYYY-MM-DD，缺省为今天 */
+function shanghaiDayRangeMs(dateRaw) {
+	let y;
+	let m;
+	let d;
+	const s = String(dateRaw || '').trim();
+	if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+		const parts = s.split('-').map(Number);
+		y = parts[0];
+		m = parts[1];
+		d = parts[2];
+	} else {
+		const t = shanghaiYMD(nowTs());
+		y = t.y;
+		m = t.m;
+		d = t.d;
+	}
+	const pad = (n) => String(n).padStart(2, '0');
+	const start = new Date(`${y}-${pad(m)}-${pad(d)}T00:00:00+08:00`).getTime();
+	const end = start + 86400000 - 1;
+	return { start, end, date: `${y}-${pad(m)}-${pad(d)}` };
+}
+
+/** 补扫 / 诊断：默认只扫指定日（北京时间）钻石会员充值单 */
+async function adminRechargeGiftShipmentBackfill(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const limit = Math.min(Math.max(Number(data?.limit || 200), 1), 500);
+		const dayRange = shanghaiDayRangeMs(data?.date || data?.day || '2026-08-29');
+		const now = nowTs();
+		const _ = db.command;
+
+		const res = await uniPayOrderCollection
+			.where({
+				type: 'h5_quota_recharge',
+				status: 1,
+				create_date: _.and([_.gte(dayRange.start), _.lte(dayRange.end)])
+			})
+			.orderBy('create_date', 'desc')
+			.limit(limit)
+			.get();
+
+		const diamondOrders = (res.data || []).filter((o) => isDiamondRechargeOrderCustom(o.custom || {}));
+		const withGift = [];
+		const noGift = [];
+		for (const o of diamondOrders) {
+			const giftType = safeText((o.custom || {}).recharge_gift_type, 20);
+			if (giftType === 'speaker' || giftType === 'scan_pos') withGift.push(o);
+			else noGift.push(o);
+		}
+
+		let scanned = 0;
+		let created = 0;
+		let skippedExist = 0;
+		const missingSamples = [];
+		const existSamples = [];
+		const allDiamondSamples = [];
+
+		for (const order of diamondOrders) {
+			const custom = order.custom || {};
+			const giftType = safeText(custom.recharge_gift_type, 20);
+			const orderNo = safeText(order.out_trade_no || order.order_no, 40);
+			const merchantKey = custom.merchant_id || order.user_id || '';
+			const merchant = merchantKey ? await getMerchantByIdOrUserId(merchantKey) : null;
+			const dup = orderNo
+				? await rechargeGiftShipmentCollection.where({ order_no: orderNo }).limit(1).get()
+				: { data: [] };
+			const hasShipment = !!(dup.data && dup.data.length);
+			const row = {
+				orderNo,
+				packageId: safeText(custom.package_id, 40),
+				packageTitle: safeText(custom.package_title, 80),
+				membership: safeText(custom.target_membership_name, 40),
+				price: Number(custom.target_price || 0),
+				giftType: giftType || '',
+				giftLabel: safeText(custom.recharge_gift_label, 40),
+				paidAt: formatTime(order.create_date || order.create_time),
+				hasGiftTypeOnOrder: giftType === 'speaker' || giftType === 'scan_pos',
+				hasShipment,
+				merchantId: merchant ? merchant._id : merchantKey,
+				name: merchant ? merchant.wx_nickname || merchant.mobile || '' : ''
+			};
+			if (allDiamondSamples.length < 50) allDiamondSamples.push(row);
+
+			if (!row.hasGiftTypeOnOrder) continue;
+			scanned += 1;
+			if (hasShipment) {
+				skippedExist += 1;
+				if (existSamples.length < 20) {
+					existSamples.push({
+						orderNo,
+						giftType,
+						shipmentId: dup.data[0]._id,
+						createTime: formatTime(dup.data[0].create_time),
+						name: row.name
+					});
+				}
+				continue;
+			}
+			if (missingSamples.length < 30) missingSamples.push(row);
+			if (apply && !dryRun) {
+				await maybeCreateRechargeGiftShipment(
+					order,
+					merchant || { _id: custom.merchant_id, user_id: order.user_id },
+					now
+				);
+				created += 1;
+			} else {
+				created += 1;
+			}
+		}
+
+		const shipCnt = await rechargeGiftShipmentCollection
+			.where({ create_time: _.and([_.gte(dayRange.start), _.lte(dayRange.end)]) })
+			.count();
+
+		const noGiftSamples = noGift.slice(0, 30).map((order) => {
+			const custom = order.custom || {};
+			return {
+				orderNo: safeText(order.out_trade_no || order.order_no, 40),
+				packageId: safeText(custom.package_id, 40),
+				packageTitle: safeText(custom.package_title, 80),
+				membership: safeText(custom.target_membership_name, 40),
+				price: Number(custom.target_price || 0),
+				paidAt: formatTime(order.create_date || order.create_time),
+				hint: '订单未写入 recharge_gift_type，无法自动建发货单'
+			};
+		});
+
+		return {
+			code: 0,
+			message:
+				apply && !dryRun
+					? created > 0
+						? `补扫完成（${dayRange.date} 钻石档），已补写 ${created} 条`
+						: `补扫完成（${dayRange.date} 钻石档）：无需新建`
+					: `dry-run 完成（${dayRange.date} 钻石档，未写库）`,
+			data: {
+				dryRun: !(apply && !dryRun),
+				apply: !!(apply && !dryRun),
+				date: dayRange.date,
+				rangeStart: dayRange.start,
+				rangeEnd: dayRange.end,
+				paidOrdersOnDay: (res.data || []).length,
+				diamondOrdersOnDay: diamondOrders.length,
+				diamondWithGiftType: withGift.length,
+				diamondWithoutGiftType: noGift.length,
+				shipmentsOnDay: Number(shipCnt.total || 0),
+				scannedGiftOrders: scanned,
+				wouldCreateOrCreated: created,
+				skippedExist,
+				allDiamondSamples,
+				missingSamples,
+				existSamples,
+				diamondSuspectNoGiftSamples: noGiftSamples,
+				explain:
+					diamondOrders.length === 0
+						? `${dayRange.date} 无已支付钻石会员充值单`
+						: noGift.length > 0 && created === 0
+							? `${dayRange.date} 钻石档共 ${diamondOrders.length} 笔；其中 ${noGift.length} 笔订单未写赠品字段（见 diamondSuspectNoGiftSamples），有赠品字段的已对齐发货表。`
+							: '',
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminRechargeGiftShipmentBackfill failed', e);
+		return { code: 500, message: safeText(e?.message || '补扫失败', 180) };
+	}
 }
 
 async function rechargeGiftShipmentList(data) {
@@ -9786,6 +9971,152 @@ async function rechargeGiftShipmentUpdate(data, event) {
 	} catch (e) {
 		console.error('rechargeGiftShipmentUpdate failed', e);
 		return { code: 500, message: '保存失败' };
+	}
+}
+
+/**
+ * 人工补录赠品发货：指定商户 + 赠品（订单未写 recharge_gift_type 时用）
+ * merchantUserId / giftType(speaker|scan_pos) / giftLabel / orderNo(可选) / apply
+ */
+async function adminRechargeGiftShipmentManualCreate(data = {}, event = {}) {
+	try {
+		const dryRun = data.apply !== true && data.dryRun !== false;
+		const apply = data.apply === true;
+		const merchantUserId = safeText(data?.merchantUserId || data?.userId || data?.merchantId || '', 80);
+		let giftType = safeText(data?.giftType || '', 20);
+		const giftLabelRaw = safeText(data?.giftLabel || '', 40);
+		const orderNoHint = safeText(data?.orderNo || '', 40);
+		if (!merchantUserId) return { code: 400, message: '请传 merchantUserId' };
+
+		if (!giftType) {
+			if (/pos|扫码/i.test(giftLabelRaw)) giftType = 'scan_pos';
+			else if (/音响|speaker/i.test(giftLabelRaw)) giftType = 'speaker';
+		}
+		if (giftType !== 'speaker' && giftType !== 'scan_pos') {
+			return { code: 400, message: 'giftType 需为 speaker 或 scan_pos' };
+		}
+		const giftLabel = giftLabelRaw || (giftType === 'speaker' ? '蓝牙音响' : '扫码POS机');
+
+		const merchant = await getMerchantByIdOrUserId(merchantUserId);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const uid = String(merchant.user_id || merchant._id || '');
+		const mid = String(merchant._id || '');
+		const _ = db.command;
+
+		let order = null;
+		if (orderNoHint) {
+			const byNo = await uniPayOrderCollection
+				.where(_.or([{ out_trade_no: orderNoHint }, { order_no: orderNoHint }]))
+				.limit(1)
+				.get();
+			order = byNo.data && byNo.data[0] ? byNo.data[0] : null;
+		}
+		if (!order) {
+			const ordRes = await uniPayOrderCollection
+				.where({ type: 'h5_quota_recharge', status: 1, user_id: uid })
+				.orderBy('create_date', 'desc')
+				.limit(20)
+				.get();
+			const rows = ordRes.data || [];
+			order =
+				rows.find((o) => isDiamondRechargeOrderCustom(o.custom || {})) ||
+				rows.find((o) => String((o.custom || {}).merchant_id || '') === mid) ||
+				rows[0] ||
+				null;
+		}
+		if (!order) {
+			const ordRes2 = await uniPayOrderCollection
+				.where({ type: 'h5_quota_recharge', status: 1, 'custom.merchant_id': mid })
+				.orderBy('create_date', 'desc')
+				.limit(10)
+				.get();
+			const rows2 = ordRes2.data || [];
+			order = rows2.find((o) => isDiamondRechargeOrderCustom(o.custom || {})) || rows2[0] || null;
+		}
+		if (!order) {
+			return {
+				code: 404,
+				message: '未找到该商户已支付充值单，请传 orderNo',
+				data: { merchantUserId: uid, merchantId: mid }
+			};
+		}
+
+		const orderNo = safeText(order.out_trade_no || order.order_no, 40);
+		const dup = await rechargeGiftShipmentCollection.where({ order_no: orderNo }).limit(1).get();
+		if (dup.data && dup.data.length) {
+			return {
+				code: 0,
+				message: '发货单已存在，未重复创建',
+				data: {
+					existed: true,
+					shipmentId: dup.data[0]._id,
+					orderNo,
+					giftType: dup.data[0].gift_type,
+					giftLabel: dup.data[0].gift_label
+				}
+			};
+		}
+
+		const preview = {
+			merchantId: mid,
+			merchantUserId: uid,
+			name: merchant.wx_nickname || merchant.mobile || uid,
+			mobile: merchant.mobile || '',
+			deviceId: merchant.device_id || '',
+			orderNo,
+			packageId: safeText((order.custom || {}).package_id, 40),
+			packageTitle: safeText((order.custom || {}).package_title, 80),
+			giftType,
+			giftLabel
+		};
+
+		if (!apply || dryRun) {
+			return { code: 0, message: 'dry-run 完成（未写库）', data: { dryRun: true, apply: false, preview } };
+		}
+
+		const now = nowTs();
+		await maybeCreateRechargeGiftShipment(
+			{
+				...order,
+				custom: {
+					...(order.custom || {}),
+					recharge_gift_type: giftType,
+					recharge_gift_label: giftLabel,
+					merchant_id: mid
+				}
+			},
+			merchant,
+			now
+		);
+		if (order._id) {
+			try {
+				await uniPayOrderCollection.doc(order._id).update({
+					custom: {
+						...(order.custom || {}),
+						recharge_gift_type: giftType,
+						recharge_gift_label: giftLabel
+					},
+					update_time: now
+				});
+			} catch (ePatch) {
+				console.error('adminRechargeGiftShipmentManualCreate patch order', ePatch);
+			}
+		}
+		const created = await rechargeGiftShipmentCollection.where({ order_no: orderNo }).limit(1).get();
+		return {
+			code: 0,
+			message: '已补录发货单',
+			data: {
+				dryRun: false,
+				apply: true,
+				preview,
+				shipmentId: created.data && created.data[0] ? created.data[0]._id : '',
+				operator: typeof getOperator === 'function' ? getOperator(event) : ''
+			}
+		};
+	} catch (e) {
+		console.error('adminRechargeGiftShipmentManualCreate failed', e);
+		return { code: 500, message: safeText(e?.message || '补录失败', 180) };
 	}
 }
 
@@ -21896,6 +22227,10 @@ exports.main = async (event, context) => {
 			return await rechargeGiftShipmentList(actualData);
 		case 'rechargeGiftShipmentUpdate':
 			return await rechargeGiftShipmentUpdate(actualData, event);
+		case 'adminRechargeGiftShipmentBackfill':
+			return await adminRechargeGiftShipmentBackfill(actualData, event);
+		case 'adminRechargeGiftShipmentManualCreate':
+			return await adminRechargeGiftShipmentManualCreate(actualData, event);
 		case 'h5AuthSync':
 			return await h5AuthSync(actualData);
 		case 'h5UiStyleGet':
