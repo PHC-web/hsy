@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * 运维：查询 H5 为商户生成的积分红包记录（hsy-income-packets），只读。
+ * 运维：H5 商户积分红包、积分变动日志、升级清除日志（只读）。
  */
 
 const db = uniCloud.database();
@@ -9,8 +9,17 @@ const _ = db.command;
 const incomePacketCollection = db.collection('hsy-income-packets');
 const merchantCollection = db.collection('hsy-merchant-users');
 const operationLogCollection = db.collection('hsy-operation-logs');
+const optimizeLogCollection = db.collection('hsy-points-optimize-logs');
+const machineCollection = db.collection('hsy-machine');
+const withdrawCollection = db.collection('hsy-withdraw-records');
+const sliceStateCollection = db.collection('hsy-points-slice-state');
 
 const MEMBER_UPGRADE_POINTS_CLEAR_ACTION = 'member_upgrade_points_clear';
+/** 与补贴引擎一致：流水 ≤ 该阈值只走 1 期，领取后不增加冻结 */
+const FLOW_THRESHOLD_YUAN = 300;
+const OPTIMIZE_LOG_ACTIONS = ['login_week_up', 'login_week_sim', 'manual_set', 'manual_clear'];
+const DB_PAGE_SIZE = 1000;
+const DB_MAX_ROWS = 20000;
 
 function safeText(v, max = 200) {
 	return String(v == null ? '' : v)
@@ -38,6 +47,855 @@ function buildTimeRangeWhere(field, timeStart, timeEnd) {
 		return { [field]: _.lte(Number(timeEnd)) };
 	}
 	return null;
+}
+
+const CASHBACK_RATE = 0.0038;
+
+function floorYuan2(n) {
+	const x = Number(n || 0);
+	if (!Number.isFinite(x) || x <= 0) return 0;
+	return Math.floor(x * 100 + 1e-9) / 100;
+}
+
+/**
+ * 流水首期领取后进入后四期的冻结额。
+ * 有锚定流水时用「整笔返现 − 首期」；否则按五期均分（首期×4）。其它类型不产生后四期。
+ */
+function futureDeferredFrozenYuan(row) {
+	if (safeText(row && row.subsidy_kind, 48) !== 'trade_first') return null;
+	const first = floorYuan2(row && row.amount);
+	const flow = Number((row && row.anchor_flow_yuan) || 0);
+	if (flow > 0) {
+		const total = floorYuan2(flow * CASHBACK_RATE);
+		return Number(Math.max(0, total - first).toFixed(2));
+	}
+	return Number((first * 4).toFixed(2));
+}
+
+function roundYuan2(n) {
+	const x = Number(n || 0);
+	if (!Number.isFinite(x)) return 0;
+	return Number(x.toFixed(2));
+}
+
+function formatSignedYuan(n) {
+	const v = roundYuan2(n);
+	if (v > 0) return `+${v.toFixed(2)}`;
+	if (v < 0) return v.toFixed(2);
+	return '+0.00';
+}
+
+function deltaSign(n) {
+	const v = roundYuan2(n);
+	if (v > 0) return 'pos';
+	if (v < 0) return 'neg';
+	return 'zero';
+}
+
+function isValidCnMobile(m) {
+	return /^1\d{10}$/.test(String(m || '').trim());
+}
+
+async function fetchAllQueryPages(collection, where, opts = {}) {
+	const all = [];
+	let skip = 0;
+	for (;;) {
+		let q = collection.where(where);
+		if (opts.field && Object.keys(opts.field).length) q = q.field(opts.field);
+		if (opts.orderBy && opts.orderBy.field) {
+			q = q.orderBy(opts.orderBy.field, opts.orderBy.direction || 'asc');
+		}
+		const r = await q.skip(skip).limit(DB_PAGE_SIZE).get();
+		const rows = r.data || [];
+		all.push(...rows);
+		if (rows.length < DB_PAGE_SIZE) break;
+		skip += DB_PAGE_SIZE;
+		if (skip >= DB_MAX_ROWS) break;
+	}
+	return all;
+}
+
+/**
+ * 自然月 YYYY-MM（北京时间）
+ */
+function shanghaiYearMonthFromTs(ts) {
+	const t = Number(ts);
+	if (!Number.isFinite(t)) return '';
+	try {
+		const parts = new Intl.DateTimeFormat('en-CA', {
+			timeZone: 'Asia/Shanghai',
+			year: 'numeric',
+			month: '2-digit'
+		}).formatToParts(new Date(t));
+		let y = '';
+		let mo = '';
+		for (const p of parts) {
+			if (p.type === 'year') y = p.value;
+			if (p.type === 'month') mo = p.value;
+		}
+		if (!y || mo === '') throw new Error('no ym');
+		return `${y}-${String(mo).padStart(2, '0')}`;
+	} catch (e) {
+		const d = new Date(t + 8 * 60 * 60 * 1000);
+		return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+	}
+}
+
+function addMonthsYm(ym, delta) {
+	const [ys, ms] = String(ym || '').split('-');
+	const y = Number(ys);
+	const m = Number(ms);
+	if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return '';
+	const d = new Date(Date.UTC(y, m - 1 + Number(delta || 0), 1));
+	return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+function normalizeYearMonth(v) {
+	const s = String(v == null ? '' : v).trim();
+	if (!s) return '';
+	const m = s.match(/(\d{4})\D{0,2}(\d{1,2})/);
+	if (!m) return s;
+	const month = Number(m[2]);
+	if (!Number.isFinite(month) || month < 1 || month > 12) return s;
+	return `${m[1]}-${String(month).padStart(2, '0')}`;
+}
+
+/** 北京时间该月 1 日 00:00:00 */
+function shanghaiMonthStartTs(ym) {
+	const [y, m] = String(ym || '').split('-').map(Number);
+	if (!Number.isFinite(y) || !Number.isFinite(m)) return 0;
+	return Date.UTC(y, m - 1, 1) - 8 * 60 * 60 * 1000;
+}
+
+function sliceAmountNow(row) {
+	if (!row) return 0;
+	if (row.effective_amount != null && row.effective_amount !== '') return roundYuan2(row.effective_amount);
+	if (row.manual_amount != null && row.manual_amount !== '') return roundYuan2(row.manual_amount);
+	if (row.system_amount != null && row.system_amount !== '') return roundYuan2(row.system_amount);
+	return roundYuan2(row.original_amount);
+}
+
+/**
+ * 与商户列表同一口径：未领分片 effective，target_ym > 事件当时月份。
+ * 晚于 ts 的优化按 slice_diffs 回滚，避免历史行已经是砍后余额。
+ */
+function frozenFromSlicesAt(slices, optLogs, ts) {
+	const curYm = shanghaiYearMonthFromTs(ts);
+	if (!curYm) return 0;
+	const amt = new Map();
+	for (let i = 0; i < (slices || []).length; i += 1) {
+		const s = slices[i];
+		if (!s || s.is_claimed === true) continue;
+		const ym = normalizeYearMonth(s.target_ym);
+		if (!ym) continue;
+		const id = String(
+			s._id || `${ym}|${s.source_ym || ''}|${s.slice_index != null ? s.slice_index : i}`
+		);
+		amt.set(id, { ym, amount: sliceAmountNow(s) });
+	}
+	const later = (optLogs || [])
+		.filter((o) => Number(o.create_time || 0) > Number(ts || 0))
+		.sort((a, b) => Number(b.create_time || 0) - Number(a.create_time || 0));
+	for (const o of later) {
+		for (const d of o.slice_diffs || []) {
+			const id = String((d && (d._id || d.sliceId)) || '');
+			if (!id || !amt.has(id)) continue;
+			const before = Number(d.before);
+			if (!Number.isFinite(before)) continue;
+			amt.get(id).amount = roundYuan2(before);
+		}
+	}
+	let s = 0;
+	for (const v of amt.values()) {
+		if (v.ym > curYm && v.amount > 0) s += v.amount;
+	}
+	return roundYuan2(s);
+}
+
+function allocateFrozenSnapshot(group, snapshot, prevFrozen) {
+	const jump = roundYuan2(snapshot - prevFrozen);
+	const claimers = (group || []).filter((e) => e.type === 'claim_first' && Number(e.frozenAdd || 0) > 0);
+	const weights = {};
+	if (claimers.length && Math.abs(jump) >= 0.01) {
+		const wsum = claimers.reduce((s, e) => s + Number(e.frozenAdd || 0), 0) || claimers.length;
+		let allocated = 0;
+		claimers.forEach((e, idx) => {
+			const d =
+				idx === claimers.length - 1
+					? roundYuan2(jump - allocated)
+					: roundYuan2((jump * Number(e.frozenAdd || 0)) / wsum);
+			weights[e.id] = d;
+			allocated = roundYuan2(allocated + d);
+		});
+	} else if (group && group.length) {
+		weights[group[group.length - 1].id] = jump;
+	}
+	let frozen = prevFrozen;
+	for (const ev of group || []) {
+		const d = weights[ev.id] != null ? weights[ev.id] : 0;
+		frozen = roundYuan2(frozen + d);
+		ev.frozenDelta = d;
+		ev.frozenAfter = frozen;
+	}
+	return frozen;
+}
+
+function splitDeferredMonths(claimYm, deferredYuan) {
+	const total = roundYuan2(deferredYuan);
+	if (!(total > 0) || !claimYm) return [];
+	const lots = [];
+	let left = total;
+	for (let i = 1; i <= 4; i += 1) {
+		const ym = addMonthsYm(claimYm, i);
+		const amt = i === 4 ? roundYuan2(left) : roundYuan2(total / 4);
+		left = roundYuan2(left - amt);
+		if (ym && amt > 0) lots.push({ ym, amount: amt });
+	}
+	return lots;
+}
+
+function frozenFromLots(lots, curYm) {
+	let s = 0;
+	for (const lot of lots || []) {
+		if (lot && lot.ym > curYm && Number(lot.amount) > 0) s += Number(lot.amount);
+	}
+	return roundYuan2(s);
+}
+
+function applyCutToLots(lots, cutYuan, curYm, diffs) {
+	if (Array.isArray(diffs) && diffs.length) {
+		const cutByYm = new Map();
+		for (const d of diffs) {
+			const ym = normalizeYearMonth(d && d.target_ym);
+			const c = roundYuan2((Number(d && d.before) || 0) - (Number(d && d.after) || 0));
+			if (!ym || !(c > 0)) continue;
+			cutByYm.set(ym, roundYuan2((cutByYm.get(ym) || 0) + c));
+		}
+		for (const lot of lots || []) {
+			const need = cutByYm.get(lot.ym) || 0;
+			if (!(need > 0) || !(lot.amount > 0)) continue;
+			const take = Math.min(lot.amount, need);
+			lot.amount = roundYuan2(lot.amount - take);
+			cutByYm.set(lot.ym, roundYuan2(need - take));
+		}
+		return;
+	}
+	let remain = roundYuan2(cutYuan);
+	if (!(remain > 0)) return;
+	const order = (lots || [])
+		.filter((lot) => lot && lot.amount > 0)
+		.sort((a, b) => {
+			const aFut = a.ym > curYm ? 0 : 1;
+			const bFut = b.ym > curYm ? 0 : 1;
+			if (aFut !== bFut) return aFut - bFut;
+			return String(a.ym).localeCompare(String(b.ym));
+		});
+	for (const lot of order) {
+		if (!(remain > 0)) break;
+		const take = Math.min(lot.amount, remain);
+		lot.amount = roundYuan2(lot.amount - take);
+		remain = roundYuan2(remain - take);
+	}
+}
+
+function listMonthRollEvents(fromTs, toTs) {
+	const events = [];
+	const startTs = Number(fromTs || 0);
+	const endTs = Number(toTs || 0);
+	if (!(startTs > 0) || !(endTs > startTs)) return events;
+	let ym = addMonthsYm(shanghaiYearMonthFromTs(startTs), 1);
+	const endYm = shanghaiYearMonthFromTs(endTs);
+	let guard = 0;
+	while (ym && ym <= endYm && guard < 120) {
+		const ts = shanghaiMonthStartTs(ym);
+		if (ts > startTs && ts <= endTs) {
+			events.push({
+				id: `roll_${ym}`,
+				ts,
+				type: 'month_roll',
+				label: '月份结转',
+				title: `${ym} 进入当月，该月待返不再计入冻结`,
+				flow: 0,
+				pendingDelta: 0,
+				frozenAdd: 0,
+				cutTotal: 0,
+				sortKey: `m_${ym}`
+			});
+		}
+		ym = addMonthsYm(ym, 1);
+		guard += 1;
+	}
+	return events;
+}
+
+async function liveFutureFrozenYuan(uids) {
+	const list = [...new Set((Array.isArray(uids) ? uids : [uids]).map((x) => String(x || '').trim()).filter(Boolean))];
+	if (!list.length) return 0;
+	const curYm = shanghaiYearMonthFromTs(Date.now());
+	try {
+		const $ = db.command.aggregate;
+		const matchUid = list.length === 1 ? list[0] : _.in(list);
+		const agg = await sliceStateCollection
+			.aggregate()
+			.match(
+				_.and([
+					{ merchant_user_id: matchUid },
+					{ is_deleted: _.neq(true) },
+					{ is_claimed: _.neq(true) },
+					{ target_ym: _.gt(curYm) }
+				])
+			)
+			.group({ _id: null, total: $.sum('$effective_amount') })
+			.end();
+		const t = agg && agg.data && agg.data[0] ? Number(agg.data[0].total || 0) : 0;
+		return roundYuan2(t);
+	} catch (e) {
+		console.error('liveFutureFrozenYuan', e);
+		return 0;
+	}
+}
+
+/** 与商户列表相同：按目标月汇总未领分片 effective_amount */
+async function loadSliceRowsForPointsLog(uids) {
+	const list = [...new Set((uids || []).map((x) => String(x || '').trim()).filter(Boolean))];
+	if (!list.length) return [];
+	const matchUid = list.length === 1 ? list[0] : _.in(list);
+	const $ = db.command.aggregate;
+	const runGroup = async (amountField) => {
+		const agg = await sliceStateCollection
+			.aggregate()
+			.match(
+				_.and([{ merchant_user_id: matchUid }, { is_deleted: _.neq(true) }, { is_claimed: _.neq(true) }])
+			)
+			.group({ _id: '$target_ym', total: $.sum(`$${amountField}`) })
+			.end();
+		return ((agg && agg.data) || [])
+			.map((r, i) => ({
+				_id: `ym_${r._id}_${i}`,
+				target_ym: normalizeYearMonth(r._id),
+				effective_amount: Number(r.total || 0),
+				is_claimed: false
+			}))
+			.filter((x) => x.target_ym);
+	};
+	try {
+		let rows = await runGroup('effective_amount');
+		const tot = rows.reduce((s, r) => s + Number(r.effective_amount || 0), 0);
+		if (tot < 0.01) {
+			const alt = await runGroup('system_amount');
+			const tot2 = alt.reduce((s, r) => s + Number(r.effective_amount || 0), 0);
+			if (tot2 > tot) rows = alt;
+		}
+		return rows;
+	} catch (e) {
+		console.error('loadSliceRowsForPointsLog agg', e);
+		return [];
+	}
+}
+
+function claimFrozenDeltaYuan(row) {
+	if (safeText(row && row.subsidy_kind, 48) !== 'trade_first') return 0;
+	const flow = Number((row && row.anchor_flow_yuan) || 0);
+	if (flow > 0 && flow <= FLOW_THRESHOLD_YUAN) return 0;
+	const frozen = futureDeferredFrozenYuan(row);
+	return frozen == null ? 0 : roundYuan2(frozen);
+}
+
+function claimEventType(kind) {
+	const k = safeText(kind, 48);
+	if (k === 'trade_first') return { type: 'claim_first', label: '领取首期' };
+	if (k === 'release_pool_history') return { type: 'claim_pool', label: '领取分期待返' };
+	if (k === 'coupon_reward') return { type: 'claim_coupon', label: '领取优惠券' };
+	return { type: 'claim_other', label: '领取积分' };
+}
+
+function optimizeEventMeta(row) {
+	const action = safeText(row && row.action, 48);
+	if (action === 'login_week_up') return { type: 'optimize_login', label: '登录周优化' };
+	if (action === 'login_week_sim') return { type: 'optimize_sim', label: '模拟优化' };
+	if (action === 'manual_set') return { type: 'optimize_manual', label: '人工改片' };
+	if (action === 'manual_clear') return { type: 'optimize_manual', label: '取消人工改片' };
+	return { type: 'optimize', label: '优化积分' };
+}
+
+async function resolveMerchantForPointsLog(keyword) {
+	const val = safeText(keyword, 120);
+	if (!val) {
+		return { error: { code: 400, message: '请先搜索商户（user_id / 手机号 / 机具号）' } };
+	}
+
+	const ors = [{ _id: val }, { user_id: val }];
+	if (isValidCnMobile(val)) ors.push({ mobile: val });
+	try {
+		const res = await merchantCollection
+			.where(_.or(ors))
+			.field({
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				device_id: true,
+				account_points: true,
+				frozen_amount: true
+			})
+			.limit(2)
+			.get();
+		if (res.data && res.data.length === 1) return { merchant: res.data[0] };
+		if (res.data && res.data.length > 1) {
+			return { error: { code: 400, message: '匹配到多个商户，请使用完整 user_id' } };
+		}
+	} catch (e) {
+		console.error('resolveMerchantForPointsLog exact', e);
+	}
+
+	try {
+		const mRes = await machineCollection
+			.where(
+				_.and([
+					{ device_id: val },
+					{ is_deleted: _.neq(true) },
+					{ is_bound: 1 },
+					{ bind_user_id: _.neq('') }
+				])
+			)
+			.field({ bind_user_id: true })
+			.limit(1)
+			.get();
+		const bindUid = mRes.data && mRes.data[0] && String(mRes.data[0].bind_user_id || '').trim();
+		if (bindUid) {
+			const res2 = await merchantCollection
+				.where(_.or([{ user_id: bindUid }, { _id: bindUid }]))
+				.field({
+					user_id: true,
+					wx_nickname: true,
+					mobile: true,
+					device_id: true,
+					account_points: true,
+					frozen_amount: true
+				})
+				.limit(1)
+				.get();
+			if (res2.data && res2.data[0]) return { merchant: res2.data[0] };
+		}
+	} catch (e) {
+		console.error('resolveMerchantForPointsLog device', e);
+	}
+
+	try {
+		const r3 = await merchantCollection
+			.where({ device_id: val })
+			.field({
+				user_id: true,
+				wx_nickname: true,
+				mobile: true,
+				device_id: true,
+				account_points: true,
+				frozen_amount: true
+			})
+			.limit(1)
+			.get();
+		if (r3.data && r3.data[0]) return { merchant: r3.data[0] };
+	} catch (e) {}
+
+	if (val.length >= 2) {
+		try {
+			const r = new RegExp(escapeReg(val), 'i');
+			const fuzzy = await merchantCollection
+				.where(_.or([{ mobile: r }, { wx_nickname: r }]))
+				.field({
+					user_id: true,
+					wx_nickname: true,
+					mobile: true,
+					device_id: true,
+					account_points: true,
+					frozen_amount: true
+				})
+				.limit(8)
+				.get();
+			const rows = fuzzy.data || [];
+			if (rows.length === 1) return { merchant: rows[0] };
+			if (rows.length > 1) {
+				const names = rows
+					.slice(0, 5)
+					.map((x) => x.wx_nickname || x.user_id || x._id)
+					.join('、');
+				return {
+					error: {
+						code: 400,
+						message: `匹配到多个商户（${names}），请改用 user_id 或完整手机号`
+					}
+				};
+			}
+		} catch (e) {
+			console.error('resolveMerchantForPointsLog fuzzy', e);
+		}
+	}
+
+	return { error: { code: 404, message: '未找到商户，请用 user_id、手机号或机具号搜索' } };
+}
+
+function merchantQueryIds(merchant) {
+	return [...new Set([merchant && merchant.user_id, merchant && merchant._id].map((x) => String(x || '').trim()).filter(Boolean))];
+}
+
+function mapBalanceLogRow(ev, merchant) {
+	return {
+		_id: ev.id,
+		event_time: ev.ts,
+		event_type: ev.type,
+		event_type_label: ev.label,
+		title: ev.title,
+		anchor_flow_yuan: ev.flow,
+		anchorFlowText: ev.flow != null && ev.flow > 0 ? Number(ev.flow).toFixed(2) : '-',
+		pendingDelta: ev.pendingDelta,
+		pendingAfter: ev.pendingAfter,
+		pendingDeltaText: formatSignedYuan(ev.pendingDelta),
+		pendingAfterText: roundYuan2(ev.pendingAfter).toFixed(2),
+		pendingDeltaSign: deltaSign(ev.pendingDelta),
+		frozenDelta: ev.frozenDelta,
+		frozenAfter: ev.frozenAfter,
+		frozenDeltaText: formatSignedYuan(ev.frozenDelta),
+		frozenAfterText: roundYuan2(ev.frozenAfter).toFixed(2),
+		frozenDeltaSign: deltaSign(ev.frozenDelta),
+		merchant_user_id: String((merchant && merchant.user_id) || (merchant && merchant._id) || ''),
+		merchant_name: String((merchant && merchant.wx_nickname) || '').trim() || '-',
+		merchant_mobile: String((merchant && merchant.mobile) || '').trim() || '-'
+	};
+}
+
+/**
+ * 指定商户的积分变动日志：领取、提现、优化、过月结转、升级清零。
+ * 待提现 / 冻结与商户列表同口径：待提现=领取−提现；冻结=事件当时「未来月」未领待返。
+ */
+async function opsPointsBalanceLog(data = {}) {
+	const page = Math.max(1, Number(data.page) || 1);
+	const pageSize = Math.min(1000, Math.max(1, Number(data.pageSize) || 20));
+	const keyword = safeText(data.keyword, 120);
+	const timeStart = data.timeStart != null && data.timeStart !== '' ? Number(data.timeStart) : NaN;
+	const timeEnd = data.timeEnd != null && data.timeEnd !== '' ? Number(data.timeEnd) : NaN;
+
+	const resolved = await resolveMerchantForPointsLog(keyword);
+	if (resolved.error) return resolved.error;
+	const merchant = resolved.merchant;
+	const ids = merchantQueryIds(merchant);
+	if (!ids.length) return { code: 404, message: '未找到商户' };
+
+	const idWhere = ids.length === 1 ? ids[0] : _.in(ids);
+	const primaryUid = String(merchant.user_id || merchant._id || '');
+
+	let packets = [];
+	try {
+		packets = await fetchAllQueryPages(
+			incomePacketCollection,
+			_.and([
+				{ merchant_user_id: idWhere },
+				{ status: 'claimed' },
+				_.or([{ is_deleted: false }, { is_deleted: _.exists(false) }])
+			]),
+			{
+				field: {
+					merchant_user_id: true,
+					title: true,
+					amount: true,
+					status: true,
+					claimed_time: true,
+					create_time: true,
+					update_time: true,
+					subsidy_kind: true,
+					month_no: true,
+					anchor_flow_yuan: true,
+					installment_index: true
+				}
+			}
+		);
+	} catch (e) {
+		console.error('opsPointsBalanceLog packets', e);
+		return { code: 500, message: e.message || '查询领取记录失败' };
+	}
+
+	let optLogs = [];
+	try {
+		optLogs = await fetchAllQueryPages(
+			optimizeLogCollection,
+			_.and([
+				{ merchant_user_id: idWhere },
+				{ action: _.in(OPTIMIZE_LOG_ACTIONS) },
+				_.or([{ dry_run: false }, { dry_run: _.exists(false) }])
+			]),
+			{
+				field: {
+					action: true,
+					create_time: true,
+					cut_total: true,
+					before_total: true,
+					after_total: true,
+					remark: true,
+					before_week: true,
+					after_week: true,
+					dry_run: true,
+					merchant_user_id: true,
+					slice_diffs: true
+				}
+			}
+		);
+	} catch (e) {
+		console.error('opsPointsBalanceLog optimize', e);
+	}
+
+	let clearLogs = [];
+	try {
+		clearLogs = await fetchAllQueryPages(
+			operationLogCollection,
+			{
+				action: MEMBER_UPGRADE_POINTS_CLEAR_ACTION,
+				user_id: idWhere
+			},
+			{
+				field: {
+					user_id: true,
+					create_time: true,
+					cleared_account_points: true,
+					cleared_frozen_amount: true,
+					content: true,
+					upgrade_kind: true,
+					target_membership_name: true
+				}
+			}
+		);
+	} catch (e) {
+		console.error('opsPointsBalanceLog upgrade', e);
+	}
+
+	let withdraws = [];
+	try {
+		withdraws = await fetchAllQueryPages(
+			withdrawCollection,
+			_.and([{ merchant_user_id: idWhere }, _.or([{ is_deleted: false }, { is_deleted: _.exists(false) }])]),
+			{
+				field: {
+					amount: true,
+					create_time: true,
+					update_time: true,
+					arrival_status: true,
+					balance_restored: true,
+					withdraw_no: true
+				}
+			}
+		);
+	} catch (e) {
+		console.error('opsPointsBalanceLog withdraw', e);
+	}
+
+	let adminPendingLogs = [];
+	try {
+		adminPendingLogs = await fetchAllQueryPages(
+			operationLogCollection,
+			{
+				action: 'admin_set_pending_balance',
+				user_id: idWhere
+			},
+			{
+				field: {
+					create_time: true,
+					before_pending_balance: true,
+					after_pending_balance: true,
+					content: true
+				}
+			}
+		);
+	} catch (e) {
+		console.error('opsPointsBalanceLog admin pending', e);
+	}
+
+	const liveFrozen = await liveFutureFrozenYuan(ids);
+	const listFrozenNow = liveFrozen > 0.009 ? liveFrozen : roundYuan2(merchant.frozen_amount);
+
+	const events = [];
+	for (const row of packets) {
+		const meta = claimEventType(row.subsidy_kind);
+		const ts = Number(row.claimed_time || row.update_time || row.create_time || 0);
+		events.push({
+			id: `claim_${row._id}`,
+			ts,
+			type: meta.type,
+			label: meta.label,
+			title: String(row.title || meta.label),
+			flow: meta.type === 'claim_first' ? Number(row.anchor_flow_yuan || 0) : 0,
+			pendingDelta: roundYuan2(row.amount),
+			frozenAdd: claimFrozenDeltaYuan(row),
+			cutTotal: 0,
+			sortKey: `c_${row._id}`
+		});
+	}
+	for (const row of optLogs) {
+		const meta = optimizeEventMeta(row);
+		const cut = roundYuan2(row.cut_total);
+		const weekBit =
+			row.before_week != null && row.after_week != null ? `第${row.before_week}→${row.after_week}周` : '';
+		const remark = safeText(row.remark, 120);
+		events.push({
+			id: `opt_${row._id}`,
+			ts: Number(row.create_time || 0),
+			type: meta.type,
+			label: meta.label,
+			title: remark || `${weekBit}${weekBit ? ' ' : ''}砍 ${cut.toFixed(2)}`.trim() || meta.label,
+			flow: 0,
+			pendingDelta: 0,
+			frozenAdd: 0,
+			cutTotal: cut,
+			sliceDiffs: Array.isArray(row.slice_diffs) ? row.slice_diffs : [],
+			isOptimize: true,
+			sortKey: `o_${row._id}`
+		});
+	}
+	for (const row of clearLogs) {
+		events.push({
+			id: `clr_${row._id}`,
+			ts: Number(row.create_time || 0),
+			type: 'upgrade_clear',
+			label: '升级清零',
+			title: String(row.content || row.target_membership_name || '升级清除积分'),
+			flow: 0,
+			pendingDelta: 0,
+			frozenAdd: 0,
+			cutTotal: 0,
+			sortKey: `u_${row._id}`,
+			resetPending: true,
+			resetFrozen: true
+		});
+	}
+	for (const row of withdraws) {
+		const amt = roundYuan2(row.amount);
+		if (!(amt > 0)) continue;
+		const st = String(row.arrival_status || '');
+		if (row.balance_restored && (st === 'expired' || st === 'returned')) continue;
+		events.push({
+			id: `wd_${row._id}`,
+			ts: Number(row.create_time || row.update_time || 0),
+			type: 'withdraw',
+			label: '积分提现',
+			title: `提现 ${safeText(row.withdraw_no, 40) || amt.toFixed(2)}`.trim(),
+			flow: 0,
+			pendingDelta: -amt,
+			frozenAdd: 0,
+			cutTotal: 0,
+			sortKey: `w_${row._id}`
+		});
+	}
+	for (const row of adminPendingLogs) {
+		events.push({
+			id: `ap_${row._id}`,
+			ts: Number(row.create_time || 0),
+			type: 'admin_pending',
+			label: '人工改待提现',
+			title: String(row.content || '管理员修改待提现'),
+			flow: 0,
+			pendingDelta: 0,
+			frozenAdd: 0,
+			cutTotal: 0,
+			setPending: roundYuan2(row.after_pending_balance),
+			sortKey: `a_${row._id}`
+		});
+	}
+
+	const nowTs = Date.now();
+	const minTs = events.reduce((m, ev) => (ev.ts > 0 && (m === 0 || ev.ts < m) ? ev.ts : m), 0);
+	if (minTs > 0) {
+		events.push(...listMonthRollEvents(minTs, nowTs));
+	}
+
+	events.sort((a, b) => {
+		const dt = (a.ts || 0) - (b.ts || 0);
+		if (dt !== 0) return dt;
+		return String(a.sortKey).localeCompare(String(b.sortKey));
+	});
+
+	let pending = 0;
+	let frozen = 0;
+	let idx = 0;
+	while (idx < events.length) {
+		const ev = events[idx];
+		if (ev.resetPending) {
+			ev.pendingDelta = roundYuan2(-pending);
+			pending = 0;
+		} else if (ev.setPending != null && Number.isFinite(Number(ev.setPending))) {
+			ev.pendingDelta = roundYuan2(Number(ev.setPending) - pending);
+			pending = roundYuan2(ev.setPending);
+		} else {
+			pending = roundYuan2(pending + Number(ev.pendingDelta || 0));
+			if (pending < 0) pending = 0;
+		}
+		ev.pendingAfter = pending;
+		idx += 1;
+	}
+
+	const lots = [];
+	frozen = 0;
+	for (const ev of events) {
+		const curYm = shanghaiYearMonthFromTs(ev.ts) || shanghaiYearMonthFromTs(nowTs);
+		if (ev.resetFrozen) {
+			lots.splice(0, lots.length);
+		} else if (ev.isOptimize) {
+			applyCutToLots(lots, ev.cutTotal, curYm, ev.sliceDiffs);
+		} else if (Number(ev.frozenAdd || 0) > 0) {
+			lots.push(...splitDeferredMonths(curYm, ev.frozenAdd));
+		}
+		const nextFrozen = frozenFromLots(lots, curYm);
+		ev.frozenDelta = roundYuan2(nextFrozen - frozen);
+		ev.frozenAfter = nextFrozen;
+		frozen = nextFrozen;
+	}
+	if (events.length && listFrozenNow > 0.009) {
+		const last = events[events.length - 1];
+		const prevAfter = events.length >= 2 ? Number(events[events.length - 2].frozenAfter || 0) : 0;
+		const drift = roundYuan2(listFrozenNow - Number(last.frozenAfter || 0));
+		if (Math.abs(drift) >= 0.01) {
+			last.frozenAfter = listFrozenNow;
+			last.frozenDelta = roundYuan2(listFrozenNow - prevAfter);
+		}
+	}
+
+	const kept = events.filter((ev) => ev.type !== 'month_roll' || Math.abs(Number(ev.frozenDelta || 0)) >= 0.01);
+
+	const hasStart = Number.isFinite(timeStart);
+	const hasEnd = Number.isFinite(timeEnd);
+	const filtered = kept.filter((ev) => {
+		if (hasStart && ev.ts < timeStart) return false;
+		if (hasEnd && ev.ts > timeEnd) return false;
+		return true;
+	});
+	filtered.reverse();
+
+	const total = filtered.length;
+	const skip = (page - 1) * pageSize;
+	const pageRows = filtered.slice(skip, skip + pageSize).map((ev) => mapBalanceLogRow(ev, merchant));
+
+	let listFrozen = roundYuan2(merchant.frozen_amount);
+	if (liveFrozen > 0.009) listFrozen = liveFrozen;
+	else if (listFrozenNow > 0.009) listFrozen = listFrozenNow;
+	const listPending = roundYuan2(merchant.account_points);
+
+	return {
+		code: 0,
+		message: 'ok',
+		data: {
+			list: pageRows,
+			total,
+			page,
+			pageSize,
+			merchant: {
+				user_id: String(merchant.user_id || merchant._id || ''),
+				wx_nickname: String(merchant.wx_nickname || '').trim() || '-',
+				mobile: String(merchant.mobile || '').trim() || '-',
+				device_id: String(merchant.device_id || '').trim() || '-',
+				list_pending: listPending,
+				list_frozen: listFrozen,
+				list_pending_text: listPending.toFixed(2),
+				list_frozen_text: listFrozen.toFixed(2)
+			},
+			reconstructedPending: roundYuan2(pending),
+			reconstructedFrozen: roundYuan2(frozen)
+		}
+	};
 }
 
 function subsidyKindLabel(k) {
@@ -170,6 +1028,7 @@ async function opsIncomePacketsList(data = {}) {
 		const mid = String(row.merchant_user_id || '');
 		const m = merchantMap.get(mid) || {};
 		const st = displayStatus(row, now);
+		const frozen = futureDeferredFrozenYuan(row);
 		return {
 			_id: row._id,
 			merchant_user_id: mid,
@@ -178,6 +1037,8 @@ async function opsIncomePacketsList(data = {}) {
 			title: row.title || '-',
 			amount: Number(row.amount || 0),
 			amountText: Number(row.amount || 0).toFixed(2),
+			frozenAmount: frozen,
+			frozenAmountText: frozen == null ? '-' : Number(frozen).toFixed(2),
 			month_no: row.month_no || '-',
 			subsidy_kind: row.subsidy_kind || '',
 			subsidy_kind_label: subsidyKindLabel(row.subsidy_kind),
@@ -334,7 +1195,8 @@ async function opsIncomePacketDetail(data = {}) {
 					: null,
 				display_status: st.label,
 				display_status_key: st.key,
-				subsidy_kind_label: subsidyKindLabel(row.subsidy_kind)
+				subsidy_kind_label: subsidyKindLabel(row.subsidy_kind),
+				frozenAmount: futureDeferredFrozenYuan(row)
 			}
 		};
 	} catch (e) {
@@ -585,6 +1447,8 @@ exports.main = async (event) => {
 			return await opsIncomePacketDetail(actualData);
 		case 'opsMemberUpgradeClearLogsList':
 			return await opsMemberUpgradeClearLogsList(actualData);
+		case 'opsPointsBalanceLog':
+			return await opsPointsBalanceLog(actualData);
 		case 'opsIncomeClaimedDedupDuplicatesScan':
 			return await opsIncomeClaimedDedupDuplicatesScan(actualData);
 		case 'opsIncomeDedupDuplicatesCleanup':

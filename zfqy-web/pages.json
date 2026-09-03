@@ -669,6 +669,7 @@
 					"style": {
 						"navigationBarTitleText": "收益",
 						"navigationStyle": "custom",
+						"disableScroll": true,
 						"topWindow": false,
 						"leftWindow": false
 					}

@@ -146,10 +146,20 @@ async function adminHomeRedisSetLiveAndLast(liveKey, lastKey, obj, liveExSec) {
 	await redisH5.h5RedisSetJson(lastKey, obj, REDIS_EX_ADMIN_HOME_LAST_SEC);
 	return okLive;
 }
-/** 0.2 元测试套餐 id：权益对齐配置中「需选赠品」的最高档（通常为钻石） */
-const H5_RECHARGE_TEST_GIFT_PKG_ID = 'pkg_0_2';
-/** @deprecated 兼容旧引用，等同 H5_RECHARGE_TEST_GIFT_PKG_ID */
-const H5_RECHARGE_TEST_AS_1000_PKG_ID = H5_RECHARGE_TEST_GIFT_PKG_ID;
+/** 已下线的测试额度包 id：不再在 H5 展示，库内自动软删 */
+const DEPRECATED_TEST_QUOTA_PACKAGE_IDS = ['pkg_0_1', 'pkg_0_2'];
+
+function isDeprecatedTestQuotaPackageId(id) {
+	return DEPRECATED_TEST_QUOTA_PACKAGE_IDS.includes(String(id || '').trim());
+}
+
+function isDeprecatedTestQuotaPackageRow(row) {
+	if (!row) return false;
+	const id = String(row.id || row.package_id || row.packageId || '').trim();
+	if (isDeprecatedTestQuotaPackageId(id)) return true;
+	const price = Number(row.price || 0);
+	return price === 0.1 || price === 0.2;
+}
 
 /** 由会员名称（额度包配置 membership_name）解析档位，不按价格写死 */
 function membershipMetaFromName(name) {
@@ -228,33 +238,16 @@ function packageMembershipName(pkg) {
 	return safeText((pkg && (pkg.membershipName || pkg.membership_name)) || '', 40);
 }
 
-/** 测试档 / 赠品锚点：取配置中「需选赠品」的最高价套餐 */
-function findConfigGiftAnchorPackage(packages = []) {
-	const list = Array.isArray(packages) ? packages : [];
-	const byPriceDesc = (a, b) => Number(b.price || 0) - Number(a.price || 0);
-	const giftPkgs = list.filter((p) => packageRequiresGiftChoice(p)).sort(byPriceDesc);
-	return giftPkgs[0] || null;
-}
-
 function resolveMerchantConfiguredPackage(merchant, packages = []) {
 	if (!merchant) return null;
 	const list = Array.isArray(packages) && packages.length ? packages : [];
 	const byId = pickRechargePackage(merchant.recharge_package_id, list);
 	if (byId) return byId;
-	const byPrice = getRechargePackageByPrice(merchant.recharge_package_price, list);
-	if (byPrice) return byPrice;
-	const pid = safeText(merchant.recharge_package_id || '', 40);
-	if (pid === H5_RECHARGE_TEST_GIFT_PKG_ID) return findConfigGiftAnchorPackage(list);
-	return null;
+	return getRechargePackageByPrice(merchant.recharge_package_price, list);
 }
 
-function membershipNameFromConfiguredPackage(pkg, packages = []) {
-	const direct = packageMembershipName(pkg);
-	if (direct) return direct;
-	if (pkg && safeText(pkg.id || '', 40) === H5_RECHARGE_TEST_GIFT_PKG_ID) {
-		return packageMembershipName(findConfigGiftAnchorPackage(packages));
-	}
-	return '';
+function membershipNameFromConfiguredPackage(pkg) {
+	return packageMembershipName(pkg);
 }
 
 /**
@@ -5135,7 +5128,7 @@ function resolveAdminHomeMembershipCategory(merchant, packages = []) {
 	if (fromName && fromName !== 'normal') return fromName;
 
 	const pkg = resolveMerchantConfiguredPackage(merchant, list);
-	const pkgName = membershipNameFromConfiguredPackage(pkg, list);
+	const pkgName = membershipNameFromConfiguredPackage(pkg);
 	const fromPkg = membershipMetaFromName(pkgName).adminCategory;
 	if (fromPkg && fromPkg !== 'normal') return fromPkg;
 
@@ -10201,12 +10194,8 @@ async function applyRechargeByOrder(orderDoc) {
 	if (!nextMembershipName) {
 		const packages = await loadRechargePackagesFromQuota();
 		const pkg =
-			pickRechargePackage(custom.package_id, packages) ||
-			getRechargePackageByPrice(targetPrice, packages) ||
-			(safeText(custom.package_id, 40) === H5_RECHARGE_TEST_GIFT_PKG_ID
-				? findConfigGiftAnchorPackage(packages)
-				: null);
-		nextMembershipName = membershipNameFromConfiguredPackage(pkg, packages);
+			pickRechargePackage(custom.package_id, packages) || getRechargePackageByPrice(targetPrice, packages);
+		nextMembershipName = membershipNameFromConfiguredPackage(pkg);
 	}
 	const _ = db.command;
 	// 条件写：并发同档位支付时只有第一笔能写入权益
@@ -12351,17 +12340,9 @@ async function readBizRedisMeta() {
 }
 
 function grantYuanByRechargePrice(price, rechargeRules = DEFAULT_RECHARGE_RULES) {
-	let p = Number(price || 0);
+	const p = Number(price || 0);
 	const defaultRules = (Array.isArray(DEFAULT_RECHARGE_RULES) ? DEFAULT_RECHARGE_RULES : []).slice().sort((a, b) => a.price - b.price);
 	const rules = (Array.isArray(rechargeRules) ? rechargeRules : DEFAULT_RECHARGE_RULES).slice().sort((a, b) => a.price - b.price);
-	// 0.1 元测试档：对齐配置中最低正式档
-	if (p === 0.1 && rules.length) {
-		p = Number(rules[0].price || 0);
-	}
-	// 0.2 元测试档：对齐配置中最高正式档（通常为钻石）
-	if (p === 0.2 && rules.length) {
-		p = Number(rules[rules.length - 1].price || 0);
-	}
 	let reward = 0;
 	for (const rule of rules) {
 		const pricePoint = Number(rule.price || 0);
@@ -12471,7 +12452,7 @@ async function getH5WithdrawSummaryCached(merchantUserId, now) {
 function resolveRechargePriceForReward(merchant, rechargeRules = DEFAULT_RECHARGE_RULES) {
 	const pid = safeText(merchant?.recharge_package_id, 40);
 	if (pid) {
-		// 兼容动态套餐 id：pkg_600 / pkg_0_1 / 自定义规则生成形式
+		// 兼容动态套餐 id：pkg_600 / pkg_1000 / 自定义规则生成形式
 		const m = pid.match(/^pkg_(\d+)(?:_(\d+))?$/);
 		if (m) {
 			const n = Number(m[1] + (m[2] ? `.${m[2]}` : ''));
@@ -12541,7 +12522,7 @@ function h5MembershipInfo(merchant, packages = null) {
 	}
 	const list = packages && packages.length ? packages : H5_RECHARGE_PACKAGES;
 	const pkg = resolveMerchantConfiguredPackage(merchant, list);
-	const pkgName = membershipNameFromConfiguredPackage(pkg, list);
+	const pkgName = membershipNameFromConfiguredPackage(pkg);
 	if (pkgName) {
 		const meta = membershipMetaFromName(pkgName);
 		return { tier: meta.tier, name: pkgName, accent: meta.accent };
@@ -14247,24 +14228,50 @@ function parseSortOrder(raw, fallback = 0) {
 }
 
 /** 仅当库中无任何未删除额度包时 seed 一次；之后完全以后台配置为准，绝不按固定 id 补种 */
+/** 空库才 seed；并软删历史测试档 pkg_0_1 / pkg_0_2 */
 async function ensureDefaultQuotaPackages() {
+	const now = nowTs();
+	await deprecateLegacyTestQuotaPackagesIfNeeded(now);
 	const cnt = await quotaCollection.where({ is_deleted: false }).count();
 	if (Number(cnt.total || 0) > 0) return;
-	const now = nowTs();
 	for (const item of DEFAULT_QUOTA_PACKAGES) {
 		await quotaCollection.add({ ...item, create_time: now, update_time: now, is_deleted: false });
 	}
 }
 
+async function deprecateLegacyTestQuotaPackagesIfNeeded(now = nowTs()) {
+	const _ = db.command;
+	const res = await quotaCollection
+		.where(
+			_.and([
+				{ is_deleted: false },
+				_.or([{ package_id: _.in(DEPRECATED_TEST_QUOTA_PACKAGE_IDS) }, { price: _.in([0.1, 0.2]) }])
+			])
+		)
+		.limit(50)
+		.get();
+	const rows = res.data || [];
+	if (!rows.length) return;
+	await Promise.all(
+		rows.map((row) =>
+			quotaCollection.doc(row._id).update({
+				is_deleted: true,
+				deprecate_reason: 'test_package_removed',
+				update_time: now
+			})
+		)
+	);
+	await invalidateH5QuotaPackagesCache();
+}
+
 function finalizeRechargePackageList(list = []) {
-	return stripTestRechargePackages(list);
+	return stripDeprecatedTestRechargePackages(list);
 }
 
 const RECHARGE_PKG_LIST_TTL_MS = 60000;
 let rechargePackagesListCache = { at: 0, data: null };
-function stripTestRechargePackages(list = []) {
-	const testIds = new Set(['pkg_0_1', H5_RECHARGE_TEST_AS_1000_PKG_ID]);
-	return (Array.isArray(list) ? list : []).filter((x) => !testIds.has(String(x?.id || '').trim()));
+function stripDeprecatedTestRechargePackages(list = []) {
+	return (Array.isArray(list) ? list : []).filter((x) => !isDeprecatedTestQuotaPackageRow(x));
 }
 async function loadRechargePackagesFromQuota() {
 	const t = nowTs();
@@ -18534,11 +18541,9 @@ async function runDataCorrectTaskChunk(task, chunkSize = 120) {
 				const price = Number(row.recharge_package_price || 0);
 				const pkgId = safeText(row.recharge_package_id || '', 40);
 				const pkg =
-					pickRechargePackage(pkgId, packages) ||
-					getRechargePackageByPrice(price, packages) ||
-					(pkgId === H5_RECHARGE_TEST_GIFT_PKG_ID ? findConfigGiftAnchorPackage(packages) : null);
+					pickRechargePackage(pkgId, packages) || getRechargePackageByPrice(price, packages);
 				normalizedMembershipName =
-					membershipNameFromConfiguredPackage(pkg, packages) || normalizedMembershipName || '普通会员';
+					membershipNameFromConfiguredPackage(pkg) || normalizedMembershipName || '普通会员';
 			}
 			if (!normalizedOpenedAt) normalizedOpenedAt = Number(row.recharge_cycle_start || row.update_time || nowTs());
 		} else {
@@ -21791,6 +21796,9 @@ async function quotaSave(data) {
 			update_time: now
 		};
 		if (!Number.isFinite(payload.price) || payload.price <= 0) return { code: 400, message: '套餐价格需大于0' };
+		if (isDeprecatedTestQuotaPackageRow(payload)) {
+			return { code: 400, message: '0.1/0.2 元测试档已下线，请在额度包管理配置正式套餐' };
+		}
 		if (!Number.isFinite(bonusQuotaRaw) || bonusQuotaRaw < 0) return { code: 400, message: '免额度不能小于0' };
 		if (payload.real_quota < 0) return { code: 400, message: '实际额度不能小于0' };
 		if (payload.price < 0) return { code: 400, message: '套餐价格不能小于0' };

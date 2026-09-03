@@ -7,7 +7,13 @@
 			<view class="h5-glass-mesh"></view>
 		</view>
 		<!-- 可滚动主区域：高度 = 视口 − 底部 tabbar（含安全区），超出时出现滚动条 -->
-		<scroll-view class="page-income__scroll" scroll-y :scroll-with-animation="true">
+		<scroll-view
+			class="page-income__scroll"
+			scroll-y
+			:show-scrollbar="true"
+			:scroll-with-animation="true"
+			:style="scrollViewStyle"
+		>
 			<view class="page-income__scroll-inner">
 			<view class="hero">
 				<view class="hero-top">
@@ -148,10 +154,17 @@ export default {
 			loading: false,
 			pendingExpanded: true,
 			claimingId: '',
-			servicePhone: '400-668-5796'
+			servicePhone: '400-668-5796',
+			scrollHeightPx: 0
 		};
 	},
 	computed: {
+		scrollViewStyle() {
+			if (this.scrollHeightPx > 0) {
+				return { height: `${this.scrollHeightPx}px` };
+			}
+			return {};
+		},
 		claimDisabled() {
 			return Number(this.pendingTotal) <= 0 || this.loading || !!this.claimingId;
 		},
@@ -175,9 +188,41 @@ export default {
 		}
 	},
 	onShow() {
+		this.syncScrollHeight();
 		this.loadData();
 	},
+	onReady() {
+		this.syncScrollHeight();
+	},
+	onUnload() {
+		this.unbindScrollHeight();
+	},
 	methods: {
+		syncScrollHeight() {
+			try {
+				const sys = uni.getSystemInfoSync() || {};
+				const safeBottom = Number((sys.safeAreaInsets && sys.safeAreaInsets.bottom) || 0);
+				const winH = Number(sys.windowHeight || 0);
+				const tabH = 56 + safeBottom;
+				if (winH > tabH + 80) {
+					this.scrollHeightPx = winH - tabH;
+				}
+			} catch (e) {}
+			// #ifdef H5
+			if (typeof window !== 'undefined' && !this._onWinResize) {
+				this._onWinResize = () => this.syncScrollHeight();
+				window.addEventListener('resize', this._onWinResize, { passive: true });
+			}
+			// #endif
+		},
+		unbindScrollHeight() {
+			// #ifdef H5
+			if (typeof window !== 'undefined' && this._onWinResize) {
+				window.removeEventListener('resize', this._onWinResize);
+				this._onWinResize = null;
+			}
+			// #endif
+		},
 		/** 待领取总额 = 各气泡展示金额之和（避免单笔 toFixed 与合计不一致） */
 		syncPendingTotalFromPackets() {
 			const sum = (this.packets || []).reduce((s, p) => s + Number(p.amount || 0), 0);
@@ -301,27 +346,42 @@ export default {
 
 <style src="@/common/h5-glass.css"></style>
 <style scoped>
-/* 整页：锁高度，避免外层再滚；内容只在 scroll-view 内滚 */
+/* 整页锁高；滚动只发生在下方 scroll-view，避免微信 webview 裁切后无法下滑 */
 .page-income {
 	width: 100%;
 	height: 100vh;
+	height: 100dvh;
 	max-height: 100vh;
+	max-height: 100dvh;
+	display: flex;
+	flex-direction: column;
 	position: relative;
 	overflow: hidden;
 	box-sizing: border-box;
 	background: transparent;
 }
 
-/* 与底部 tabbar 占位一致：56px + 安全区 */
 .page-income__scroll {
-	position: absolute;
-	left: 0;
-	right: 0;
-	top: 0;
-	bottom: calc(56px + constant(safe-area-inset-bottom));
-	bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+	flex: 1 1 auto;
+	width: 100%;
+	height: 0;
+	min-height: 0;
 	box-sizing: border-box;
 	z-index: 1;
+	overflow-y: auto;
+	-webkit-overflow-scrolling: touch;
+	overscroll-behavior: contain;
+}
+
+/* uni-app H5 会包一层 .uni-scroll-view，必须把高度和 overflow 传到内层才能滚 */
+.page-income__scroll ::v-deep .uni-scroll-view,
+.page-income__scroll ::v-deep .uni-scroll-view-content {
+	height: 100%;
+	max-height: 100%;
+}
+.page-income__scroll ::v-deep .uni-scroll-view {
+	overflow-y: auto !important;
+	-webkit-overflow-scrolling: touch;
 }
 
 .page-income__scroll-inner {
@@ -332,12 +392,9 @@ export default {
 	z-index: 1;
 }
 
-/* 固定在视口底部，不随内容滚动 */
 .page-income__tabbar {
-	position: fixed;
-	left: 0;
-	right: 0;
-	bottom: 0;
+	flex-shrink: 0;
+	position: relative;
 	z-index: 300;
 	padding-bottom: constant(safe-area-inset-bottom);
 	padding-bottom: env(safe-area-inset-bottom, 0px);
@@ -352,7 +409,7 @@ export default {
 }
 
 .scroll-end-spacer {
-	height: 12px;
+	height: 28px;
 }
 
 .hero {

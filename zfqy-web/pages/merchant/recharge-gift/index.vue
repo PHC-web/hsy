@@ -15,7 +15,7 @@
 		<view class="uni-container">
 			<view class="page-intro">
 				<text class="page-title">充值赠品发货</text>
-				<text class="page-sub">需选赠品的额度包（由关联商品/必选数量配置）及 0.2 元测试档用户选择的蓝牙音响 / 扫码POS机，请维护快递单号与签收状态</text>
+				<text class="page-sub">需选赠品的额度包（在额度包管理中配置关联商品 / 必选数量）用户选择的蓝牙音响 / 扫码POS机，请维护快递单号与签收状态</text>
 			</view>
 			<view class="table-container-wrapper admin-table-slot">
 				<view class="table-container">

@@ -28,22 +28,26 @@
 		<view class="uni-container page-wrap">
 			<view class="intro">
 				<text v-if="activeTab === 'packets'">
-					汇总 H5 为商户生成的积分红包（手续费补贴等，数据表 hsy-income-packets）。金额与 H5「账号积分」同口径（元）。
+					汇总 H5 为商户生成的积分红包（手续费补贴等，数据表 hsy-income-packets）。金额与 H5「账号积分」同口径（元）。「冻结金额」仅流水首期有值：领取首期后进入后四期的待返合计（如刷 1 万领 7.6，冻结 30.4）。
+				</text>
+				<text v-else-if="activeTab === 'points_log'">
+					请根据机具号进行搜索。领取首期：流水 ≥300 时冻结增加「整笔返现−首期」（刷 5 万领 38，冻结 +152）；300 以下冻结 +0。
 				</text>
 				<text v-else>
 					普通会员通过兑换码升级白银、或付费升级黄金/白金/钻石时，系统清除其已领取的账号积分（待提现）与冻结金额的操作记录。
 				</text>
-				部署后请上传云函数 <text class="mono">ops-points-admin</text>、<text class="mono">merchant</text>。
+				
 			</view>
 
 			<view class="tab-bar">
 				<text :class="['tab-item', activeTab === 'packets' ? 'tab-active' : '']" @click="switchTab('packets')">积分红包</text>
 				<text :class="['tab-item', activeTab === 'upgrade_clear' ? 'tab-active' : '']" @click="switchTab('upgrade_clear')">升级清除日志</text>
+				<text :class="['tab-item', activeTab === 'points_log' ? 'tab-active' : '']" @click="switchTab('points_log')">积分日志</text>
 			</view>
 
 			<view class="search-card">
 				<view class="row">
-					<text class="label">创建时间</text>
+					<text class="label">{{ timeRangeLabel }}</text>
 					<uni-datetime-picker
 						v-model="range"
 						type="datetimerange"
@@ -56,9 +60,15 @@
 					<uni-easyinput
 						v-model.trim="keyword"
 						:placeholder="keywordPlaceholder"
-						@confirm="search"
+						@confirm="onSearchClick"
 					/>
-					<button size="mini" type="primary" :loading="loading" @click="search">搜索</button>
+					<button size="mini" type="primary" :loading="loading" @click="onSearchClick">搜索</button>
+				</view>
+				<view v-if="activeTab === 'points_log' && logMerchant" class="log-merchant">
+					<view>当前商户：{{ logMerchant.wx_nickname }}　{{ logMerchant.user_id }}　{{ logMerchant.mobile }}</view>
+					<view v-if="logMerchant.list_pending_text != null">
+						商户列表当前：待提现 {{ logMerchant.list_pending_text }}　冻结 {{ logMerchant.list_frozen_text }}
+					</view>
 				</view>
 			</view>
 
@@ -70,6 +80,7 @@
 							<uni-th width="120">商户</uni-th>
 							<uni-th width="104">手机</uni-th>
 							<uni-th width="72">积分(元)</uni-th>
+							<uni-th width="88">冻结金额</uni-th>
 							<uni-th
 								width="132"
 								filter-type="select"
@@ -94,6 +105,7 @@
 							}}</uni-td>
 							<uni-td class="cell-ellipsis">{{ item.merchant_mobile }}</uni-td>
 							<uni-td>{{ item.amountText }}</uni-td>
+							<uni-td>{{ item.frozenAmountText != null ? item.frozenAmountText : '-' }}</uni-td>
 							<uni-td>
 								<text :class="statusClass(item.display_status_key)">{{ item.display_status }}</text>
 							</uni-td>
@@ -112,6 +124,39 @@
 									</button>
 								</view>
 							</uni-td>
+						</uni-tr>
+					</uni-table>
+				</view>
+			</view>
+
+			<view v-else-if="activeTab === 'points_log'" class="table-container-wrapper admin-table-slot">
+				<view class="table-container table-scroll">
+					<uni-table border stripe :loading="loading" :empty-text="logEmptyText">
+						<uni-tr>
+							<uni-th width="160">时间</uni-th>
+							<uni-th width="120">类型</uni-th>
+							<uni-th width="220">说明</uni-th>
+							<uni-th width="100">待提现</uni-th>
+							<uni-th width="100">冻结金额</uni-th>
+							<uni-th width="88">锚定流水</uni-th>
+						</uni-tr>
+						<uni-tr v-for="item in balanceLogList" :key="item._id">
+							<uni-td>{{ fmtTs(item.event_time) }}</uni-td>
+							<uni-td class="cell-tiny">{{ item.event_type_label }}</uni-td>
+							<uni-td class="cell-content" :title="item.title">{{ item.title }}</uni-td>
+							<uni-td>
+								<view class="log-amt">
+									<text :class="'log-delta-' + item.pendingDeltaSign">{{ item.pendingDeltaText }}</text>
+									<text class="log-amt-after">{{ item.pendingAfterText }}</text>
+								</view>
+							</uni-td>
+							<uni-td>
+								<view class="log-amt">
+									<text :class="'log-delta-' + item.frozenDeltaSign">{{ item.frozenDeltaText }}</text>
+									<text class="log-amt-after">{{ item.frozenAfterText }}</text>
+								</view>
+							</uni-td>
+							<uni-td>{{ item.anchorFlowText }}</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
@@ -213,6 +258,8 @@ export default {
 			loading: false,
 			list: [],
 			upgradeClearList: [],
+			balanceLogList: [],
+			logMerchant: null,
 			keyword: '',
 			range: defaultRange(),
 			statusFilter: 'all',
@@ -244,10 +291,16 @@ export default {
 		currentPageInfo() {
 			return this.activeTab === 'upgrade_clear' ? this.clearPageInfo : this.pageInfo;
 		},
+		timeRangeLabel() {
+			return this.activeTab === 'points_log' ? '事件时间' : '创建时间';
+		},
+		logEmptyText() {
+			return this.keyword ? '暂无数据' : '请先搜索商户';
+		},
 		keywordPlaceholder() {
-			return this.activeTab === 'upgrade_clear'
-				? '商户 user_id / 昵称 / 手机号 / 说明'
-				: '商户 user_id / 手机号片段 / 标题 / 记录 id';
+			if (this.activeTab === 'upgrade_clear') return '商户 user_id / 昵称 / 手机号 / 说明';
+			if (this.activeTab === 'points_log') return '商户 user_id / 手机号 / 机具号（必填）';
+			return '商户 user_id / 手机号片段 / 标题 / 记录 id';
 		},
 		detailPretty() {
 			try {
@@ -257,7 +310,9 @@ export default {
 			}
 		},
 		exportFilePrefix() {
-			return this.activeTab === 'upgrade_clear' ? '升级清除日志' : '积分红包';
+			if (this.activeTab === 'upgrade_clear') return '升级清除日志';
+			if (this.activeTab === 'points_log') return '积分日志';
+			return '积分红包';
 		},
 		statusHeaderFilterData() {
 			return this.mergeSelectFilterChecked(STATUS_FILTER_OPTIONS, this.statusFilter);
@@ -300,6 +355,8 @@ export default {
 			if (this.activeTab === tab) return;
 			this.activeTab = tab;
 			this.keyword = '';
+			this.logMerchant = null;
+			this.balanceLogList = [];
 			this.showExportMenu = false;
 			this.pageInfo.currentPage = 1;
 			this.clearPageInfo.currentPage = 1;
@@ -327,6 +384,16 @@ export default {
 			this.clearPageInfo.currentPage = 1;
 			this.search();
 		},
+		onSearchClick() {
+			this.pageInfo.currentPage = 1;
+			this.clearPageInfo.currentPage = 1;
+			this.search(true);
+		},
+		listAction() {
+			if (this.activeTab === 'upgrade_clear') return 'opsMemberUpgradeClearLogsList';
+			if (this.activeTab === 'points_log') return 'opsPointsBalanceLog';
+			return 'opsIncomePacketsList';
+		},
 		buildTimeRange() {
 			const r = this.range;
 			let timeStart = '';
@@ -348,6 +415,15 @@ export default {
 					timeEnd
 				};
 			}
+			if (this.activeTab === 'points_log') {
+				return {
+					page: pageOverride != null ? pageOverride : this.pageInfo.currentPage,
+					pageSize: pageSizeOverride != null ? pageSizeOverride : this.pageInfo.pageSize,
+					keyword: this.keyword,
+					timeStart,
+					timeEnd
+				};
+			}
 			return {
 				page: pageOverride != null ? pageOverride : this.pageInfo.currentPage,
 				pageSize: pageSizeOverride != null ? pageSizeOverride : this.pageInfo.pageSize,
@@ -358,10 +434,17 @@ export default {
 				subsidyKindFilter: this.kindFilter
 			};
 		},
-		search() {
+		search(fromUser) {
+			if (this.activeTab === 'points_log' && !String(this.keyword || '').trim()) {
+				this.balanceLogList = [];
+				this.logMerchant = null;
+				this.pageInfo.total = 0;
+				this.loading = false;
+				if (fromUser) uni.showToast({ title: '请先搜索商户', icon: 'none' });
+				return;
+			}
 			this.loading = true;
-			const action =
-				this.activeTab === 'upgrade_clear' ? 'opsMemberUpgradeClearLogsList' : 'opsIncomePacketsList';
+			const action = this.listAction();
 			this.$request(action, this.buildPayload(), { functionName: 'ops-points-admin' })
 				.then((res) => {
 					this.loading = false;
@@ -370,6 +453,10 @@ export default {
 						if (this.activeTab === 'upgrade_clear') {
 							this.upgradeClearList = [];
 							this.clearPageInfo.total = 0;
+						} else if (this.activeTab === 'points_log') {
+							this.balanceLogList = [];
+							this.logMerchant = null;
+							this.pageInfo.total = 0;
 						} else {
 							this.list = [];
 							this.pageInfo.total = 0;
@@ -381,6 +468,11 @@ export default {
 						this.upgradeClearList = d.list || [];
 						this.clearPageInfo.total = Number(d.total) || 0;
 						syncOpsListPageSize(this.clearPageInfo, d);
+					} else if (this.activeTab === 'points_log') {
+						this.balanceLogList = d.list || [];
+						this.logMerchant = d.merchant || null;
+						this.pageInfo.total = Number(d.total) || 0;
+						syncOpsListPageSize(this.pageInfo, d);
 					} else {
 						this.list = d.list || [];
 						this.pageInfo.total = Number(d.total) || 0;
@@ -391,6 +483,8 @@ export default {
 					this.loading = false;
 					if (this.activeTab === 'upgrade_clear') {
 						this.upgradeClearList = [];
+					} else if (this.activeTab === 'points_log') {
+						this.balanceLogList = [];
 					} else {
 						this.list = [];
 					}
@@ -439,6 +533,7 @@ export default {
 				商户ID: item.merchant_user_id || '',
 				手机: item.merchant_mobile || '-',
 				积分元: item.amountText != null ? item.amountText : item.amount,
+				冻结金额: item.frozenAmountText != null ? item.frozenAmountText : '-',
 				展示状态: item.display_status || '',
 				类型: item.subsidy_kind_label || item.subsidy_kind || '',
 				归属月: item.month_no || '',
@@ -463,9 +558,27 @@ export default {
 				记录ID: item._id || ''
 			};
 		},
+		mapBalanceLogExportRow(item) {
+			return {
+				时间: this.fmtTs(item.event_time),
+				类型: item.event_type_label || '',
+				说明: item.title || '',
+				待提现变化: item.pendingDeltaText || '',
+				待提现结果: item.pendingAfterText || '',
+				冻结变化: item.frozenDeltaText || '',
+				冻结结果: item.frozenAfterText || '',
+				锚定流水: item.anchorFlowText || '',
+				商户昵称: item.merchant_name || '-',
+				商户ID: item.merchant_user_id || '',
+				手机: item.merchant_mobile || '-',
+				记录ID: item._id || ''
+			};
+		},
 		async fetchExportRows() {
-			const action =
-				this.activeTab === 'upgrade_clear' ? 'opsMemberUpgradeClearLogsList' : 'opsIncomePacketsList';
+			if (this.activeTab === 'points_log' && !String(this.keyword || '').trim()) {
+				throw new Error('请先搜索商户');
+			}
+			const action = this.listAction();
 			const pageSize = 1000;
 			const maxRows = 10000;
 			const all = [];
@@ -492,7 +605,9 @@ export default {
 			const mapped =
 				this.activeTab === 'upgrade_clear'
 					? slice.map((x) => this.mapUpgradeClearExportRow(x))
-					: slice.map((x) => this.mapPacketExportRow(x));
+					: this.activeTab === 'points_log'
+						? slice.map((x) => this.mapBalanceLogExportRow(x))
+						: slice.map((x) => this.mapPacketExportRow(x));
 			return { rows: mapped, truncated };
 		},
 		downloadFile(filename, content, mimeType) {
@@ -528,7 +643,12 @@ export default {
 					.replace(/&/g, '&amp;')
 					.replace(/</g, '&lt;')
 					.replace(/>/g, '&gt;');
-			const root = this.activeTab === 'upgrade_clear' ? 'upgradeClearLogs' : 'incomePackets';
+			const root =
+				this.activeTab === 'upgrade_clear'
+					? 'upgradeClearLogs'
+					: this.activeTab === 'points_log'
+						? 'pointsBalanceLogs'
+						: 'incomePackets';
 			const items = rows
 				.map((r) => {
 					const fields = Object.entries(r)
@@ -732,6 +852,30 @@ export default {
 	font-size: 11px;
 	line-height: 1.45;
 	color: #606266;
+}
+.log-merchant {
+	font-size: 12px;
+	color: #606266;
+	padding-left: 82px;
+}
+.log-amt {
+	display: flex;
+	flex-direction: column;
+	line-height: 1.4;
+	white-space: nowrap;
+}
+.log-amt-after {
+	color: #303133;
+	font-weight: 600;
+}
+.log-delta-pos {
+	color: #67c23a;
+}
+.log-delta-neg {
+	color: #f56c6c;
+}
+.log-delta-zero {
+	color: #909399;
 }
 .st-ok {
 	color: #67c23a;
