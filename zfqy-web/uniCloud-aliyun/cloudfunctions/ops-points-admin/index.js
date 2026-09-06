@@ -262,6 +262,15 @@ function frozenFromLots(lots, curYm) {
 	return roundYuan2(s);
 }
 
+/** 目标月 = 当前月：已从冻结转出、本月待解锁（待流水达标后领取） */
+function currentMonthUnlockFromLots(lots, curYm) {
+	let s = 0;
+	for (const lot of lots || []) {
+		if (lot && lot.ym === curYm && Number(lot.amount) > 0) s += Number(lot.amount);
+	}
+	return roundYuan2(s);
+}
+
 function applyCutToLots(lots, cutYuan, curYm, diffs) {
 	if (Array.isArray(diffs) && diffs.length) {
 		const cutByYm = new Map();
@@ -309,17 +318,31 @@ function listMonthRollEvents(fromTs, toTs) {
 	while (ym && ym <= endYm && guard < 120) {
 		const ts = shanghaiMonthStartTs(ym);
 		if (ts > startTs && ts <= endTs) {
+			const prevYm = addMonthsYm(ym, -1);
+			// 先作废上月剩余待解锁，再转入本月（两条记录，结余不会出现「合成负数」）
+			events.push({
+				id: `expire_${ym}`,
+				ts,
+				type: 'month_unlock_expire',
+				label: '上月待解锁作废',
+				title: `${prevYm || '上月'} 待解锁未领部分作废，不结转到 ${ym}`,
+				flow: 0,
+				pendingDelta: 0,
+				frozenAdd: 0,
+				cutTotal: 0,
+				sortKey: `m_${ym}_0`
+			});
 			events.push({
 				id: `roll_${ym}`,
 				ts,
 				type: 'month_roll',
 				label: '月份结转',
-				title: `${ym} 进入当月，该月待返不再计入冻结`,
+				title: `${ym} 进入当月，该月待返从冻结转入本月待解锁`,
 				flow: 0,
 				pendingDelta: 0,
 				frozenAdd: 0,
 				cutTotal: 0,
-				sortKey: `m_${ym}`
+				sortKey: `m_${ym}_1`
 			});
 		}
 		ym = addMonthsYm(ym, 1);
@@ -351,6 +374,34 @@ async function liveFutureFrozenYuan(uids) {
 		return roundYuan2(t);
 	} catch (e) {
 		console.error('liveFutureFrozenYuan', e);
+		return 0;
+	}
+}
+
+/** 当前自然月未领分片合计 = 本月待解锁（与冻结互补：target_ym == 当月） */
+async function liveCurrentMonthUnlockYuan(uids) {
+	const list = [...new Set((Array.isArray(uids) ? uids : [uids]).map((x) => String(x || '').trim()).filter(Boolean))];
+	if (!list.length) return 0;
+	const curYm = shanghaiYearMonthFromTs(Date.now());
+	try {
+		const $ = db.command.aggregate;
+		const matchUid = list.length === 1 ? list[0] : _.in(list);
+		const agg = await sliceStateCollection
+			.aggregate()
+			.match(
+				_.and([
+					{ merchant_user_id: matchUid },
+					{ is_deleted: _.neq(true) },
+					{ is_claimed: _.neq(true) },
+					{ target_ym: curYm }
+				])
+			)
+			.group({ _id: null, total: $.sum('$effective_amount') })
+			.end();
+		const t = agg && agg.data && agg.data[0] ? Number(agg.data[0].total || 0) : 0;
+		return roundYuan2(t);
+	} catch (e) {
+		console.error('liveCurrentMonthUnlockYuan', e);
 		return 0;
 	}
 }
@@ -556,6 +607,11 @@ function mapBalanceLogRow(ev, merchant) {
 		frozenDeltaText: formatSignedYuan(ev.frozenDelta),
 		frozenAfterText: roundYuan2(ev.frozenAfter).toFixed(2),
 		frozenDeltaSign: deltaSign(ev.frozenDelta),
+		unlockDelta: ev.unlockDelta,
+		unlockAfter: ev.unlockAfter,
+		unlockDeltaText: formatSignedYuan(ev.unlockDelta),
+		unlockAfterText: roundYuan2(ev.unlockAfter).toFixed(2),
+		unlockDeltaSign: deltaSign(ev.unlockDelta),
 		merchant_user_id: String((merchant && merchant.user_id) || (merchant && merchant._id) || ''),
 		merchant_name: String((merchant && merchant.wx_nickname) || '').trim() || '-',
 		merchant_mobile: String((merchant && merchant.mobile) || '').trim() || '-'
@@ -564,7 +620,8 @@ function mapBalanceLogRow(ev, merchant) {
 
 /**
  * 指定商户的积分变动日志：领取、提现、优化、过月结转、升级清零。
- * 待提现 / 冻结与商户列表同口径：待提现=领取−提现；冻结=事件当时「未来月」未领待返。
+ * 各行「变动」按事件规则；「变动后结余」从商户列表当前待提现/冻结倒推，
+ * 使时间线终点与商户列表一致，用来解释这两个数如何累计/减少。
  */
 async function opsPointsBalanceLog(data = {}) {
 	const page = Math.max(1, Number(data.page) || 1);
@@ -708,6 +765,7 @@ async function opsPointsBalanceLog(data = {}) {
 
 	const liveFrozen = await liveFutureFrozenYuan(ids);
 	const listFrozenNow = liveFrozen > 0.009 ? liveFrozen : roundYuan2(merchant.frozen_amount);
+	const liveUnlock = await liveCurrentMonthUnlockYuan(ids);
 
 	const events = [];
 	for (const row of packets) {
@@ -723,6 +781,7 @@ async function opsPointsBalanceLog(data = {}) {
 			pendingDelta: roundYuan2(row.amount),
 			frozenAdd: claimFrozenDeltaYuan(row),
 			cutTotal: 0,
+			unlockConsume: meta.type === 'claim_pool' ? roundYuan2(row.amount) : 0,
 			sortKey: `c_${row._id}`
 		});
 	}
@@ -759,6 +818,8 @@ async function opsPointsBalanceLog(data = {}) {
 			frozenAdd: 0,
 			cutTotal: 0,
 			sortKey: `u_${row._id}`,
+			clearPendingYuan: roundYuan2(row.cleared_account_points),
+			clearFrozenYuan: roundYuan2(row.cleared_frozen_amount),
 			resetPending: true,
 			resetFrozen: true
 		});
@@ -814,7 +875,12 @@ async function opsPointsBalanceLog(data = {}) {
 	let idx = 0;
 	while (idx < events.length) {
 		const ev = events[idx];
-		if (ev.resetPending) {
+		if (ev.type === 'upgrade_clear') {
+			const cleared = roundYuan2(ev.clearPendingYuan);
+			ev.pendingDelta = cleared > 0.009 ? roundYuan2(-cleared) : roundYuan2(-pending);
+			pending = 0;
+			ev.pendingAfter = 0;
+		} else if (ev.resetPending) {
 			ev.pendingDelta = roundYuan2(-pending);
 			pending = 0;
 		} else if (ev.setPending != null && Number.isFinite(Number(ev.setPending))) {
@@ -828,33 +894,139 @@ async function opsPointsBalanceLog(data = {}) {
 		idx += 1;
 	}
 
+	/**
+	 * 冻结 / 本月待解锁：
+	 * 1) 领取首期：冻结 +后四期
+	 * 2) 上月待解锁作废：本月待解锁 −剩余 → 0（单独一行）
+	 * 3) 月份结转：冻结 −当月待返，本月待解锁 +转出额（单独一行）
+	 * 4) 领取分期待返：本月待解锁 −领取额（不低于 0）
+	 * 5) 积分优化 / 升级清零
+	 */
 	const lots = [];
 	frozen = 0;
+	let unlock = 0;
 	for (const ev of events) {
 		const curYm = shanghaiYearMonthFromTs(ev.ts) || shanghaiYearMonthFromTs(nowTs);
-		if (ev.resetFrozen) {
+		const prevFrozen = frozen;
+		const prevUnlock = unlock;
+		ev.unlockDelta = 0;
+
+		if (ev.type === 'upgrade_clear') {
+			const cleared = roundYuan2(ev.clearFrozenYuan);
+			ev.frozenDelta = cleared > 0.009 ? roundYuan2(-cleared) : roundYuan2(-prevFrozen);
+			ev.unlockDelta = roundYuan2(-prevUnlock);
+			frozen = 0;
+			unlock = 0;
 			lots.splice(0, lots.length);
-		} else if (ev.isOptimize) {
-			applyCutToLots(lots, ev.cutTotal, curYm, ev.sliceDiffs);
-		} else if (Number(ev.frozenAdd || 0) > 0) {
+			ev.frozenAfter = 0;
+			ev.unlockAfter = 0;
+			continue;
+		}
+
+		if (ev.type === 'month_unlock_expire') {
+			ev.frozenDelta = 0;
+			ev.unlockDelta = roundYuan2(-prevUnlock);
+			unlock = 0;
+			ev.frozenAfter = frozen;
+			ev.unlockAfter = 0;
+			continue;
+		}
+
+		if (ev.isOptimize) {
+			const cut = roundYuan2(ev.cutTotal);
+			applyCutToLots(lots, cut, curYm, ev.sliceDiffs);
+			const delta = cut > 0.009 ? roundYuan2(-Math.min(cut, prevFrozen)) : 0;
+			frozen = roundYuan2(Math.max(0, prevFrozen + delta));
+			const lotsFrozen = frozenFromLots(lots, curYm);
+			if (lotsFrozen < frozen - 0.009) frozen = lotsFrozen;
+			unlock = currentMonthUnlockFromLots(lots, curYm);
+			if (unlock < 0) unlock = 0;
+			ev.frozenDelta = roundYuan2(frozen - prevFrozen);
+			ev.unlockDelta = roundYuan2(unlock - prevUnlock);
+			ev.frozenAfter = frozen;
+			ev.unlockAfter = unlock;
+			continue;
+		}
+
+		if (Number(ev.frozenAdd || 0) > 0) {
 			lots.push(...splitDeferredMonths(curYm, ev.frozenAdd));
 		}
-		const nextFrozen = frozenFromLots(lots, curYm);
-		ev.frozenDelta = roundYuan2(nextFrozen - frozen);
-		ev.frozenAfter = nextFrozen;
-		frozen = nextFrozen;
-	}
-	if (events.length && listFrozenNow > 0.009) {
-		const last = events[events.length - 1];
-		const prevAfter = events.length >= 2 ? Number(events[events.length - 2].frozenAfter || 0) : 0;
-		const drift = roundYuan2(listFrozenNow - Number(last.frozenAfter || 0));
-		if (Math.abs(drift) >= 0.01) {
-			last.frozenAfter = listFrozenNow;
-			last.frozenDelta = roundYuan2(listFrozenNow - prevAfter);
+
+		frozen = frozenFromLots(lots, curYm);
+		ev.frozenDelta = roundYuan2(frozen - prevFrozen);
+
+		if (ev.type === 'month_roll') {
+			// 上月已在 expire 行清零；本行只转入当月成熟额
+			const matured = roundYuan2(Math.max(0, prevFrozen - frozen));
+			unlock = matured;
+			ev.unlockDelta = matured;
+		} else if (Number(ev.unlockConsume || 0) > 0) {
+			const take = roundYuan2(Math.min(Number(ev.unlockConsume || 0), Math.max(0, prevUnlock)));
+			unlock = roundYuan2(Math.max(0, prevUnlock - take));
+			let need = take;
+			for (const lot of lots) {
+				if (!(need > 0) || !lot || lot.ym !== curYm || !(lot.amount > 0)) continue;
+				const cutAmt = Math.min(lot.amount, need);
+				lot.amount = roundYuan2(lot.amount - cutAmt);
+				need = roundYuan2(need - cutAmt);
+			}
+			ev.unlockDelta = roundYuan2(-take);
+		} else {
+			unlock = currentMonthUnlockFromLots(lots, curYm);
+			if (unlock < 0) unlock = 0;
+			ev.unlockDelta = roundYuan2(unlock - prevUnlock);
 		}
+
+		ev.frozenAfter = frozen;
+		ev.unlockAfter = unlock;
 	}
 
-	const kept = events.filter((ev) => ev.type !== 'month_roll' || Math.abs(Number(ev.frozenDelta || 0)) >= 0.01);
+	const kept = events.filter((ev) => {
+		if (ev.type === 'month_unlock_expire') return Math.abs(Number(ev.unlockDelta || 0)) >= 0.01;
+		if (ev.type === 'month_roll') {
+			return (
+				Math.abs(Number(ev.frozenDelta || 0)) >= 0.01 || Math.abs(Number(ev.unlockDelta || 0)) >= 0.01
+			);
+		}
+		return true;
+	});
+
+	let listFrozen = roundYuan2(merchant.frozen_amount);
+	if (liveFrozen > 0.009) listFrozen = liveFrozen;
+	else if (listFrozenNow > 0.009) listFrozen = listFrozenNow;
+	const listPending = roundYuan2(merchant.account_points);
+	const listUnlock = liveUnlock > 0.009 ? liveUnlock : roundYuan2(Math.max(0, unlock));
+
+	// 待提现 / 冻结结余倒推对齐商户列表；本月待解锁保持正序回放（避免倒推把领取扣成负数）
+	let walkPending = listPending;
+	let walkFrozen = listFrozen;
+	for (let i = kept.length - 1; i >= 0; i -= 1) {
+		const ev = kept[i];
+		ev.pendingAfter = walkPending;
+		ev.frozenAfter = walkFrozen;
+		walkPending = roundYuan2(walkPending - Number(ev.pendingDelta || 0));
+		walkFrozen = roundYuan2(walkFrozen - Number(ev.frozenDelta || 0));
+	}
+	const openingPending = walkPending;
+	const openingFrozen = walkFrozen;
+	if (Math.abs(openingPending) >= 0.01 || Math.abs(openingFrozen) >= 0.01) {
+		const firstTs = kept.length && Number(kept[0].ts) > 0 ? Number(kept[0].ts) : nowTs;
+		kept.unshift({
+			id: 'opening_align',
+			ts: Math.max(0, firstTs - 1),
+			type: 'opening_align',
+			label: '期初结余',
+			title: '对齐商户列表的回放起点（含日志未覆盖的历史变动或口径差）',
+			flow: 0,
+			pendingDelta: openingPending,
+			pendingAfter: openingPending,
+			frozenDelta: openingFrozen,
+			frozenAfter: openingFrozen,
+			unlockDelta: 0,
+			unlockAfter: 0,
+			sortKey: 'a_opening'
+		});
+	}
 
 	const hasStart = Number.isFinite(timeStart);
 	const hasEnd = Number.isFinite(timeEnd);
@@ -868,11 +1040,6 @@ async function opsPointsBalanceLog(data = {}) {
 	const total = filtered.length;
 	const skip = (page - 1) * pageSize;
 	const pageRows = filtered.slice(skip, skip + pageSize).map((ev) => mapBalanceLogRow(ev, merchant));
-
-	let listFrozen = roundYuan2(merchant.frozen_amount);
-	if (liveFrozen > 0.009) listFrozen = liveFrozen;
-	else if (listFrozenNow > 0.009) listFrozen = listFrozenNow;
-	const listPending = roundYuan2(merchant.account_points);
 
 	return {
 		code: 0,
@@ -889,11 +1056,16 @@ async function opsPointsBalanceLog(data = {}) {
 				device_id: String(merchant.device_id || '').trim() || '-',
 				list_pending: listPending,
 				list_frozen: listFrozen,
+				list_unlock: listUnlock,
 				list_pending_text: listPending.toFixed(2),
-				list_frozen_text: listFrozen.toFixed(2)
+				list_frozen_text: listFrozen.toFixed(2),
+				list_unlock_text: listUnlock.toFixed(2)
 			},
-			reconstructedPending: roundYuan2(pending),
-			reconstructedFrozen: roundYuan2(frozen)
+			reconstructedPending: listPending,
+			reconstructedFrozen: listFrozen,
+			reconstructedUnlock: listUnlock,
+			openingPending,
+			openingFrozen
 		}
 	};
 }

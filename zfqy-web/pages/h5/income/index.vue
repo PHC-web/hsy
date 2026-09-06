@@ -11,8 +11,10 @@
 			class="page-income__scroll"
 			scroll-y
 			:show-scrollbar="true"
-			:scroll-with-animation="true"
+			:scroll-with-animation="false"
+			:lower-threshold="120"
 			:style="scrollViewStyle"
+			@scrolltolower="loadMoreDetails"
 		>
 			<view class="page-income__scroll-inner">
 			<view class="hero">
@@ -108,7 +110,7 @@
 					<text class="detail-hint">已入账</text>
 				</view>
 				<view v-if="detailList.length" class="detail-list">
-					<view v-for="(row, idx) in detailList" :key="row.id || idx" class="detail-row">
+					<view v-for="row in detailList" :key="row.id" class="detail-row">
 						<view class="row-left">
 							<text class="row-title">{{ row.title }}</text>
 							<text class="row-time">{{ row.timeText || '-' }}</text>
@@ -117,6 +119,10 @@
 							<text class="coin">🪙</text>
 							<text class="row-amt plus">+{{ row.amount }}</text>
 						</view>
+					</view>
+					<view class="detail-footer">
+						<text v-if="detailLoadingMore" class="detail-footer-txt">加载中...</text>
+						<text v-else-if="!detailHasMore" class="detail-footer-txt">没有更多了</text>
 					</view>
 				</view>
 				<view v-else class="detail-empty">暂无已入账记录，领取后在此查看</view>
@@ -138,7 +144,7 @@
 </template>
 
 <script>
-import { h5IncomeList, h5IncomeClaimAll, h5IncomeClaim, h5RefreshHomeCache } from '@/pages/h5/common/api';
+import { h5IncomeList, h5IncomeClaimedList, h5IncomeClaimAll, h5IncomeClaim, h5RefreshHomeCache } from '@/pages/h5/common/api';
 import { H5_APP_LOGO } from '@/pages/h5/common/branding';
 
 export default {
@@ -146,6 +152,9 @@ export default {
 		return {
 			packets: [],
 			detailList: [],
+			detailPage: 1,
+			detailHasMore: false,
+			detailLoadingMore: false,
 			pendingTotal: '0.00',
 			pendingCount: 0,
 			summaryPoints: '0.00',
@@ -282,6 +291,8 @@ export default {
 				const d = res.data || {};
 				this.packets = d.packets || [];
 				this.detailList = d.detailList || [];
+				this.detailPage = 1;
+				this.detailHasMore = !!d.detailHasMore;
 				this.syncPendingTotalFromPackets();
 				this.pendingCount = Number(d.pendingCount || 0);
 				const realTicker = (d.subsidyTicker || []).map((x, idx) => ({
@@ -296,6 +307,31 @@ export default {
 				this.summaryPoints = su.accountPoints != null ? String(su.accountPoints) : '0.00';
 			} finally {
 				this.loading = false;
+			}
+		},
+		appendDetailRows(rows) {
+			const incoming = Array.isArray(rows) ? rows : [];
+			if (!incoming.length) return;
+			const seen = new Set((this.detailList || []).map((x) => String(x.id || '')));
+			const extra = incoming.filter((x) => x && x.id && !seen.has(String(x.id)));
+			if (extra.length) this.detailList = this.detailList.concat(extra);
+		},
+		async loadMoreDetails() {
+			if (!this.detailHasMore || this.detailLoadingMore || this.loading) return;
+			const nextPage = this.detailPage + 1;
+			this.detailLoadingMore = true;
+			try {
+				const res = await h5IncomeClaimedList({ page: nextPage, pageSize: 50 });
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
+					return;
+				}
+				const d = res.data || {};
+				this.appendDetailRows(d.detailList || []);
+				this.detailPage = Number(d.detailPage) || nextPage;
+				this.detailHasMore = !!d.detailHasMore;
+			} finally {
+				this.detailLoadingMore = false;
 			}
 		},
 		async claimOne(row) {
@@ -740,8 +776,19 @@ export default {
 	padding: 14px 0;
 	border-bottom: 1px solid #e2e8f0;
 }
-.detail-row:last-child {
-	border-bottom: none;
+
+.detail-footer {
+	height: 48px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.detail-footer-txt {
+	font-size: 12px;
+	color: #94a3b8;
+	line-height: 48px;
 }
 
 .row-left {

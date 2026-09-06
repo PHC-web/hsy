@@ -248,6 +248,10 @@ export function h5IncomeList() {
 	return merchantCall('h5IncomeList', merchantIdentity());
 }
 
+export function h5IncomeClaimedList(payload = {}) {
+	return merchantCall('h5IncomeClaimedList', merchantIdentity(payload || {}));
+}
+
 export function h5PendingReturnPoints() {
 	return merchantCall('h5PendingReturnPoints', merchantIdentity());
 }

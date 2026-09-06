@@ -40,6 +40,7 @@
 							<uni-th align="center" width="90">待提现</uni-th>
 							<uni-th align="center" width="90">已提现</uni-th>
 							<uni-th align="center" width="90">冻结金额</uni-th>
+							<uni-th align="center" width="100">本月待解锁</uni-th>
 							<uni-th align="center" width="70">优惠券</uni-th>
 							<uni-th align="center" width="90" filter-type="select" :filter-data="useStatusFilterData" @filter-change="headerFilterChange($event, 'useStatus')">使用状态</uni-th>
 							<uni-th align="center" width="150" filter-type="timestamp" @filter-change="headerFilterChange($event, 'loginTime')">最后登录</uni-th>
@@ -77,6 +78,7 @@
 							<uni-td align="center" class="money">{{ item.pendingWithdraw }}</uni-td>
 							<uni-td align="center" class="money">{{ item.withdrawn }}</uni-td>
 							<uni-td align="center" class="money">{{ item.frozenAmount }}</uni-td>
+							<uni-td align="center" class="money">{{ item.monthUnlockAmount }}</uni-td>
 							<uni-td align="center">{{ item.couponCount }}</uni-td>
 							<uni-td align="center">
 								<switch :checked="item.status" @change="onSwitch(item, 'status', $event.detail.value)" />
@@ -1210,6 +1212,7 @@ export default {
 				待提现: x.pendingWithdraw || '',
 				已提现: x.withdrawn || '',
 				冻结金额: x.frozenAmount || '',
+				本月待解锁: x.monthUnlockAmount || '',
 				优惠券: x.couponCount || 0,
 				使用状态: x.useStatus || '',
 				最后登录: x.loginTime || '',

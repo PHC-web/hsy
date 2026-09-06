@@ -31,7 +31,7 @@
 					汇总 H5 为商户生成的积分红包（手续费补贴等，数据表 hsy-income-packets）。金额与 H5「账号积分」同口径（元）。「冻结金额」仅流水首期有值：领取首期后进入后四期的待返合计（如刷 1 万领 7.6，冻结 30.4）。
 				</text>
 				<text v-else-if="activeTab === 'points_log'">
-					请根据机具号进行搜索。领取首期：流水 ≥300 时冻结增加「整笔返现−首期」（刷 5 万领 38，冻结 +152）；300 以下冻结 +0。
+					请按机具号搜索。结余倒推对齐商户列表待提现/冻结。「本月待解锁」：领取分期待返会减少；新月先「上月待解锁作废→0」，再「月份结转」从冻结转入。①领取首期 ②作废/结转 ③提现 ④领取分期待返 ⑤积分优化 ⑥升级清零。
 				</text>
 				<text v-else>
 					普通会员通过兑换码升级白银、或付费升级黄金/白金/钻石时，系统清除其已领取的账号积分（待提现）与冻结金额的操作记录。
@@ -67,12 +67,13 @@
 				<view v-if="activeTab === 'points_log' && logMerchant" class="log-merchant">
 					<view>当前商户：{{ logMerchant.wx_nickname }}　{{ logMerchant.user_id }}　{{ logMerchant.mobile }}</view>
 					<view v-if="logMerchant.list_pending_text != null">
-						商户列表当前：待提现 {{ logMerchant.list_pending_text }}　冻结 {{ logMerchant.list_frozen_text }}
+						商户列表当前：待提现 {{ logMerchant.list_pending_text }}　冻结 {{ logMerchant.list_frozen_text
+						}}　本月待解锁 {{ logMerchant.list_unlock_text != null ? logMerchant.list_unlock_text : '-' }}
 					</view>
 				</view>
 			</view>
 
-			<view v-if="activeTab === 'packets'" class="table-container-wrapper admin-table-slot">
+			<view v-if="activeTab === 'packets'" :key="'tab-packets'" class="table-container-wrapper admin-table-slot">
 				<view class="table-container table-scroll points-table-wrap">
 					<uni-table :key="'pkt-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
@@ -129,15 +130,16 @@
 				</view>
 			</view>
 
-			<view v-else-if="activeTab === 'points_log'" class="table-container-wrapper admin-table-slot">
+			<view v-else-if="activeTab === 'points_log'" :key="'tab-points-log'" class="table-container-wrapper admin-table-slot">
 				<view class="table-container table-scroll">
-					<uni-table border stripe :loading="loading" :empty-text="logEmptyText">
+					<uni-table :key="'log-' + tableKey" border stripe :loading="loading" :empty-text="logEmptyText">
 						<uni-tr>
 							<uni-th width="160">时间</uni-th>
 							<uni-th width="120">类型</uni-th>
 							<uni-th width="220">说明</uni-th>
 							<uni-th width="100">待提现</uni-th>
 							<uni-th width="100">冻结金额</uni-th>
+							<uni-th width="110">本月待解锁</uni-th>
 							<uni-th width="88">锚定流水</uni-th>
 						</uni-tr>
 						<uni-tr v-for="item in balanceLogList" :key="item._id">
@@ -156,15 +158,21 @@
 									<text class="log-amt-after">{{ item.frozenAfterText }}</text>
 								</view>
 							</uni-td>
+							<uni-td>
+								<view class="log-amt">
+									<text :class="'log-delta-' + item.unlockDeltaSign">{{ item.unlockDeltaText }}</text>
+									<text class="log-amt-after">{{ item.unlockAfterText }}</text>
+								</view>
+							</uni-td>
 							<uni-td>{{ item.anchorFlowText }}</uni-td>
 						</uni-tr>
 					</uni-table>
 				</view>
 			</view>
 
-			<view v-else class="table-container-wrapper admin-table-slot">
+			<view v-else :key="'tab-upgrade-clear'" class="table-container-wrapper admin-table-slot">
 				<view class="table-container table-scroll">
-					<uni-table border stripe :loading="loading" empty-text="暂无数据">
+					<uni-table :key="'clr-' + tableKey" border stripe :loading="loading" empty-text="暂无数据">
 						<uni-tr>
 							<uni-th width="152">操作时间</uni-th>
 							<uni-th width="120">商户</uni-th>
@@ -260,6 +268,7 @@ export default {
 			upgradeClearList: [],
 			balanceLogList: [],
 			logMerchant: null,
+			searchSeq: 0,
 			keyword: '',
 			range: defaultRange(),
 			statusFilter: 'all',
@@ -353,13 +362,19 @@ export default {
 		},
 		switchTab(tab) {
 			if (this.activeTab === tab) return;
+			this.searchSeq += 1;
 			this.activeTab = tab;
 			this.keyword = '';
 			this.logMerchant = null;
+			this.list = [];
+			this.upgradeClearList = [];
 			this.balanceLogList = [];
+			this.pageInfo.total = 0;
+			this.clearPageInfo.total = 0;
 			this.showExportMenu = false;
 			this.pageInfo.currentPage = 1;
 			this.clearPageInfo.currentPage = 1;
+			this.tableKey += 1;
 			this.search();
 		},
 		statusClass(key) {
@@ -435,7 +450,9 @@ export default {
 			};
 		},
 		search(fromUser) {
-			if (this.activeTab === 'points_log' && !String(this.keyword || '').trim()) {
+			const tab = this.activeTab;
+			if (tab === 'points_log' && !String(this.keyword || '').trim()) {
+				this.searchSeq += 1;
 				this.balanceLogList = [];
 				this.logMerchant = null;
 				this.pageInfo.total = 0;
@@ -444,16 +461,20 @@ export default {
 				return;
 			}
 			this.loading = true;
+			this.searchSeq += 1;
+			const seq = this.searchSeq;
 			const action = this.listAction();
 			this.$request(action, this.buildPayload(), { functionName: 'ops-points-admin' })
 				.then((res) => {
+					if (seq !== this.searchSeq) return;
 					this.loading = false;
+					if (this.activeTab !== tab) return;
 					if (res.code !== 0) {
 						uni.showToast({ title: res.message || '加载失败', icon: 'none' });
-						if (this.activeTab === 'upgrade_clear') {
+						if (tab === 'upgrade_clear') {
 							this.upgradeClearList = [];
 							this.clearPageInfo.total = 0;
-						} else if (this.activeTab === 'points_log') {
+						} else if (tab === 'points_log') {
 							this.balanceLogList = [];
 							this.logMerchant = null;
 							this.pageInfo.total = 0;
@@ -464,12 +485,14 @@ export default {
 						return;
 					}
 					const d = res.data || {};
-					if (this.activeTab === 'upgrade_clear') {
+					if (tab === 'upgrade_clear') {
 						this.upgradeClearList = d.list || [];
 						this.clearPageInfo.total = Number(d.total) || 0;
 						syncOpsListPageSize(this.clearPageInfo, d);
-					} else if (this.activeTab === 'points_log') {
-						this.balanceLogList = d.list || [];
+					} else if (tab === 'points_log') {
+						this.balanceLogList = (d.list || []).filter(
+							(x) => x && (x.event_type_label != null || x.event_time != null)
+						);
 						this.logMerchant = d.merchant || null;
 						this.pageInfo.total = Number(d.total) || 0;
 						syncOpsListPageSize(this.pageInfo, d);
@@ -480,10 +503,12 @@ export default {
 					}
 				})
 				.catch(() => {
+					if (seq !== this.searchSeq) return;
 					this.loading = false;
-					if (this.activeTab === 'upgrade_clear') {
+					if (this.activeTab !== tab) return;
+					if (tab === 'upgrade_clear') {
 						this.upgradeClearList = [];
-					} else if (this.activeTab === 'points_log') {
+					} else if (tab === 'points_log') {
 						this.balanceLogList = [];
 					} else {
 						this.list = [];
@@ -567,6 +592,8 @@ export default {
 				待提现结果: item.pendingAfterText || '',
 				冻结变化: item.frozenDeltaText || '',
 				冻结结果: item.frozenAfterText || '',
+				本月待解锁变化: item.unlockDeltaText || '',
+				本月待解锁结果: item.unlockAfterText || '',
 				锚定流水: item.anchorFlowText || '',
 				商户昵称: item.merchant_name || '-',
 				商户ID: item.merchant_user_id || '',

@@ -1023,9 +1023,10 @@ async function listMerchants(data) {
 		const total = countRes.total;
 		const rows = res.data || [];
 		// 已提现口径：提现记录里“已到账(arrival_status=received)”的历史累计（与 H5 已到账统计同源）
-		const [withdrawnByUid, frozenByUid] = await Promise.all([
+		const [withdrawnByUid, frozenByUid, unlockByUid] = await Promise.all([
 			batchComputeReceivedWithdrawAmountForMerchants(rows),
-			batchComputeFutureDeferredFrozenForMerchants(rows, nowTs())
+			batchComputeFutureDeferredFrozenForMerchants(rows, nowTs()),
+			batchComputeCurrentMonthUnlockForMerchants(rows, nowTs())
 		]);
 		const bindUserIds = rows
 			.flatMap((item) => [String(item.user_id || '').trim(), String(item._id || '').trim()])
@@ -1043,6 +1044,7 @@ async function listMerchants(data) {
 				: safeText(item.device_id, 80) || '-';
 			// 冻结：未来月未领待返合计；有分片账本用 effective（含积分优化），否则回退流水理论
 			const frozenYuan = Number(frozenByUid.has(uid) ? frozenByUid.get(uid) : item.frozen_amount || 0) || 0;
+			const unlockYuan = Number(unlockByUid.has(uid) ? unlockByUid.get(uid) : 0) || 0;
 			const curFrozen = Number(Number(item.frozen_amount || 0).toFixed(4));
 			if (Math.abs(frozenYuan - curFrozen) > 0.0001 && item._id) {
 				try {
@@ -1074,6 +1076,7 @@ async function listMerchants(data) {
 			pendingWithdraw: toMoney(normalizePendingBalance(item)),
 			withdrawn: toMoney(withdrawnYuan),
 			frozenAmount: toMoney(frozenYuan),
+			monthUnlockAmount: toMoney(unlockYuan),
 			couponCount: item.coupon_count || 0,
 			membershipLevel: membership.level,
 			membershipOpenedAt: membership.openedAt ? formatTime(membership.openedAt) : '-',
@@ -17549,6 +17552,55 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTsV
 	return frozenByUid;
 }
 
+/**
+ * 商户列表批量：「本月待解锁」= 分片账本中目标月=当前月、未领取的 effective 合计。
+ * 与积分日志 liveCurrentMonthUnlockYuan 同口径；无分片账本则为 0。
+ */
+async function batchComputeCurrentMonthUnlockForMerchants(merchantDocs, nowTsVal) {
+	const unlockByUid = new Map();
+	const rows = Array.isArray(merchantDocs) ? merchantDocs : [];
+	if (!rows.length) return unlockByUid;
+
+	const uids = [...new Set(rows.map((m) => String(m.user_id || m._id || '')).filter(Boolean))];
+	for (const uid of uids) unlockByUid.set(uid, 0);
+	if (!uids.length) return unlockByUid;
+
+	const curYm = shanghaiYearMonthFromTs(nowTsVal || nowTs());
+	const _ = db.command;
+	const $ = db.command.aggregate;
+	const sliceCol = db.collection('hsy-points-slice-state');
+	const CHUNK = 100;
+
+	for (let i = 0; i < uids.length; i += CHUNK) {
+		const part = uids.slice(i, i + CHUNK);
+		try {
+			const sumAgg = await sliceCol
+				.aggregate()
+				.match(
+					_.and([
+						{ merchant_user_id: _.in(part) },
+						{ is_deleted: _.neq(true) },
+						{ is_claimed: _.neq(true) },
+						{ target_ym: curYm }
+					])
+				)
+				.group({
+					_id: '$merchant_user_id',
+					total: $.sum('$effective_amount')
+				})
+				.end();
+			for (const r of (sumAgg && sumAgg.data) || []) {
+				const uid = String(r._id || '').trim();
+				if (!uid) continue;
+				unlockByUid.set(uid, Number(Number(r.total || 0).toFixed(2)));
+			}
+		} catch (e) {
+			console.error('batchComputeCurrentMonthUnlockForMerchants slice', e);
+		}
+	}
+	return unlockByUid;
+}
+
 async function recalcAndPersistFrozenAmountForMerchantById(merchantIdOrUserId) {
 	const merchant = await getMerchantByIdOrUserId(merchantIdOrUserId);
 	if (!merchant) return { ok: false, reason: 'merchant_not_found' };
@@ -18076,19 +18128,8 @@ async function h5IncomeList(data) {
 			};
 		});
 		pendingTotal = subsidyEngine.roundPacketAmountYuan(pendingTotal);
-		const claimedRes = await incomePacketCollection
-			.where({ merchant_user_id: merchantUserId, is_deleted: false, status: 'claimed' })
-			.orderBy('claimed_time', 'desc')
-			.limit(50)
-			.get();
-		const detailList = (claimedRes.data || [])
-			.filter((x) => subsidyEngine.roundPacketAmountYuan(x.amount) >= 0.01)
-			.map((x) => ({
-				id: x._id,
-				title: x.title || '手续费补贴',
-				amount: subsidyEngine.roundPacketAmountYuan(x.amount).toFixed(2),
-				timeText: formatTime(x.claimed_time || x.update_time)
-			}));
+		const claimedPage = await fetchH5IncomeClaimedPage(merchantUserId, 1, 50);
+		const detailList = claimedPage.detailList;
 		let subsidyTicker = [];
 		try {
 			const recentClaimed = await incomePacketCollection
@@ -18137,6 +18178,9 @@ async function h5IncomeList(data) {
 				pendingTotal: pendingTotal.toFixed(2),
 				pendingCount: packets.length,
 				detailList,
+				detailHasMore: claimedPage.hasMore,
+				detailPage: 1,
+				detailPageSize: 50,
 				subsidyTicker,
 				servicePhone: safeText(biz?.servicePhone || DEFAULT_BIZ_SETTINGS.servicePhone, 30),
 				summary: {
@@ -18147,6 +18191,62 @@ async function h5IncomeList(data) {
 		};
 	} catch (e) {
 		console.error('h5IncomeList failed', e);
+		return { code: 500, message: '获取失败' };
+	}
+}
+
+async function fetchH5IncomeClaimedPage(merchantUserId, page, pageSize) {
+	const uid = String(merchantUserId || '').trim();
+	const size = Math.min(50, Math.max(1, Number(pageSize) || 50));
+	const p = Math.max(1, Number(page) || 1);
+	if (!uid) return { detailList: [], hasMore: false, page: p, pageSize: size };
+	const skip = (p - 1) * size;
+	const claimedRes = await incomePacketCollection
+		.where({ merchant_user_id: uid, is_deleted: false, status: 'claimed' })
+		.field({
+			_id: true,
+			title: true,
+			amount: true,
+			claimed_time: true,
+			update_time: true
+		})
+		.orderBy('claimed_time', 'desc')
+		.skip(skip)
+		.limit(size)
+		.get();
+	const raw = claimedRes.data || [];
+	const detailList = raw
+		.filter((x) => subsidyEngine.roundPacketAmountYuan(x.amount) >= 0.01)
+		.map((x) => ({
+			id: x._id,
+			title: x.title || '手续费补贴',
+			amount: subsidyEngine.roundPacketAmountYuan(x.amount).toFixed(2),
+			timeText: formatTime(x.claimed_time || x.update_time)
+		}));
+	return { detailList, hasMore: raw.length >= size, page: p, pageSize: size };
+}
+
+async function h5IncomeClaimedList(data) {
+	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const merchantUserId = merchant.user_id || merchant._id;
+		const page = Math.max(1, Number(data.page) || 1);
+		const pageSize = Math.min(50, Math.max(1, Number(data.pageSize) || 50));
+		const claimedPage = await fetchH5IncomeClaimedPage(merchantUserId, page, pageSize);
+		return {
+			code: 0,
+			message: 'ok',
+			data: {
+				detailList: claimedPage.detailList,
+				detailHasMore: claimedPage.hasMore,
+				detailPage: claimedPage.page,
+				detailPageSize: claimedPage.pageSize
+			}
+		};
+	} catch (e) {
+		console.error('h5IncomeClaimedList failed', e);
 		return { code: 500, message: '获取失败' };
 	}
 }
@@ -22323,6 +22423,8 @@ exports.main = async (event, context) => {
 			return await applyDueRefundClawbackTasksAction(actualData);
 		case 'h5IncomeList':
 			return await h5IncomeList(actualData);
+		case 'h5IncomeClaimedList':
+			return await h5IncomeClaimedList(actualData);
 		case 'h5IncomeClaim':
 			return await h5IncomeClaim(actualData);
 		case 'h5IncomeClaimAll':
