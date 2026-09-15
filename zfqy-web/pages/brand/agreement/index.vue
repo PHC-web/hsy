@@ -257,7 +257,7 @@ export default {
 		},
 		async submitCreate() {
 			if (!this.createForm.pdfFileId) return uni.showToast({ title: '请先上传PDF', icon: 'none' });
-			uni.showLoading({ title: '发布并生成底图...', mask: true });
+			uni.showLoading({ title: '发布并预热底图...', mask: true });
 			try {
 				const res = await this.$request(
 					'agreementCreate',

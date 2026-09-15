@@ -25,7 +25,12 @@
 							<uni-th align="center" width="100">赠品</uni-th>
 							<uni-th align="center" width="100">微信</uni-th>
 							<uni-th align="center" width="110">手机</uni-th>
-							<uni-th align="center" width="100">机具</uni-th>
+							<uni-th
+								align="center"
+								width="120"
+								filter-type="search"
+								@filter-change="headerFilterChange($event, 'deviceId')"
+							>机具</uni-th>
 							<uni-th align="center" width="90">品牌</uni-th>
 							<uni-th align="center" width="140">快递单号</uni-th>
 							<uni-th align="center" width="90">签收状态</uni-th>
@@ -96,6 +101,7 @@ export default {
 		return {
 			orderNo: '',
 			keyword: '',
+			deviceId: '',
 			statusIndex: 0,
 			statusLabels: STATUS_LABELS,
 			loading: false,
@@ -124,6 +130,13 @@ export default {
 		onFormStatusPick(e) {
 			this.formStatusIndex = Number(e.detail.value || 0);
 		},
+		headerFilterChange(e, field) {
+			const { filterType, filter } = e || {};
+			if (field === 'deviceId' && filterType === 'search') {
+				this.deviceId = String(filter == null ? '' : filter).trim().slice(0, 50);
+			}
+			this.search();
+		},
 		search() {
 			this.pageInfo.currentPage = 1;
 			this.loadList();
@@ -141,6 +154,7 @@ export default {
 						pageSize: this.pageInfo.pageSize,
 						orderNo: this.orderNo.trim(),
 						keyword: this.keyword.trim(),
+						deviceId: this.deviceId.trim(),
 						receiptStatus: this.buildReceiptStatus()
 					},
 					{ functionName: 'merchant' }

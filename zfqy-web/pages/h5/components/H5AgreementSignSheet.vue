@@ -101,7 +101,7 @@ export default {
 				this.$refs.agreementPopup.open();
 				this.$nextTick(() => {
 					this.ensureAgreementPreviewReady();
-					// 与 PDF 预览并行预热签署底图，提交时只需盖章
+					// 底图已在后台发布时写入 Redis；此处仅后台静默刷新缓存，不阻塞签名
 					const agrId = String(this.agreement.agreementId || '').trim();
 					h5EnsureAgreementBaseJpeg(agrId ? { agreementId: agrId } : {}).catch(() => {});
 				});
@@ -285,10 +285,10 @@ export default {
 				ctx.strokeRect(sidePad, blockTop + 12, canvas.width - sidePad * 2, signBlockHeight - 24);
 				ctx.fillStyle = '#0f172a';
 				ctx.font = '600 28px sans-serif';
-				ctx.fillText('乙方签名确认', sidePad + 20, blockTop + 56);
+				ctx.fillText('签署区', sidePad + 20, blockTop + 56);
 				ctx.font = '500 22px sans-serif';
 				const ds = new Date();
-				const dateText = `签署日期：${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, '0')}-${String(ds.getDate()).padStart(2, '0')} ${String(ds.getHours()).padStart(2, '0')}:${String(ds.getMinutes()).padStart(2, '0')}`;
+				const dateText = `签署时间：${ds.getFullYear()}-${String(ds.getMonth() + 1).padStart(2, '0')}-${String(ds.getDate()).padStart(2, '0')} ${String(ds.getHours()).padStart(2, '0')}:${String(ds.getMinutes()).padStart(2, '0')}`;
 				ctx.fillText(dateText, sidePad + 20, blockTop + signBlockHeight - 36);
 				if (signImg) {
 					const maxSignW = Math.min(360, Math.floor(canvas.width * 0.36));
@@ -311,7 +311,6 @@ export default {
 			}
 			uni.showLoading({ title: '提交签署...', mask: true });
 			try {
-				// 只上传签名小图；服务端将协议 PDF 与签名合成 JPEG 后落库
 				const res = await h5SignAgreement({
 					signatureImage,
 					agreementVersion: this.agreement.currentVersion || '',

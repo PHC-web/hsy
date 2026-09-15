@@ -31,7 +31,7 @@
 						<uni-td align="center">{{ item.memberDays }}</uni-td>
 						<uni-td align="center">{{ item.usedText }}</uni-td>
 						<uni-td align="center">{{ item.usedMerchantName || '-' }}</uni-td>
-						<uni-td align="center">{{ item.usedTime || '-' }}</uni-td>
+						<uni-td align="center">{{ item.used ? item.usedTime || '-' : '-' }}</uni-td>
 						<uni-td align="center">{{ item.generateUser || '-' }}</uni-td>
 					</uni-tr>
 				</uni-table>

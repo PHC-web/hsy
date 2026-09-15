@@ -202,23 +202,22 @@
 				<view
 					ref="previewViewport"
 					class="img-preview-viewport"
-					@wheel.prevent="onPreviewWheel"
 					@mousedown="onPreviewMouseDown"
 					@mousemove="onPreviewMouseMove"
 					@mouseup="onPreviewMouseUp"
 					@mouseleave="onPreviewMouseUp"
 				>
-					<image
-						ref="previewImage"
-						class="img-preview-main"
-						:src="previewImageUrl"
-						mode="widthFix"
-						:style="previewImageStyle"
-						@load="onPreviewImageLoad"
-					/>
+					<view class="img-preview-layer" :style="previewImageStyle">
+						<image
+							class="img-preview-main"
+							:src="previewImageUrl"
+							mode="widthFix"
+							@load="onPreviewImageLoad"
+						/>
+					</view>
 				</view>
 				<view class="img-preview-tip">
-					Ctrl+滚轮或双指捏合缩放（以指针为中心）；双指滑动上下浏览；按住左键拖动平移
+					Ctrl+滚轮或双指捏合放大；鼠标滚轮拖动浏览.
 				</view>
 				<view v-if="agreementPreviewIp || agreementPreviewDevice" class="img-preview-meta">
 					<text class="img-preview-meta-line">签署 IP：{{ agreementPreviewIp || '—' }}</text>
@@ -529,10 +528,21 @@ export default {
 			previewDragOriginX: 0,
 			previewDragOriginY: 0,
 			previewPinchBaseScale: 1,
+			previewContentHeight: 0,
 			_previewGestureEl: null,
 			_boundGestureStart: null,
 			_boundGestureChange: null,
 			_boundGestureEnd: null,
+			_boundPreviewWheel: null,
+			_boundPreviewTouchStart: null,
+			_boundPreviewTouchMove: null,
+			_boundPreviewTouchEnd: null,
+			_previewTouchMode: '',
+			_previewTouchLastY: 0,
+			_previewTouchLastX: 0,
+			_previewTouchPinchDist: 0,
+			_previewTouchPinchScale: 1,
+			_previewTouchCenter: { x: 0, y: 0 },
 			offlinePackages: [],
 			defaultAvatar: 'data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2748%27 height=%2748%27 viewBox=%270 0 48 48%27%3E%3Crect width=%2748%27 height=%2748%27 rx=%2712%27 fill=%27%23f3f4f6%27/%3E%3Cpath d=%27M24 24a7 7 0 1 0-7-7 7 7 0 0 0 7 7Zm0 4c-7.18 0-13 3.13-13 7v2h26v-2c0-3.87-5.82-7-13-7Z%27 fill=%27%239ca3af%27/%3E%3C/svg%3E'
 			,
@@ -585,7 +595,9 @@ export default {
 		},
 		previewImageStyle() {
 			return {
-				transform: `translate(${this.previewOffsetX}px, ${this.previewOffsetY}px) scale(${this.previewScale})`
+				width: '100%',
+				transform: `translate3d(${this.previewOffsetX}px, ${this.previewOffsetY}px, 0) scale(${this.previewScale})`,
+				transformOrigin: '0 0'
 			};
 		},
 		offlineGiftRequired() {
@@ -785,16 +797,116 @@ export default {
 			return dy;
 		},
 		getPreviewViewportRect() {
-			const ref = this.$refs.previewViewport;
-			const el = ref && ref.$el ? ref.$el : ref;
+			const el = this.resolvePreviewViewportEl();
 			if (!el || typeof el.getBoundingClientRect !== 'function') return null;
 			return el.getBoundingClientRect();
+		},
+		resolvePreviewViewportEl() {
+			const ref = this.$refs.previewViewport;
+			if (!ref) return null;
+			if (ref.$el && typeof ref.$el.addEventListener === 'function') return ref.$el;
+			if (typeof ref.addEventListener === 'function') return ref;
+			return null;
 		},
 		resetPreviewTransform() {
 			this.previewScale = 1;
 			this.previewOffsetX = 0;
 			this.previewOffsetY = 0;
 			this.previewDragging = false;
+			this.$nextTick(() => this.measurePreviewContentAndClamp());
+		},
+		getPreviewViewportSize() {
+			const el = this.resolvePreviewViewportEl();
+			if (!el) return { w: 0, h: 0 };
+			return {
+				w: Number(el.clientWidth || 0),
+				h: Number(el.clientHeight || 0)
+			};
+		},
+		/** 未缩放内容高度：按视口宽度 + 图片原始比例换算 */
+		measurePreviewContentHeight() {
+			const el = this.resolvePreviewViewportEl();
+			const vw = el ? Number(el.clientWidth || 0) : 0;
+			if (!el || !(vw > 0)) return Number(this.previewContentHeight || 0);
+
+			const layer = el.querySelector && el.querySelector('.img-preview-layer');
+			const img =
+				(layer && layer.querySelector && layer.querySelector('img')) ||
+				(el.querySelector && el.querySelector('img'));
+
+			let h = 0;
+			const nw = img ? Number(img.naturalWidth || 0) : 0;
+			const nh = img ? Number(img.naturalHeight || 0) : 0;
+			if (nw > 0 && nh > 0) {
+				h = (nh / nw) * vw;
+			} else if (layer) {
+				// offsetHeight 不受 transform 影响
+				h = Number(layer.offsetHeight || 0);
+			}
+			if (h > 0) this.previewContentHeight = h;
+			return Number(this.previewContentHeight || 0);
+		},
+		measurePreviewContentAndClamp() {
+			this.measurePreviewContentHeight();
+			this.clampPreviewTransform();
+		},
+		/**
+		 * transform-origin(0,0) + translate + scale：
+		 * screen = content * scale + offset；scale 最小 1，平移不得露白。
+		 */
+		clampPreviewTransform() {
+			const scale = Math.max(1, Number(this.previewScale) || 1);
+			this.previewScale = scale;
+			const { w: vw, h: vh } = this.getPreviewViewportSize();
+			if (!(vw > 0 && vh > 0)) {
+				this.previewOffsetX = 0;
+				this.previewOffsetY = 0;
+				return;
+			}
+
+			let contentH = this.measurePreviewContentHeight();
+			// 高度未知时先不放开纵向，避免拖出空白
+			if (!(contentH > 0)) {
+				this.previewOffsetX = scale > 1.001 ? Math.min(0, Math.max(vw - vw * scale, Number(this.previewOffsetX) || 0)) : 0;
+				this.previewOffsetY = 0;
+				return;
+			}
+
+			const scaledW = vw * scale;
+			const scaledH = contentH * scale;
+
+			if (scaledW <= vw + 0.5) {
+				this.previewOffsetX = 0;
+			} else {
+				const minX = vw - scaledW;
+				this.previewOffsetX = Math.min(0, Math.max(minX, Number(this.previewOffsetX) || 0));
+			}
+
+			if (scaledH <= vh + 0.5) {
+				this.previewOffsetY = 0;
+			} else {
+				const minY = vh - scaledH;
+				this.previewOffsetY = Math.min(0, Math.max(minY, Number(this.previewOffsetY) || 0));
+			}
+		},
+		applyPreviewZoomAt(clientX, clientY, newScale) {
+			const scale = Math.max(1, Math.min(8, Number(newScale) || 1));
+			const rect = this.getPreviewViewportRect();
+			const oldScale = Math.max(1, Number(this.previewScale) || 1);
+			if (!rect) {
+				this.previewScale = scale;
+				this.clampPreviewTransform();
+				return;
+			}
+			if (Math.abs(scale - oldScale) < 1e-6) return;
+			const mx = clientX - rect.left;
+			const my = clientY - rect.top;
+			const contentX = (mx - (Number(this.previewOffsetX) || 0)) / oldScale;
+			const contentY = (my - (Number(this.previewOffsetY) || 0)) / oldScale;
+			this.previewScale = scale;
+			this.previewOffsetX = mx - contentX * scale;
+			this.previewOffsetY = my - contentY * scale;
+			this.clampPreviewTransform();
 		},
 		previewImg(url, opts = {}) {
 			if (!url) return;
@@ -809,39 +921,68 @@ export default {
 			this.previewImageUrl = String(url);
 			if (this.$refs.imgPreviewPopup) {
 				this.$refs.imgPreviewPopup.open();
-				this.$nextTick(() => this.attachPreviewGestureListeners());
+				this.$nextTick(() => {
+					setTimeout(() => this.attachPreviewInteractionListeners(), 30);
+				});
 				return;
 			}
 			uni.previewImage({ urls: [url], current: url });
 		},
-		attachPreviewGestureListeners() {
+		attachPreviewInteractionListeners() {
 			// #ifdef H5
-			this.detachPreviewGestureListeners();
-			const ref = this.$refs.previewViewport;
-			const el = ref && (ref.$el || ref);
-			if (!el || typeof el.addEventListener !== 'function') return;
+			this.detachPreviewInteractionListeners();
+			const el = this.resolvePreviewViewportEl();
+			if (!el) return;
+			this._boundPreviewWheel = (ev) => this.onPreviewWheelNative(ev);
 			this._boundGestureStart = (ev) => this.onPreviewGestureStart(ev);
 			this._boundGestureChange = (ev) => this.onPreviewGestureChange(ev);
 			this._boundGestureEnd = () => this.onPreviewGestureEnd();
+			this._boundPreviewTouchStart = (ev) => this.onPreviewTouchStart(ev);
+			this._boundPreviewTouchMove = (ev) => this.onPreviewTouchMove(ev);
+			this._boundPreviewTouchEnd = (ev) => this.onPreviewTouchEnd(ev);
+			el.addEventListener('wheel', this._boundPreviewWheel, { passive: false });
 			el.addEventListener('gesturestart', this._boundGestureStart, { passive: false });
 			el.addEventListener('gesturechange', this._boundGestureChange, { passive: false });
 			el.addEventListener('gestureend', this._boundGestureEnd, false);
+			el.addEventListener('touchstart', this._boundPreviewTouchStart, { passive: false });
+			el.addEventListener('touchmove', this._boundPreviewTouchMove, { passive: false });
+			el.addEventListener('touchend', this._boundPreviewTouchEnd, { passive: false });
+			el.addEventListener('touchcancel', this._boundPreviewTouchEnd, { passive: false });
 			this._previewGestureEl = el;
+			this.measurePreviewContentAndClamp();
 			// #endif
 		},
-		detachPreviewGestureListeners() {
+		detachPreviewInteractionListeners() {
 			// #ifdef H5
 			const el = this._previewGestureEl;
-			if (el && this._boundGestureStart) {
-				el.removeEventListener('gesturestart', this._boundGestureStart);
-				el.removeEventListener('gesturechange', this._boundGestureChange);
-				el.removeEventListener('gestureend', this._boundGestureEnd);
+			if (el) {
+				if (this._boundPreviewWheel) el.removeEventListener('wheel', this._boundPreviewWheel);
+				if (this._boundGestureStart) el.removeEventListener('gesturestart', this._boundGestureStart);
+				if (this._boundGestureChange) el.removeEventListener('gesturechange', this._boundGestureChange);
+				if (this._boundGestureEnd) el.removeEventListener('gestureend', this._boundGestureEnd);
+				if (this._boundPreviewTouchStart) el.removeEventListener('touchstart', this._boundPreviewTouchStart);
+				if (this._boundPreviewTouchMove) el.removeEventListener('touchmove', this._boundPreviewTouchMove);
+				if (this._boundPreviewTouchEnd) {
+					el.removeEventListener('touchend', this._boundPreviewTouchEnd);
+					el.removeEventListener('touchcancel', this._boundPreviewTouchEnd);
+				}
 			}
 			this._previewGestureEl = null;
+			this._boundPreviewWheel = null;
 			this._boundGestureStart = null;
 			this._boundGestureChange = null;
 			this._boundGestureEnd = null;
+			this._boundPreviewTouchStart = null;
+			this._boundPreviewTouchMove = null;
+			this._boundPreviewTouchEnd = null;
+			this._previewTouchMode = '';
 			// #endif
+		},
+		attachPreviewGestureListeners() {
+			this.attachPreviewInteractionListeners();
+		},
+		detachPreviewGestureListeners() {
+			this.detachPreviewInteractionListeners();
 		},
 		async previewAgreement(item) {
 			if (!item || !item.id || !item.agreementSigned) return;
@@ -915,61 +1056,136 @@ export default {
 			});
 		},
 		onPreviewImageLoad() {
-			this.resetPreviewTransform();
+			this.previewScale = 1;
+			this.previewOffsetX = 0;
+			this.previewOffsetY = 0;
+			this.previewDragging = false;
+			this.$nextTick(() => {
+				setTimeout(() => this.measurePreviewContentAndClamp(), 40);
+			});
 		},
-		onPreviewWheel(e) {
-			const rect = this.getPreviewViewportRect();
-			if (!rect) return;
-			const evt = e && (e.originalEvent || e);
+		onPreviewWheelNative(evt) {
 			if (!evt) return;
+			if (typeof evt.preventDefault === 'function') evt.preventDefault();
+			if (typeof evt.stopPropagation === 'function') evt.stopPropagation();
 			const deltaY = this.normalizeWheelDeltaY(evt);
-			if (Math.abs(deltaY) < 0.01) return;
+			const deltaX = Number(evt.deltaX) || 0;
+			if (Math.abs(deltaY) < 0.01 && Math.abs(deltaX) < 0.01) return;
 
-			/** Mac 触控板双指滑动为「非 Ctrl」滚轮：上下平移预览；Ctrl+滚轮 / Chrome 捏合为缩放 */
 			const zoomIntent = !!(evt.ctrlKey || evt.metaKey);
-			if (!zoomIntent) {
-				this.previewOffsetY -= deltaY * 0.85;
+			if (zoomIntent) {
+				const step = Math.exp(-(deltaY || deltaX) * 0.01);
+				const oldScale = Math.max(1, Number(this.previewScale) || 1);
+				const newScale = Math.max(1, Math.min(8, Number((oldScale * step).toFixed(5))));
+				if (Math.abs(newScale - oldScale) < 1e-6) return;
+				this.applyPreviewZoomAt(Number(evt.clientX || 0), Number(evt.clientY || 0), newScale);
 				return;
 			}
 
-			const step = Math.exp(-deltaY * 0.0025);
-			const oldScale = this.previewScale;
-			const newScale = Math.max(0.2, Math.min(8, Number((oldScale * step).toFixed(5))));
-			if (Math.abs(newScale - oldScale) < 1e-6) return;
-			const mouse = this.getMouseClient(e);
-			const mx = mouse.x - rect.left;
-			const my = mouse.y - rect.top;
-			const contentX = (mx - this.previewOffsetX) / oldScale;
-			const contentY = (my - this.previewOffsetY) / oldScale;
-			this.previewScale = newScale;
-			this.previewOffsetX = mx - contentX * newScale;
-			this.previewOffsetY = my - contentY * newScale;
+			this.previewOffsetY -= deltaY * 0.9;
+			if ((Number(this.previewScale) || 1) > 1.001) {
+				this.previewOffsetX -= deltaX * 0.9;
+			}
+			this.clampPreviewTransform();
+		},
+		/** 兼容旧绑定名（已改为原生 wheel） */
+		onPreviewWheel(e) {
+			const evt = e && (e.originalEvent || e);
+			this.onPreviewWheelNative(evt);
 		},
 		onPreviewGestureStart(e) {
-			const evt = e && (e.originalEvent || e);
-			if (evt && evt.preventDefault) evt.preventDefault();
-			this.previewPinchBaseScale = this.previewScale;
+			if (e && e.preventDefault) e.preventDefault();
+			this.previewPinchBaseScale = Math.max(1, this.previewScale || 1);
 		},
 		onPreviewGestureChange(e) {
-			const evt = e && (e.originalEvent || e);
-			if (!evt || evt.scale == null) return;
-			if (evt.preventDefault) evt.preventDefault();
-			const rect = this.getPreviewViewportRect();
-			if (!rect) return;
-			const mouse = this.getMouseClient(e);
-			const mx = mouse.x - rect.left;
-			const my = mouse.y - rect.top;
-			const oldScale = this.previewScale;
-			const newScale = Math.max(0.2, Math.min(8, Number((this.previewPinchBaseScale * evt.scale).toFixed(5))));
-			if (Math.abs(newScale - oldScale) < 1e-6) return;
-			const contentX = (mx - this.previewOffsetX) / oldScale;
-			const contentY = (my - this.previewOffsetY) / oldScale;
-			this.previewScale = newScale;
-			this.previewOffsetX = mx - contentX * newScale;
-			this.previewOffsetY = my - contentY * newScale;
+			if (!e || e.scale == null) return;
+			if (e.preventDefault) e.preventDefault();
+			const newScale = Math.max(
+				1,
+				Math.min(8, Number((this.previewPinchBaseScale * Number(e.scale)).toFixed(5)))
+			);
+			this.applyPreviewZoomAt(Number(e.clientX || 0), Number(e.clientY || 0), newScale);
 		},
 		onPreviewGestureEnd() {
-			this.previewPinchBaseScale = this.previewScale;
+			this.previewPinchBaseScale = Math.max(1, this.previewScale || 1);
+			this.clampPreviewTransform();
+		},
+		_previewTouchDistance(t0, t1) {
+			const dx = Number(t0.clientX) - Number(t1.clientX);
+			const dy = Number(t0.clientY) - Number(t1.clientY);
+			return Math.sqrt(dx * dx + dy * dy) || 1;
+		},
+		_calcPreviewTouchCenter(t0, t1) {
+			return {
+				x: (Number(t0.clientX) + Number(t1.clientX)) / 2,
+				y: (Number(t0.clientY) + Number(t1.clientY)) / 2
+			};
+		},
+		onPreviewTouchStart(e) {
+			if (!e || !e.touches) return;
+			if (e.touches.length >= 2) {
+				if (e.preventDefault) e.preventDefault();
+				const t0 = e.touches[0];
+				const t1 = e.touches[1];
+				this._previewTouchMode = 'pinch';
+				this._previewTouchPinchDist = this._previewTouchDistance(t0, t1);
+				this._previewTouchPinchScale = Math.max(1, this.previewScale || 1);
+				this._previewTouchCenter = this._calcPreviewTouchCenter(t0, t1);
+				this.previewDragging = false;
+				return;
+			}
+			if (e.touches.length === 1) {
+				this._previewTouchMode = 'pan';
+				this._previewTouchLastY = Number(e.touches[0].clientY) || 0;
+				this._previewTouchLastX = Number(e.touches[0].clientX) || 0;
+			}
+		},
+		onPreviewTouchMove(e) {
+			if (!e || !e.touches) return;
+			if (e.touches.length >= 2) {
+				if (e.preventDefault) e.preventDefault();
+				const t0 = e.touches[0];
+				const t1 = e.touches[1];
+				const dist = this._previewTouchDistance(t0, t1);
+				const center = this._calcPreviewTouchCenter(t0, t1);
+				if (this._previewTouchMode !== 'pinch') {
+					this._previewTouchMode = 'pinch';
+					this._previewTouchPinchDist = dist;
+					this._previewTouchPinchScale = Math.max(1, this.previewScale || 1);
+					this._previewTouchCenter = center;
+					return;
+				}
+				const ratio = dist / (this._previewTouchPinchDist || 1);
+				const newScale = Math.max(
+					1,
+					Math.min(8, Number((this._previewTouchPinchScale * ratio).toFixed(5)))
+				);
+				this.applyPreviewZoomAt(center.x, center.y, newScale);
+				return;
+			}
+			if (e.touches.length === 1 && this._previewTouchMode === 'pan') {
+				if (e.preventDefault) e.preventDefault();
+				const x = Number(e.touches[0].clientX) || 0;
+				const y = Number(e.touches[0].clientY) || 0;
+				const dx = x - (this._previewTouchLastX || x);
+				const dy = y - (this._previewTouchLastY || y);
+				this._previewTouchLastX = x;
+				this._previewTouchLastY = y;
+				this.previewOffsetY += dy;
+				if ((Number(this.previewScale) || 1) > 1.001) this.previewOffsetX += dx;
+				this.clampPreviewTransform();
+			}
+		},
+		onPreviewTouchEnd(e) {
+			const left = (e && e.touches && e.touches.length) || 0;
+			if (left < 2) {
+				this._previewTouchMode = left === 1 ? 'pan' : '';
+				if (left === 1 && e.touches[0]) {
+					this._previewTouchLastY = Number(e.touches[0].clientY) || 0;
+					this._previewTouchLastX = Number(e.touches[0].clientX) || 0;
+				}
+			}
+			this.clampPreviewTransform();
 		},
 		onPreviewMouseDown(e) {
 			const evt = e && (e.originalEvent || e);
@@ -984,14 +1200,22 @@ export default {
 		onPreviewMouseMove(e) {
 			if (!this.previewDragging) return;
 			const mouse = this.getMouseClient(e);
-			this.previewOffsetX = this.previewDragOriginX + (mouse.x - this.previewDragStartX);
-			this.previewOffsetY = this.previewDragOriginY + (mouse.y - this.previewDragStartY);
+			const dy = mouse.y - this.previewDragStartY;
+			const dx = mouse.x - this.previewDragStartX;
+			this.previewOffsetY = this.previewDragOriginY + dy;
+			if ((Number(this.previewScale) || 1) > 1.001) {
+				this.previewOffsetX = this.previewDragOriginX + dx;
+			} else {
+				this.previewOffsetX = 0;
+			}
+			this.clampPreviewTransform();
 		},
 		onPreviewMouseUp() {
 			this.previewDragging = false;
+			this.clampPreviewTransform();
 		},
 		closeImgPreview() {
-			this.detachPreviewGestureListeners();
+			this.detachPreviewInteractionListeners();
 			if (this.$refs.imgPreviewPopup) this.$refs.imgPreviewPopup.close();
 			this.previewImageUrl = '';
 			this.agreementPreviewMode = false;
@@ -2100,20 +2324,27 @@ export default {
 	user-select: none;
 	touch-action: none;
 	flex-shrink: 0;
+	overscroll-behavior: none;
 }
 
 .img-preview-viewport:active {
 	cursor: grabbing;
 }
 
-.img-preview-main {
+.img-preview-layer {
 	position: absolute;
 	left: 0;
 	top: 0;
 	width: 100%;
-	height: auto;
-	transform-origin: 0 0;
 	will-change: transform;
+}
+
+.img-preview-main {
+	display: block;
+	width: 100% !important;
+	max-width: 100%;
+	pointer-events: none;
+	user-select: none;
 }
 
 .img-preview-actions {

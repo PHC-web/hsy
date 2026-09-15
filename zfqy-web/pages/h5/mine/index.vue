@@ -507,6 +507,7 @@ export default {
 		async openAgreementPopup() {
 			this.agreementPdfZoom = { scale: 1, tx: 0, ty: 0 };
 			this.$refs.agreementPopup.open();
+			// 底图由后台发布时预热；此处仅静默刷新，不阻塞签名
 			const agrId = String(this.agreement.agreementId || '').trim();
 			h5EnsureAgreementBaseJpeg(agrId ? { agreementId: agrId } : {}).catch(() => {});
 			await this.ensureAgreementPreviewReady();
@@ -728,7 +729,6 @@ export default {
 			}
 			uni.showLoading({ title: '提交签署...', mask: true });
 			try {
-				// 只上传签名小图；服务端将协议 PDF 与签名合成 JPEG 后落库
 				const res = await h5SignAgreement({
 					signatureImage,
 					agreementVersion: this.agreement.currentVersion || '',

@@ -98,6 +98,16 @@
 						<text class="label">非会员最大值(元)</text>
 						<uni-easyinput v-model="form.withdrawRange.nonMemberMax" type="number" placeholder="如 200" />
 					</view>
+					<view class="field">
+						<text class="label">提现税费比例(%)</text>
+						<uni-easyinput v-model="form.withdrawTaxRatePercent" type="number" placeholder="如 8" />
+						<text class="field-hint">客户提现时：税费 = 兑换积分 × 该比例 / 100；与固定手续费一并从申请金额中扣除。保存后写入 Redis。</text>
+					</view>
+					<view class="field">
+						<text class="label">单笔手续费(元)</text>
+						<uni-easyinput v-model="form.withdrawFeeYuan" type="number" placeholder="如 3" />
+						<text class="field-hint">每笔提现固定扣除的手续费（元），可为 0。保存后写入 Redis。</text>
+					</view>
 				</view>
 			</view>
 
@@ -433,6 +443,8 @@ const defaultForm = () => ({
 		paidGoldPlatinum: { dayMax: 200, weekMax: 500 },
 		paidDiamond: { dayMax: 200, weekMax: 500 }
 	},
+	withdrawTaxRatePercent: 8,
+	withdrawFeeYuan: 3,
 	optimizeConfig: { thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
 	pointsOptimizeLoginEnabled: false,
 	pointsOptimizeFlowEnabled: false,
@@ -707,6 +719,8 @@ export default {
 				if (wm.member11Plus == null && wm.member7Plus != null) wm.member11Plus = wm.member7Plus;
 				merged.withdrawMinByCount = wm;
 				merged.withdrawPeriodLimits = this.applyPeriodLimitsFrom(merged);
+				merged.withdrawTaxRatePercent = this.numOr(merged.withdrawTaxRatePercent, 8);
+				merged.withdrawFeeYuan = this.numOr(merged.withdrawFeeYuan, 3);
 				// 独立表覆盖：不依赖云函数是否已更新
 				const fromDb = await this.loadPeriodLimitsFromClientDb();
 				if (fromDb) {

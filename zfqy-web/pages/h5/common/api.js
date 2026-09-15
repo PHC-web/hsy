@@ -20,15 +20,18 @@ function unpackH5CompressedResult(r) {
 	}
 }
 
-function merchantCall(action, params = {}) {
+function merchantCall(action, params = {}, opts = {}) {
+	const payload = {
+		name: 'merchant',
+		data: {
+			action,
+			params
+		}
+	};
+	const timeout = Number(opts.timeout);
+	if (Number.isFinite(timeout) && timeout > 0) payload.timeout = timeout;
 	return uniCloud
-		.callFunction({
-			name: 'merchant',
-			data: {
-				action,
-				params
-			}
-		})
+		.callFunction(payload)
 		.then((r) => unpackH5CompressedResult(r.result || {}));
 }
 
@@ -234,18 +237,21 @@ export function collectAgreementSignClientMeta() {
 	}
 }
 
-export function h5SignAgreement(payload) {
-	const meta = collectAgreementSignClientMeta();
-	return merchantCall('h5SignAgreement', merchantIdentity(Object.assign({}, meta, payload)));
+/** 打开签署弹层时预热协议底图（已有则很快返回）；超时放宽因首次高清渲染可能较慢 */
+export function h5EnsureAgreementBaseJpeg(payload = {}) {
+	return merchantCall('agreementEnsureBaseJpeg', merchantIdentity(payload || {}), { timeout: 90000 });
 }
 
-/** 打开签署弹层时预热协议底图（已有则很快返回） */
-export function h5EnsureAgreementBaseJpeg(payload = {}) {
-	return merchantCall('agreementEnsureBaseJpeg', merchantIdentity(payload || {}));
+export function h5SignAgreement(payload) {
+	const meta = collectAgreementSignClientMeta();
+	return merchantCall('h5SignAgreement', merchantIdentity(Object.assign({}, meta, payload)), {
+		timeout: 60000
+	});
 }
 
 export function h5IncomeList() {
-	return merchantCall('h5IncomeList', merchantIdentity());
+	// 高流水商户首次同步可能较慢，放宽客户端超时（云函数侧已做增量/节流）
+	return merchantCall('h5IncomeList', merchantIdentity(), { timeout: 60000 });
 }
 
 export function h5IncomeClaimedList(payload = {}) {

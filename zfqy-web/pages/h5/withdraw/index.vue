@@ -46,8 +46,13 @@
 				<view class="card h5-glass-panel rules">
 					<text class="rules-title">兑换说明</text>
 					<text class="rules-item">1）单笔手续费 {{ info.feePerOrderYuan }} 元，在兑换积分对应金额中扣除。</text>
-					<text class="rules-item">2）实际打款金额以适用税费政策及审核结果为准，此处「预估到账」仅供参考。</text>
+					<text class="rules-item"
+						>2）税费按兑换积分的 {{ info.taxRatePercent }}% 扣除；实际打款金额以审核结果为准，「预估到账」仅供参考。</text
+					>
 					<text class="rules-item">3）办理时间：工作日 9:00–18:00（北京时间）。</text>
+					<text v-if="previewPoints > 0" class="rules-item preview-line"
+						>预估到账：¥ {{ previewPayable }}（税费约 ¥ {{ previewTax }}）</text
+					>
 				</view>
 
 				<button
@@ -82,6 +87,7 @@ export default {
 				maxPoints: 200,
 				periodLimitHit: '',
 				feePerOrderYuan: 3,
+				taxRatePercent: 8,
 				inBusinessHours: true
 			}
 		};
@@ -106,10 +112,17 @@ export default {
 			const n = parseInt(String(this.pointsInput).trim(), 10);
 			return Number.isFinite(n) && n > 0 ? n : 0;
 		},
+		previewTax() {
+			const p = this.previewPoints;
+			if (!p) return '0.00';
+			const rate = Math.max(0, Math.min(100, Number(this.info.taxRatePercent) || 0)) / 100;
+			return Number((p * rate).toFixed(2)).toFixed(2);
+		},
 		previewPayable() {
 			const p = this.previewPoints;
 			if (!p) return '0.00';
-			const v = p - this.info.feePerOrderYuan;
+			const tax = Number(this.previewTax);
+			const v = p - tax - Number(this.info.feePerOrderYuan || 0);
 			return v > 0 ? v.toFixed(2) : '0.00';
 		},
 		submitDisabled() {
@@ -119,7 +132,7 @@ export default {
 			if (!n) return true;
 			if (n < this.info.minPoints || n > this.info.maxPoints) return true;
 			if (n > this.info.redeemablePoints) return true;
-			if (n - this.info.feePerOrderYuan <= 0) return true;
+			if (Number(this.previewPayable) <= 0) return true;
 			return false;
 		}
 	},
@@ -147,6 +160,7 @@ export default {
 					maxPoints: Number(d.maxPoints != null ? d.maxPoints : 200),
 					periodLimitHit: String(d.periodLimitHit || ''),
 					feePerOrderYuan: Number(d.feePerOrderYuan != null ? d.feePerOrderYuan : 3),
+					taxRatePercent: Number(d.taxRatePercent != null ? d.taxRatePercent : 8),
 					inBusinessHours: !!d.inBusinessHours
 				});
 				// 兜底：max 已为 0 但未带回 hit 时，仍按 0～0 展示，避免「10～0」
@@ -350,6 +364,10 @@ export default {
 	color: #64748b;
 	line-height: 1.55;
 	margin-bottom: 8px;
+}
+.preview-line {
+	color: #0f172a;
+	font-weight: 600;
 }
 
 .submit-btn {

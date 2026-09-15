@@ -13,7 +13,7 @@ const DEFAULT_ABOVE_INSTALLMENTS = 5;
 const DEFAULT_BELOW_INSTALLMENTS = 1;
 const MIN_PACKET_AMOUNT = 0.01;
 /** H5 权益页未领取气泡上限；超出后失效 create_time 最早的 pending */
-const MAX_PENDING_INCOME_PACKETS = 50;
+const MAX_PENDING_INCOME_PACKETS = 200;
 /** 两位小数向上取整（例：13.1501 → 13.16）；用于最低流水门槛等 */
 function ceilYuan2(raw) {
 	const n = Number(raw || 0);
@@ -205,13 +205,25 @@ async function sumEligibleRealFlowYuan(db, merchantUserId, start, end) {
 		buildEligibleSubsidyTradeWhere(db, merchantUserId),
 		{ create_time: _.gte(start).and(_.lte(end)) }
 	]);
-	let total = 0;
-	await forEachQueryPage(db, 'hsy-machine-trades', where, { field: { amount: true } }, (rows) => {
-		for (const row of rows) {
-			total += Number(row.amount || 0);
-		}
-	});
-	return Number(total.toFixed(2));
+	try {
+		const $ = db.command.aggregate;
+		const agg = await db
+			.collection('hsy-machine-trades')
+			.aggregate()
+			.match(where)
+			.group({ _id: null, total: $.sum('$amount') })
+			.end();
+		const total = Number((agg && agg.data && agg.data[0] && agg.data[0].total) || 0);
+		return Number(total.toFixed(2));
+	} catch (e) {
+		let total = 0;
+		await forEachQueryPage(db, 'hsy-machine-trades', where, { field: { amount: true } }, (rows) => {
+			for (const row of rows) {
+				total += Number(row.amount || 0);
+			}
+		});
+		return Number(total.toFixed(2));
+	}
 }
 
 async function sumEligibleReleasePoints(db, merchantUserId, start, end, optimizeConfig) {
@@ -243,12 +255,22 @@ async function sumEligibleReleasePoints(db, merchantUserId, start, end, optimize
 	return Number(total.toFixed(4));
 }
 
-async function existingDedupKeys(db, merchantUserId) {
+async function existingDedupKeys(db, merchantUserId, options = {}) {
 	const set = new Set();
+	const _ = db.command;
+	const sinceTs = Number(options.sinceTs || 0);
+	let where = { merchant_user_id: merchantUserId, is_deleted: false };
+	// 增量同步：只加载 pending + 回看窗口内的历史，避免高流水商户扫全量已领红包
+	if (sinceTs > 0) {
+		where = _.and([
+			{ merchant_user_id: merchantUserId, is_deleted: false },
+			_.or([{ status: 'pending' }, { create_time: _.gte(sinceTs) }])
+		]);
+	}
 	await forEachQueryPage(
 		db,
 		'hsy-income-packets',
-		{ merchant_user_id: merchantUserId, is_deleted: false },
+		where,
 		{ field: { dedup_key: true } },
 		(rows) => {
 			for (const r of rows) {
@@ -257,6 +279,33 @@ async function existingDedupKeys(db, merchantUserId) {
 		}
 	);
 	return set;
+}
+
+/** 仅将已过期的 pending 标为 expired（按 expire_time 条件查询，避免全表 pending 扫描） */
+async function expireOverduePendingPackets(db, merchantUserId, nowTs) {
+	const _ = db.command;
+	let expiredTradeFirst = 0;
+	await forEachQueryPage(
+		db,
+		'hsy-income-packets',
+		{
+			merchant_user_id: merchantUserId,
+			status: 'pending',
+			is_deleted: false,
+			expire_time: _.gt(0).and(_.lt(nowTs))
+		},
+		{ field: { _id: true, subsidy_kind: true } },
+		async (rows) => {
+			for (const row of rows) {
+				await db.collection('hsy-income-packets').doc(row._id).update({
+					status: 'expired',
+					update_time: nowTs
+				});
+				if (String(row.subsidy_kind || '') === 'trade_first') expiredTradeFirst += 1;
+			}
+		}
+	);
+	return { expiredTradeFirst };
 }
 
 async function upsertPacket(db, doc, dedupSet) {
@@ -359,6 +408,17 @@ function buildIncomePacketClaimWindow(anchorTs, claimValidMs) {
  * 按 create_time 升序，超出部分将最早的标为 expired（先进先失效）。
  */
 async function enforceMaxPendingIncomePackets(db, merchantUserId, nowTs, options = {}) {
+	try {
+		const cnt = await db
+			.collection('hsy-income-packets')
+			.where({ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false })
+			.count();
+		if (Number(cnt.total || 0) <= MAX_PENDING_INCOME_PACKETS) {
+			return { expiredTradeFirst: 0, expiredByCap: 0 };
+		}
+	} catch (e) {
+		/* 计数失败则继续完整裁剪 */
+	}
 	let flowThisMonth = options.flowThisMonth;
 	if (flowThisMonth == null || !Number.isFinite(Number(flowThisMonth))) {
 		flowThisMonth = 0;
@@ -420,8 +480,23 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 	const claimValidMs = resolveIncomePacketClaimValidMs(options);
 	const optimizeConfig = normalizeOptimizeConfig(options.optimizeConfig);
 	const merchantUserId = merchant.user_id || merchant._id;
-	const dedupSet = await existingDedupKeys(db, merchantUserId);
-	const tradeWhere = buildEligibleSubsidyTradeWhere(db, merchantUserId);
+	const _ = db.command;
+	// 默认只回看近 6 个自然月流水：首期仅生成仍在有效期内的；分期待返只补当前/上月缺口
+	const lookbackMonths = Math.max(
+		1,
+		Math.min(24, Math.floor(Number(options.lookbackMonths != null ? options.lookbackMonths : 6) || 6))
+	);
+	const curYm = monthNoFromTs(nowTs);
+	const prevYm = addMonths(curYm, -1);
+	const lookbackYm = addMonths(curYm, -(lookbackMonths - 1));
+	const { start: lookbackStart } = monthStartEndTs(lookbackYm);
+	const firstReleaseMinTs = Math.max(0, Number(nowTs) - claimValidMs - 24 * 60 * 60 * 1000);
+	const dedupSince = Math.min(lookbackStart || 0, firstReleaseMinTs || 0) || 0;
+	const dedupSet = await existingDedupKeys(db, merchantUserId, { sinceTs: dedupSince > 0 ? dedupSince : 0 });
+	const tradeWhere = _.and([
+		buildEligibleSubsidyTradeWhere(db, merchantUserId),
+		lookbackStart > 0 ? { create_time: _.gte(lookbackStart) } : { create_time: _.gte(0) }
+	]);
 	const tradesRaw = await fetchAllQueryPages(db, 'hsy-machine-trades', tradeWhere, {
 		field: { _id: true, trade_no: true, amount: true, release_amount: true, release_ratio: true, create_time: true },
 		orderBy: { field: 'create_time', direction: 'asc' }
@@ -437,27 +512,11 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		trades.push(t);
 	}
 	if (!trades.length) {
-		let expiredTradeFirst = 0;
-		await forEachQueryPage(
-			db,
-			'hsy-income-packets',
-			{ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false },
-			{ field: { _id: true, expire_time: true, subsidy_kind: true } },
-			async (rows) => {
-				for (const row of rows) {
-					if (row.expire_time && row.expire_time < nowTs) {
-						await db.collection('hsy-income-packets').doc(row._id).update({
-							status: 'expired',
-							update_time: nowTs
-						});
-						if (String(row.subsidy_kind || '') === 'trade_first') expiredTradeFirst += 1;
-					}
-				}
-			}
-		);
+		const expRet = await expireOverduePendingPackets(db, merchantUserId, nowTs);
 		const capRet = await enforceMaxPendingIncomePackets(db, merchantUserId, nowTs);
-		expiredTradeFirst += Number(capRet.expiredTradeFirst || 0);
-		return { expiredTradeFirst };
+		return {
+			expiredTradeFirst: Number(expRet.expiredTradeFirst || 0) + Number(capRet.expiredTradeFirst || 0)
+		};
 	}
 
 	const monthFlowMap = {};
@@ -477,15 +536,16 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		}
 	});
 
-	// 1) 首期（第一个月）按每笔流水生成气泡（低于该期数对应最低流水不生成）
+	// 1) 首期：仅补仍在领取有效期内的流水（更早的即使补出也会立刻过期）
 	for (const t of trades) {
+		const tradeTs = Number(t.create_time || nowTs);
+		if (tradeTs < firstReleaseMinTs) continue;
 		const amount = Number(t.amount || 0);
 		if (!isSubsidyEligibleTradeAmount(amount, t.release_ratio, optimizeConfig)) continue;
 		const firstRelease = resolveFirstReleaseYuan(amount, t.release_amount, t.release_ratio, optimizeConfig);
 		if (!(firstRelease > 0)) continue;
-		const ym = monthNoFromTs(t.create_time || nowTs);
+		const ym = monthNoFromTs(tradeTs);
 		const tradeNo = String(t.trade_no || t._id || '');
-		const tradeTs = Number(t.create_time || nowTs);
 		const claimWindow = buildIncomePacketClaimWindow(tradeTs, claimValidMs);
 		await upsertPacket(
 			db,
@@ -512,14 +572,9 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		);
 	}
 
-	// 2) 其余分期释放规则（按最终口径）：
-	// - 每月流水每满 1 万，生成 1 个释放档位（tiers）；
-	// - tiers 仅用于“当月应释放”的历史月分期池（上月或更早）；
-	// - 每个历史月在当月携带“流水分片”（每片对应该来源月某个1万流水区间，积分可能为0）；
-	// - 分期待返按“每个月”口径切片（4个月各有一份，不是4个月总量一次切）；
-	// - tiers 不足时，未释放分片直接流失，不顺延到下月。
-	const months = Object.keys(monthFlowMap).sort();
-	for (const ym of months) {
+	// 2) 分期待返：只补当前月与上月（历史目标月已在以往同步中落库，靠 dedup 防重）
+	const targetMonths = [prevYm, curYm].filter(Boolean);
+	for (const ym of targetMonths) {
 		const tiers = Math.floor(Number(monthFlowMap[ym] || 0) / 10000);
 		if (tiers <= 0) continue;
 		const dueBySource = deferredDueByTargetMonth[ym] || {};
@@ -527,7 +582,6 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		for (const srcYm of sourceMonths) {
 			const chunks = Array.isArray(dueBySource[srcYm]) ? dueBySource[srcYm] : [];
 			if (!chunks.length) continue;
-			// 每个来源月在目标月都按“当月档位”独立释放，不是全来源共用一个档位池
 			const canGrant = Math.min(chunks.length, tiers);
 			for (let i = 0; i < canGrant; i += 1) {
 				const chunkAmt = Number(chunks[i] || 0);
@@ -561,28 +615,10 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 		}
 	}
 
-	/* 过期标记（分页处理全部 pending）；首期过期需触发冻结剔除 */
-	let expiredTradeFirst = 0;
-	await forEachQueryPage(
-		db,
-		'hsy-income-packets',
-		{ merchant_user_id: merchantUserId, status: 'pending', is_deleted: false },
-		{ field: { _id: true, expire_time: true, subsidy_kind: true } },
-		async (rows) => {
-			for (const row of rows) {
-				if (row.expire_time && row.expire_time < nowTs) {
-					await db.collection('hsy-income-packets').doc(row._id).update({
-						status: 'expired',
-						update_time: nowTs
-					});
-					if (String(row.subsidy_kind || '') === 'trade_first') {
-						expiredTradeFirst += 1;
-					}
-				}
-			}
-		}
-	);
-	const capRet = await enforceMaxPendingIncomePackets(db, merchantUserId, nowTs);
+	const expRet = await expireOverduePendingPackets(db, merchantUserId, nowTs);
+	let expiredTradeFirst = Number(expRet.expiredTradeFirst || 0);
+	const flowThisMonth = Number(monthFlowMap[curYm] || 0);
+	const capRet = await enforceMaxPendingIncomePackets(db, merchantUserId, nowTs, { flowThisMonth });
 	expiredTradeFirst += Number(capRet.expiredTradeFirst || 0);
 	return { expiredTradeFirst };
 }
@@ -620,5 +656,6 @@ module.exports = {
 	sumEligibleRealFlowYuan,
 	sumEligibleReleasePoints,
 	syncSubsidyPackets,
-	enforceMaxPendingIncomePackets
+	enforceMaxPendingIncomePackets,
+	expireOverduePendingPackets
 };

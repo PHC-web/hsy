@@ -13,7 +13,7 @@ const DEFAULT_ABOVE_INSTALLMENTS = 5;
 const DEFAULT_BELOW_INSTALLMENTS = 1;
 const MIN_PACKET_AMOUNT = 0.01;
 /** H5 权益页未领取气泡上限；超出后失效 create_time 最早的 pending */
-const MAX_PENDING_INCOME_PACKETS = 50;
+const MAX_PENDING_INCOME_PACKETS = 200;
 /** 两位小数向上取整（例：13.1501 → 13.16）；用于最低流水门槛等 */
 function ceilYuan2(raw) {
 	const n = Number(raw || 0);

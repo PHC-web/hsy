@@ -144,6 +144,7 @@ async function agreementCreate(data, event) {
 			version,
 			pdf_file_id: pdfFileId,
 			base_jpeg_file_id: '',
+			base_jpeg_version: 0,
 			notify_all_resign: notifyAllResign,
 			is_current: true,
 			is_deleted: false,
@@ -154,6 +155,7 @@ async function agreementCreate(data, event) {
 		let baseJpegFileId = '';
 		let baseWarn = '';
 		try {
+			// 发布时同步生成高清底图并写入 Redis，H5 签署无需再等客户端预热
 			const buildRet = await uniCloud.callFunction({
 				name: 'merchant',
 				data: {

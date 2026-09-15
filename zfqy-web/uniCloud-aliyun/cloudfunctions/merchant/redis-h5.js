@@ -108,6 +108,56 @@ async function h5RedisDel(key) {
 	}
 }
 
+/** 二进制缓存（base64）；过大则跳过，避免拖慢 Redis */
+const REDIS_BIN_MAX_BYTES = 5.5 * 1024 * 1024;
+
+async function h5RedisGetBuffer(key) {
+	const r = getRedis();
+	if (!r || !key) return null;
+	try {
+		const s = await r.get(key);
+		if (s == null || s === '') return null;
+		if (typeof Buffer !== 'undefined' && Buffer.isBuffer(s)) return s;
+		const text = normalizeRedisString(s);
+		if (!text) return null;
+		return Buffer.from(text, 'base64');
+	} catch (e) {
+		console.error('h5RedisGetBuffer', key, e && e.message);
+		return null;
+	}
+}
+
+async function h5RedisSetBuffer(key, buf, exSec) {
+	const r = getRedis();
+	if (!r || !key || !buf) return false;
+	try {
+		const raw = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+		if (raw.length > REDIS_BIN_MAX_BYTES) return false;
+		const str = raw.toString('base64');
+		const n = Math.max(0, Number(exSec) || 0);
+		if (n > 0) {
+			try {
+				await r.set(key, str, 'EX', n);
+			} catch (e1) {
+				try {
+					await r.setex(key, n, str);
+				} catch (e2) {
+					await r.set(key, str);
+					try {
+						await r.expire(key, n);
+					} catch (e3) {}
+				}
+			}
+		} else {
+			await r.set(key, str);
+		}
+		return true;
+	} catch (e) {
+		console.error('h5RedisSetBuffer', key, e && e.message);
+		return false;
+	}
+}
+
 function h5RedisAlive() {
 	return !!getRedis();
 }
@@ -118,5 +168,7 @@ module.exports = {
 	h5RedisGetString,
 	h5RedisGetJson,
 	h5RedisSetJson,
+	h5RedisGetBuffer,
+	h5RedisSetBuffer,
 	h5RedisDel
 };

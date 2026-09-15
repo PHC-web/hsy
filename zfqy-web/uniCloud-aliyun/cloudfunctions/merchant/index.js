@@ -30,6 +30,7 @@ const refundEntryTokenCollection = db.collection('hsy-refund-entry-tokens');
 const dataCorrectTaskCollection = db.collection('hsy-data-correct-tasks');
 const adminUserCollection = db.collection('uni-id-users');
 const zlib = require('zlib');
+const path = require('path');
 const { promisify } = require('util');
 const gzipAsync = promisify(zlib.gzip);
 const { formatTimeMs: formatTime, shanghaiYearMonthFromTs } = require('./format-time-cn.js');
@@ -1352,9 +1353,18 @@ function trimJimpPdfAgreementPage(img, pageIndex = 0, options = {}) {
 	return img.clone().crop(0, top, w, newH);
 }
 
-const AGREEMENT_BASE_JPEG_MAX_W = 1000;
-const AGREEMENT_BASE_JPEG_QUALITY = 78;
-const AGREEMENT_PDF_RENDER_SCALE = 1.15;
+const AGREEMENT_BASE_JPEG_MAX_W = 2000;
+const AGREEMENT_BASE_JPEG_QUALITY = 92;
+const AGREEMENT_PDF_RENDER_SCALE = 2.2;
+/** 底图规格版本：变更后自动重建，避免继续用旧的低清底图 */
+const AGREEMENT_BASE_JPEG_VERSION = 2;
+const AGREEMENT_ASSETS_DIR = path.join(__dirname, 'assets', 'agreement');
+/** 签署底图 Redis 缓存（秒）；后台发布时写入，签署时复用。清晰度不变。 */
+const REDIS_EX_AGREEMENT_BASE_SEC = 7 * 24 * 3600;
+
+function redisKeyAgreementBase(agreementId) {
+	return `hsy:agr:base:v${AGREEMENT_BASE_JPEG_VERSION}:${safeText(agreementId, 80) || 'x'}`;
+}
 
 /**
  * PDF → 协议底图长 JPEG（裁翻页留白，不含签名区）。发布协议时预生成，签署时复用。
@@ -1421,6 +1431,8 @@ async function renderPdfPagesToJpegBuffer(pdfBytes) {
 }
 
 let _jimpFontCache = null;
+let _agreementStampAssetsCache = null;
+
 async function getAgreementStampFonts() {
 	if (_jimpFontCache) return _jimpFontCache;
 	const Jimp = require('jimp');
@@ -1432,33 +1444,109 @@ async function getAgreementStampFonts() {
 	return _jimpFontCache;
 }
 
+async function loadAgreementStampAssets() {
+	if (_agreementStampAssetsCache) return _agreementStampAssetsCache;
+	const Jimp = require('jimp');
+	const loadOpt = async (name) => {
+		try {
+			return await Jimp.read(path.join(AGREEMENT_ASSETS_DIR, name));
+		} catch (e) {
+			console.error('loadAgreementStampAssets', name, e);
+			return null;
+		}
+	};
+	const [labelSignArea, labelSignTime, labelSealArea, companySeal] = await Promise.all([
+		loadOpt('label-sign-area.png'),
+		loadOpt('label-sign-time.png'),
+		loadOpt('label-seal-area.png'),
+		loadOpt('company-seal.png')
+	]);
+	_agreementStampAssetsCache = { labelSignArea, labelSignTime, labelSealArea, companySeal };
+	return _agreementStampAssetsCache;
+}
+
+function scaleJimpKeepAspect(img, targetW) {
+	if (!img || !(targetW > 0)) return img;
+	const clone = img.clone();
+	if (clone.bitmap.width === targetW) return clone;
+	clone.resize(Math.max(1, Math.round(targetW)), require('jimp').AUTO);
+	return clone;
+}
+
 /**
  * 底图 JPEG + 签名小图 → 签署版 JPEG（签署热路径，不再渲 PDF）
+ * 文案：签署区 / 签署时间；右侧签名旁盖公司印章。
  */
 async function stampSignatureOnBaseJpegBuffer(baseJpegBuffer, signParsed, meta = {}) {
 	const Jimp = require('jimp');
 	const base = await Jimp.read(baseJpegBuffer);
 	const contentWidth = base.bitmap.width;
-	const signBlockHeight = 200;
-	const sidePad = 20;
+	const scale = Math.max(0.75, Math.min(2.4, contentWidth / 1000));
+	const signBlockHeight = Math.round(280 * scale);
+	const sidePad = Math.round(24 * scale);
 	const totalHeight = base.bitmap.height + signBlockHeight;
 	const canvas = await jimpSolid(contentWidth, totalHeight, 0xffffffff);
 	canvas.composite(base, 0, 0);
 
 	const blockTop = base.bitmap.height;
-	const { font, fontSm } = await getAgreementStampFonts();
-	canvas.print(font, sidePad + 16, blockTop + 28, 'Party B Signature');
-	const signedAtText = String(meta.signedAtText || '').trim() || new Date().toISOString();
-	canvas.print(fontSm, sidePad + 16, blockTop + signBlockHeight - 40, `Signed at: ${signedAtText}`);
+	const boxX = sidePad;
+	const boxY = blockTop + Math.round(12 * scale);
+	const boxW = contentWidth - sidePad * 2;
+	const boxH = signBlockHeight - Math.round(24 * scale);
 
+	const assets = await loadAgreementStampAssets();
+	const labelArea = assets.labelSignArea
+		? scaleJimpKeepAspect(assets.labelSignArea, Math.round(148 * scale))
+		: null;
+	const labelTime = assets.labelSignTime
+		? scaleJimpKeepAspect(assets.labelSignTime, Math.round(166 * scale))
+		: null;
+	const labelSeal = assets.labelSealArea
+		? scaleJimpKeepAspect(assets.labelSealArea, Math.round(106 * scale))
+		: null;
+
+	const labelLeft = boxX + Math.round(18 * scale);
+	const labelTop = boxY + Math.round(18 * scale);
+	if (labelArea) canvas.composite(labelArea, labelLeft, labelTop);
+
+	const signedAtText = String(meta.signedAtText || '').trim() || new Date().toISOString();
+	const timeRowY = boxY + boxH - Math.round(52 * scale);
+	let timeTextX = labelLeft;
+	if (labelTime) {
+		canvas.composite(labelTime, labelLeft, timeRowY);
+		timeTextX = labelLeft + labelTime.bitmap.width + Math.round(4 * scale);
+	}
+	const { font, fontSm } = await getAgreementStampFonts();
+	const timeFont = scale >= 1.4 ? font : fontSm;
+	const timeFontYOff = scale >= 1.4 ? Math.round(2 * scale) : Math.round(8 * scale);
+	canvas.print(timeFont, timeTextX, timeRowY + timeFontYOff, signedAtText);
+
+	// 印章：签署区右侧
+	const sealMax = Math.round(Math.min(220 * scale, contentWidth * 0.22));
+	let sealImg = assets.companySeal ? assets.companySeal.clone() : null;
+	if (sealImg) {
+		const sealW = Math.min(sealMax, sealImg.bitmap.width);
+		if (sealImg.bitmap.width !== sealW) sealImg.resize(sealW, Jimp.AUTO);
+		const sealX = contentWidth - sidePad - Math.round(16 * scale) - sealImg.bitmap.width;
+		const sealY = boxY + Math.round((boxH - sealImg.bitmap.height) / 2);
+		canvas.composite(sealImg, sealX, Math.max(boxY + 4, sealY));
+		if (labelSeal) {
+			const lx = sealX + Math.round((sealImg.bitmap.width - labelSeal.bitmap.width) / 2);
+			const ly = Math.max(boxY + 4, sealY - labelSeal.bitmap.height - Math.round(2 * scale));
+			canvas.composite(labelSeal, lx, ly);
+		}
+	}
+
+	// 签名：放在印章左侧
 	const signImg = await Jimp.read(signParsed.buffer);
-	const maxSignW = Math.min(320, Math.floor(contentWidth * 0.36));
+	const maxSignW = Math.min(Math.round(360 * scale), Math.floor(contentWidth * 0.32));
 	if (signImg.bitmap.width > maxSignW) {
 		signImg.resize(maxSignW, Jimp.AUTO);
 	}
-	const signX = contentWidth - sidePad - signImg.bitmap.width - 16;
-	const signY = blockTop + 28;
-	canvas.composite(signImg, signX, signY);
+	const sealReserve = sealImg ? sealImg.bitmap.width + Math.round(28 * scale) : 0;
+	const signX = contentWidth - sidePad - Math.round(16 * scale) - sealReserve - signImg.bitmap.width;
+	const signY = boxY + Math.round(Math.max(24 * scale, (boxH - signImg.bitmap.height) / 2));
+	canvas.composite(signImg, Math.max(labelLeft + Math.round(160 * scale), signX), signY);
 
 	return canvas.quality(AGREEMENT_BASE_JPEG_QUALITY).getBufferAsync(Jimp.MIME_JPEG);
 }
@@ -1508,20 +1596,40 @@ async function agreementEnsureBaseJpeg(data = {}) {
 			agreementId = safeText(doc?._id || '', 80);
 		}
 		if (!doc || !agreementId) return { code: 404, message: '当前无生效协议' };
-		if (safeText(doc.base_jpeg_file_id || '', 500)) {
-			// 预热内存缓存
+		const hasBase = !!safeText(doc.base_jpeg_file_id || '', 500);
+		const verOk = Number(doc.base_jpeg_version || 0) === AGREEMENT_BASE_JPEG_VERSION;
+		if (hasBase && verOk) {
+			// 预热：内存 + Redis + 印章资源（签署热路径不再加载）
 			try {
-				await ensureAgreementBaseJpegBuffer(doc, doc.pdf_file_id);
+				await Promise.all([
+					ensureAgreementBaseJpegBuffer(doc, doc.pdf_file_id, { allowBuild: false }),
+					loadAgreementStampAssets(),
+					getAgreementStampFonts()
+				]);
 			} catch (e) {
 				/* ignore warm errors */
 			}
 			return {
 				code: 0,
 				message: 'ok',
-				data: { agreementId, baseJpegFileId: doc.base_jpeg_file_id, ready: true, built: false }
+				data: {
+					agreementId,
+					baseJpegFileId: doc.base_jpeg_file_id,
+					baseJpegVersion: AGREEMENT_BASE_JPEG_VERSION,
+					ready: true,
+					built: false
+				}
 			};
 		}
-		return await agreementBuildBaseJpeg({ agreementId });
+		const built = await agreementBuildBaseJpeg({ agreementId });
+		if (built && built.code === 0) {
+			try {
+				await Promise.all([loadAgreementStampAssets(), getAgreementStampFonts()]);
+			} catch (e) {
+				/* ignore */
+			}
+		}
+		return built;
 	} catch (e) {
 		console.error('agreementEnsureBaseJpeg failed', e);
 		return { code: 500, message: safeText(e?.message || '协议底图准备失败', 160) };
@@ -1547,21 +1655,45 @@ async function agreementBuildBaseJpeg(data = {}) {
 		const prevBase = safeText(doc.base_jpeg_file_id || '', 500);
 		await agreementCollection.doc(doc._id).update({
 			base_jpeg_file_id: baseFileId,
+			base_jpeg_version: AGREEMENT_BASE_JPEG_VERSION,
 			update_time: nowTs()
 		});
 		if (prevBase && prevBase !== baseFileId && isAgreementImgCloudFileId(prevBase)) {
 			await safeDeleteAgreementCloudFile(prevBase);
 		}
 		_agreementBaseMemCache = {
-			key: `${doc._id}|${baseFileId}`,
+			key: `${doc._id}|${baseFileId}|v${AGREEMENT_BASE_JPEG_VERSION}`,
 			buffer: jpegBuffer,
 			at: Date.now()
 		};
+		// 后台发布路径：同步写入 Redis，保证保存返回后 H5 即可直接签（无需客户端再等预热）
+		try {
+			await redisH5.h5RedisSetBuffer(
+				redisKeyAgreementBase(doc._id),
+				jpegBuffer,
+				REDIS_EX_AGREEMENT_BASE_SEC
+			);
+		} catch (e) {
+			console.error('agreementBuildBaseJpeg redis warm failed', e);
+		}
+		try {
+			await Promise.all([loadAgreementStampAssets(), getAgreementStampFonts()]);
+		} catch (e) {
+			/* ignore */
+		}
 		await invalidateCurrentAgreementCache();
 		return {
 			code: 0,
 			message: '协议底图已生成',
-			data: { agreementId: doc._id, baseJpegFileId: baseFileId, bytes: jpegBuffer.length }
+			data: {
+				agreementId: doc._id,
+				baseJpegFileId: baseFileId,
+				baseJpegVersion: AGREEMENT_BASE_JPEG_VERSION,
+				bytes: jpegBuffer.length,
+				ready: true,
+				built: true,
+				redisWarmed: true
+			}
 		};
 	} catch (e) {
 		console.error('agreementBuildBaseJpeg failed', e);
@@ -1570,13 +1702,19 @@ async function agreementBuildBaseJpeg(data = {}) {
 }
 
 /**
- * 签署用：优先内存 / base_jpeg_file_id；缺失时现场生成并回写（兼容旧协议）
+ * 签署用：优先内存 → Redis → 云存储底图；缺失或版本过旧时可选现场生成。
+ * options.allowBuild=false 时不渲 PDF（签署热路径），由预热接口提前生成。
  */
-async function ensureAgreementBaseJpegBuffer(agreement, pdfRefFallback = '') {
+async function ensureAgreementBaseJpegBuffer(agreement, pdfRefFallback = '', options = {}) {
+	const allowBuild = options.allowBuild !== false;
 	const agr = agreement || {};
 	const agrId = safeText(agr._id || '', 80);
 	const baseRef = safeText(agr.base_jpeg_file_id || '', 500);
-	const memKey = `${agrId}|${baseRef}`;
+	const baseVer = Number(agr.base_jpeg_version || 0);
+	const baseOk = !!baseRef && baseVer === AGREEMENT_BASE_JPEG_VERSION;
+	const memKey = `${agrId}|${baseRef}|v${AGREEMENT_BASE_JPEG_VERSION}`;
+	const redisKey = agrId ? redisKeyAgreementBase(agrId) : '';
+
 	if (
 		_agreementBaseMemCache.buffer &&
 		_agreementBaseMemCache.key === memKey &&
@@ -1584,11 +1722,34 @@ async function ensureAgreementBaseJpegBuffer(agreement, pdfRefFallback = '') {
 	) {
 		return _agreementBaseMemCache.buffer;
 	}
-	if (baseRef) {
+
+	if (baseOk && redisKey) {
+		try {
+			const fromRedis = await redisH5.h5RedisGetBuffer(redisKey);
+			if (fromRedis && fromRedis.length) {
+				_agreementBaseMemCache = { key: memKey, buffer: fromRedis, at: Date.now() };
+				return fromRedis;
+			}
+		} catch (e) {
+			/* ignore redis */
+		}
+	}
+
+	if (baseOk) {
 		const buf = await downloadBinaryFromFileRef(baseRef);
 		_agreementBaseMemCache = { key: memKey, buffer: buf, at: Date.now() };
+		if (redisKey) {
+			redisH5.h5RedisSetBuffer(redisKey, buf, REDIS_EX_AGREEMENT_BASE_SEC).catch(() => {});
+		}
 		return buf;
 	}
+
+	if (!allowBuild) {
+		const err = new Error('协议底图未就绪');
+		err.code = 'BASE_NOT_READY';
+		throw err;
+	}
+
 	const pdfRef = safeText(pdfRefFallback || agr.pdf_file_id || '', 500);
 	if (!pdfRef) throw new Error('当前无协议底图且无 PDF');
 	const pdfBytes = await downloadBinaryFromFileRef(pdfRef);
@@ -1596,16 +1757,22 @@ async function ensureAgreementBaseJpegBuffer(agreement, pdfRefFallback = '') {
 	if (agrId) {
 		try {
 			const baseFileId = await persistAgreementBaseJpeg(agrId, jpegBuffer);
+			const prevBase = baseRef;
 			await agreementCollection.doc(agrId).update({
 				base_jpeg_file_id: baseFileId,
+				base_jpeg_version: AGREEMENT_BASE_JPEG_VERSION,
 				update_time: nowTs()
 			});
+			if (prevBase && prevBase !== baseFileId && isAgreementImgCloudFileId(prevBase)) {
+				safeDeleteAgreementCloudFile(prevBase).catch(() => {});
+			}
 			await invalidateCurrentAgreementCache();
 			_agreementBaseMemCache = {
-				key: `${agrId}|${baseFileId}`,
+				key: `${agrId}|${baseFileId}|v${AGREEMENT_BASE_JPEG_VERSION}`,
 				buffer: jpegBuffer,
 				at: Date.now()
 			};
+			redisH5.h5RedisSetBuffer(redisKeyAgreementBase(agrId), jpegBuffer, REDIS_EX_AGREEMENT_BASE_SEC).catch(() => {});
 		} catch (e) {
 			console.error('ensureAgreementBaseJpegBuffer persist failed', e);
 			_agreementBaseMemCache = { key: memKey || pdfRef, buffer: jpegBuffer, at: Date.now() };
@@ -9902,12 +10069,14 @@ async function rechargeGiftShipmentList(data) {
 		const pageSize = Math.min(50, Math.max(1, Number(data?.pageSize || 10)));
 		const orderNo = safeText(data?.orderNo, 40);
 		const keyword = safeText(data?.keyword, 80);
+		const deviceId = safeText(data?.deviceId, 50);
 		const receiptStatus = safeText(data?.receiptStatus, 20);
 		const where = {};
 		if (orderNo) where.order_no = new RegExp(escapeReg(orderNo), 'i');
 		if (receiptStatus && ['pending', 'shipped', 'signed'].includes(receiptStatus)) {
 			where.receipt_status = receiptStatus;
 		}
+		if (deviceId) where.device_id = new RegExp(escapeReg(deviceId), 'i');
 		if (keyword) {
 			const k = new RegExp(escapeReg(keyword), 'i');
 			where.$or = [{ wx_nickname: k }, { mobile: k }, { device_id: k }];
@@ -11967,6 +12136,10 @@ const DEFAULT_BIZ_SETTINGS = {
 		paidDiamond: { dayMax: 200, weekMax: 500 }
 	},
 	withdrawAudit: { memberRequired: false, nonMemberRequired: false },
+	/** H5 积分提现税费比例（%）：税费 = 兑换积分 × 该比例 / 100；默认 8 */
+	withdrawTaxRatePercent: 8,
+	/** H5 积分提现单笔固定手续费（元）；默认 3 */
+	withdrawFeeYuan: 3,
 	/** H5 充值全额退款（商家转账）：与提现审核开关独立，逻辑一致（会员/非会员是否需后台同意后再打款） */
 	refundTransferAudit: { memberRequired: false, nonMemberRequired: false },
 	optimizeConfig: { enabled: true, thresholdYuan: 300, aboveInstallments: 5, belowInstallments: 5 },
@@ -12156,6 +12329,24 @@ function sanitizeBizSettings(raw = {}) {
 		windowDays: Math.max(1, Number(rc.windowDays || DEFAULT_BIZ_SETTINGS.refundCycle.windowDays))
 	};
 	const refundPenaltyRate = Math.max(0, Math.min(100, Number(raw.refundPenaltyRate != null ? raw.refundPenaltyRate : DEFAULT_BIZ_SETTINGS.refundPenaltyRate)));
+	const withdrawTaxRatePercent = Math.max(
+		0,
+		Math.min(
+			100,
+			Number(
+				raw.withdrawTaxRatePercent != null && raw.withdrawTaxRatePercent !== ''
+					? raw.withdrawTaxRatePercent
+					: DEFAULT_BIZ_SETTINGS.withdrawTaxRatePercent
+			)
+		)
+	);
+	let withdrawFeeYuanNum = Number(
+		raw.withdrawFeeYuan != null && raw.withdrawFeeYuan !== ''
+			? raw.withdrawFeeYuan
+			: DEFAULT_BIZ_SETTINGS.withdrawFeeYuan
+	);
+	if (!Number.isFinite(withdrawFeeYuanNum)) withdrawFeeYuanNum = DEFAULT_BIZ_SETTINGS.withdrawFeeYuan;
+	const withdrawFeeYuan = Math.min(1000, Math.max(0, Number(withdrawFeeYuanNum.toFixed(2))));
 	let rtsNum = Number(
 		raw.refundTransferSliceMaxYuan != null && raw.refundTransferSliceMaxYuan !== ''
 			? raw.refundTransferSliceMaxYuan
@@ -12221,6 +12412,10 @@ function sanitizeBizSettings(raw = {}) {
 		withdrawMinByCount,
 		withdrawPeriodLimits,
 		withdrawAudit,
+		withdrawTaxRatePercent: Number.isFinite(withdrawTaxRatePercent)
+			? withdrawTaxRatePercent
+			: DEFAULT_BIZ_SETTINGS.withdrawTaxRatePercent,
+		withdrawFeeYuan,
 		refundTransferAudit,
 		optimizeConfig,
 		pointsOptimizeLoginEnabled,
@@ -12539,9 +12734,34 @@ function h5MembershipInfo(merchant, packages = null) {
 }
 
 const H5_WITHDRAW_FEE_YUAN = 3;
+/** 默认税费比例（小数），仅作兜底；正式以参数配置 withdrawTaxRatePercent 为准 */
 const H5_WITHDRAW_TAX_RATE = 0.08;
 const H5_WITHDRAW_MAX_POINTS = 200;
 const H5_SILVER_WITHDRAW_MONTHLY_TRADE_MIN_YUAN = 50000;
+
+/** 从业务参数解析提现单笔固定手续费（元） */
+function resolveH5WithdrawFeeYuan(biz) {
+	const raw =
+		biz && biz.withdrawFeeYuan != null && biz.withdrawFeeYuan !== ''
+			? Number(biz.withdrawFeeYuan)
+			: DEFAULT_BIZ_SETTINGS.withdrawFeeYuan;
+	if (Number.isFinite(raw)) {
+		return Math.min(1000, Math.max(0, Number(raw.toFixed(2))));
+	}
+	return H5_WITHDRAW_FEE_YUAN;
+}
+
+/** 从业务参数解析提现税费小数比例（如 8% → 0.08） */
+function resolveH5WithdrawTaxRate(biz) {
+	const pctRaw =
+		biz && biz.withdrawTaxRatePercent != null && biz.withdrawTaxRatePercent !== ''
+			? Number(biz.withdrawTaxRatePercent)
+			: DEFAULT_BIZ_SETTINGS.withdrawTaxRatePercent;
+	if (Number.isFinite(pctRaw)) {
+		return Math.max(0, Math.min(1, pctRaw / 100));
+	}
+	return H5_WITHDRAW_TAX_RATE;
+}
 
 function isH5RechargeMemberForWithdraw(merchant) {
 	const tier = String(h5MembershipInfo(merchant).tier || '');
@@ -13441,7 +13661,12 @@ async function h5WithdrawInfo(data) {
 				minPoints,
 				maxPoints,
 				periodLimitHit,
-				feePerOrderYuan: H5_WITHDRAW_FEE_YUAN,
+				feePerOrderYuan: resolveH5WithdrawFeeYuan(biz),
+				taxRatePercent: Number(
+					(biz && biz.withdrawTaxRatePercent != null
+						? biz.withdrawTaxRatePercent
+						: DEFAULT_BIZ_SETTINGS.withdrawTaxRatePercent) || 0
+				),
 				inBusinessHours: testMerchant ? true : isH5WithdrawBusinessHours(now),
 				pointEqualsYuan: true
 			}
@@ -13521,8 +13746,9 @@ async function h5WithdrawApply(data) {
 		if (!afford.ok) return { code: afford.code, message: afford.message };
 		const arBase = afford.arBase;
 		const ap = afford.ap;
-		const fee = H5_WITHDRAW_FEE_YUAN;
-		const tax = Number((points * H5_WITHDRAW_TAX_RATE).toFixed(2));
+		const fee = resolveH5WithdrawFeeYuan(biz);
+		const taxRate = resolveH5WithdrawTaxRate(biz);
+		const tax = Number((points * taxRate).toFixed(2));
 		const payable = Number((points - tax - fee).toFixed(2));
 		if (payable <= 0) {
 			return { code: 400, message: '兑换积分扣除手续费后金额需大于 0' };
@@ -13571,7 +13797,7 @@ async function h5WithdrawApply(data) {
 			outBillNo: withdrawNo,
 			transferState: needAudit ? 'PENDING_AUDIT' : 'CREATED',
 			message: needAudit ? '用户发起提现（需审核）' : '用户发起提现（自动打款）',
-			payload: { points, fee, tax, payable, needAudit }
+			payload: { points, fee, tax, taxRate, payable, needAudit }
 		});
 		const withdrawnBefore = Number(merchant.withdrawn || 0);
 		const machineWithdrawnBefore = machine ? Number(machine.withdrawn_amount || 0) : 0;
@@ -13967,22 +14193,23 @@ async function h5SignAgreement(data, event = {}) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const signatureImage = String(data?.signatureImage || '').trim();
 		if (!signatureImage) return { code: 400, message: '请先签名' };
-		// 需读旧图以便覆盖签署时删除云文件；默认投影会排除 agreement_img
-		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
+
+		// 并行：查商户 + 当前协议（缩短签署热路径）
+		const [merchant, curAgreement] = await Promise.all([
+			getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true }),
+			getCurrentAgreement()
+		]);
 		if (!merchant) return { code: 404, message: '商户不存在' };
 
-		// 新流程：客户端只传签名小图；服务端用预生成协议底图盖章后落库（不现场渲 PDF）
 		const signParsed = parseAgreementImageInput(signatureImage);
 		if (!signParsed.ok) return { code: 400, message: signParsed.message || '签名图无效' };
 		if (signParsed.kind === 'ref') {
 			return { code: 400, message: '请提交签名图片内容（勿传云文件引用）' };
 		}
-		// 签名小图一般 < 500KB；过大多为误传整页合成图
 		if (signParsed.buffer.length > 1.5 * 1024 * 1024) {
 			return { code: 400, message: '签名图过大，请仅提交手写签名（勿上传整份协议合成图）' };
 		}
 
-		const curAgreement = await getCurrentAgreement();
 		const pdfRef = safeText(
 			data?.agreementPdfFileId || curAgreement?.pdf_file_id || '',
 			500
@@ -13996,9 +14223,29 @@ async function h5SignAgreement(data, event = {}) {
 		const now = nowTs();
 		const signedAtText = formatTime(now) || new Date(now).toISOString();
 
+		// 签署热路径：优先用后台已预热底图（内存/Redis/云存储），不现场渲 PDF。
+		// 若历史协议无底图，再兜底生成一次（仍保持高清规格）。
+		let baseJpeg;
+		try {
+			baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef, { allowBuild: false });
+		} catch (e) {
+			if (e && e.code === 'BASE_NOT_READY') {
+				try {
+					baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef, { allowBuild: true });
+				} catch (e2) {
+					console.error('h5SignAgreement ensure base fallback', e2);
+					return { code: 500, message: '协议底图未就绪，请后台重新发布协议后再试' };
+				}
+			} else {
+				console.error('h5SignAgreement ensure base', e);
+				return { code: 500, message: '协议底图加载失败，请稍后重试' };
+			}
+		}
+
 		let signedJpegBuffer;
 		try {
-			const baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef);
+			// 预加载印章/字体（通常预热已命中缓存）
+			await Promise.all([loadAgreementStampAssets(), getAgreementStampFonts()]);
 			signedJpegBuffer = await stampSignatureOnBaseJpegBuffer(baseJpeg, signParsed, {
 				signedAtText,
 				signedIp: agreementSignedIp
@@ -14029,12 +14276,12 @@ async function h5SignAgreement(data, event = {}) {
 		if (prevImg && prevImg !== agreementImgRef && isAgreementImgCloudFileId(prevImg)) {
 			safeDeleteAgreementCloudFile(prevImg).catch(() => {});
 		}
-		const displayUrl = await resolveAgreementImgDisplayUrl(agreementImgRef);
+		// 不在热路径换临时链接（管理端/我的页按需解析），缩短响应
 		return {
 			code: 0,
 			message: '签署成功',
 			data: {
-				agreementImg: displayUrl || agreementImgRef,
+				agreementImg: agreementImgRef,
 				agreementImgIsPdf: false,
 				agreementSignedAt: now,
 				agreementSignedIp: agreementSignedIp,
@@ -18044,37 +18291,68 @@ async function h5IncomeList(data) {
 		const merchantUserId = merchant.user_id || merchant._id;
 		const now = nowTs();
 		const biz = await getBizSettings();
+		const maxPending =
+			Number(subsidyEngine.MAX_PENDING_INCOME_PACKETS) > 0
+				? Number(subsidyEngine.MAX_PENDING_INCOME_PACKETS)
+				: 200;
+		const syncKey = `hsy:h5:income:sync:${merchantUserId}`;
+		const tickerKey = 'hsy:h5:income:ticker:v1';
+
+		// 全量同步很重：Redis 节流（90s），命中则只做轻量过期；避免高流水商户打开收益页超时
+		let ranFullSync = false;
 		try {
-			const syncRet = await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
-				claimValidDays: biz.incomePacketClaimValidDays,
-				optimizeConfig: biz.optimizeConfig
-			});
-			if (syncRet && Number(syncRet.expiredTradeFirst || 0) > 0) {
+			const syncHit = await redisH5.h5RedisGetJson(syncKey);
+			if (!syncHit) {
+				const syncRet = await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
+					claimValidDays: biz.incomePacketClaimValidDays,
+					optimizeConfig: biz.optimizeConfig,
+					lookbackMonths: 6
+				});
+				ranFullSync = true;
+				await redisH5.h5RedisSetJson(syncKey, { at: now }, 90);
+				if (syncRet && Number(syncRet.expiredTradeFirst || 0) > 0) {
+					try {
+						await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
+					} catch (e2) {
+						console.error('recalc frozen after trade_first expire', e2);
+					}
+				}
+			} else {
 				try {
-					await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
-				} catch (e2) {
-					console.error('recalc frozen after trade_first expire', e2);
+					const expRet = await subsidyEngine.expireOverduePendingPackets(db, merchantUserId, now);
+					if (expRet && Number(expRet.expiredTradeFirst || 0) > 0) {
+						try {
+							await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
+						} catch (e2) {
+							console.error('recalc frozen after light expire', e2);
+						}
+					}
+				} catch (eLight) {
+					console.error('expireOverduePendingPackets', eLight);
 				}
 			}
 		} catch (e) {
 			console.error('syncSubsidyPackets', e);
 		}
-		try {
-			await refundClawback.applyDueRefundClawbackTasks(db, { nowTs: now, limit: 50, merchantUserId });
-		} catch (e) {
-			console.error('applyDueRefundClawbackTasks', e);
-		}
-		try {
-			await syncCouponInstancesForMerchant(merchant, now);
-		} catch (e) {
-			console.error('syncCouponInstancesForMerchant', e);
-		}
-		const allPending = await subsidyEngine.fetchAllQueryPages(
-			db,
-			'hsy-income-packets',
-			{ merchant_user_id: merchantUserId, is_deleted: false, status: 'pending' },
-			{
-				field: {
+
+		const curYm = subsidyEngine.monthNoFromTs(now);
+		const { start: curStart, end: curEnd } = subsidyEngine.monthStartEndTs(curYm);
+		const pendingFetchLimit = Math.min(800, Math.max(maxPending * 3, maxPending));
+
+		const [flowThisMonth, claimedPage, pendingRes, tickerCached] = await Promise.all([
+			(async () => {
+				if (!(curStart && curEnd)) return 0;
+				try {
+					return await subsidyEngine.sumEligibleRealFlowYuan(db, merchantUserId, curStart, curEnd);
+				} catch (e) {
+					console.error('h5IncomeList sumEligibleRealFlowYuan', e);
+					return 0;
+				}
+			})(),
+			fetchH5IncomeClaimedPage(merchantUserId, 1, 50),
+			incomePacketCollection
+				.where({ merchant_user_id: merchantUserId, is_deleted: false, status: 'pending' })
+				.field({
 					_id: true,
 					title: true,
 					amount: true,
@@ -18084,35 +18362,27 @@ async function h5IncomeList(data) {
 					expire_time: true,
 					claim_open_time: true,
 					unlock_flow_yuan: true
-				},
-				orderBy: { field: 'create_time', direction: 'desc' }
-			}
-		);
-		const curYm = subsidyEngine.monthNoFromTs(now);
-		const { start: curStart, end: curEnd } = subsidyEngine.monthStartEndTs(curYm);
-		let flowThisMonth = 0;
-		if (curStart && curEnd) {
-			try {
-				flowThisMonth = await subsidyEngine.sumEligibleRealFlowYuan(db, merchantUserId, curStart, curEnd);
-			} catch (e) {
-				console.error('h5IncomeList sumEligibleRealFlowYuan', e);
-			}
-		}
+				})
+				.orderBy('create_time', 'desc')
+				.limit(pendingFetchLimit)
+				.get()
+				.catch((e) => {
+					console.error('h5IncomeList pending query', e);
+					return { data: [] };
+				}),
+			redisH5.h5RedisGetJson(tickerKey).catch(() => null)
+		]);
+
+		const allPending = pendingRes && pendingRes.data ? pendingRes.data : [];
 		const pendingRows = allPending.filter((x) => {
 			if (x.expire_time && x.expire_time < now) return false;
 			if (!Number(x.claim_open_time || 0)) return false;
 			if (x.claim_open_time && x.claim_open_time > now) return false;
 			if (subsidyEngine.roundPacketAmountYuan(x.amount) < 0.01) return false;
-			// 与 claimPackets 一致：分期待返需本月流水达到 unlock_flow_yuan 才可展示/领取
 			const need = x.unlock_flow_yuan != null ? Number(x.unlock_flow_yuan) : null;
 			if (need != null && Number.isFinite(need) && need > 0 && flowThisMonth + 1e-6 < need) return false;
 			return true;
 		});
-		// syncSubsidyPackets 已按上限失效最早的；此处再截断，保证气泡最多 50 个
-		const maxPending =
-			Number(subsidyEngine.MAX_PENDING_INCOME_PACKETS) > 0
-				? Number(subsidyEngine.MAX_PENDING_INCOME_PACKETS)
-				: 50;
 		const displayPendingRows = pendingRows.slice(0, maxPending);
 		let pendingTotal = 0;
 		const packets = displayPendingRows.map((x) => {
@@ -18128,48 +18398,54 @@ async function h5IncomeList(data) {
 			};
 		});
 		pendingTotal = subsidyEngine.roundPacketAmountYuan(pendingTotal);
-		const claimedPage = await fetchH5IncomeClaimedPage(merchantUserId, 1, 50);
 		const detailList = claimedPage.detailList;
-		let subsidyTicker = [];
-		try {
-			const recentClaimed = await incomePacketCollection
-				.where({ is_deleted: false, status: 'claimed' })
-				.field({ merchant_user_id: true, amount: true, claimed_time: true, update_time: true })
-				.orderBy('claimed_time', 'desc')
-				.limit(40)
-				.get();
-			const recentRows = (recentClaimed.data || []).filter((x) => Number(x.amount || 0) > 0);
-			const userIds = [...new Set(recentRows.map((x) => String(x.merchant_user_id || '')).filter(Boolean))];
-			const merchantMap = new Map();
-			if (userIds.length) {
-				const merchantRows = await merchantCollection
-					.where({ user_id: db.command.in(userIds) })
-					.field({ user_id: true, wx_nickname: true, wx_avatar: true, mobile: true })
+
+		let subsidyTicker = Array.isArray(tickerCached) ? tickerCached : [];
+		if (!subsidyTicker.length) {
+			try {
+				const recentClaimed = await incomePacketCollection
+					.where({ is_deleted: false, status: 'claimed' })
+					.field({ merchant_user_id: true, amount: true, claimed_time: true, update_time: true })
+					.orderBy('claimed_time', 'desc')
+					.limit(40)
 					.get();
-				(merchantRows.data || []).forEach((m) => {
-					merchantMap.set(String(m.user_id || ''), m);
-				});
-			}
-			const displayName = (name, mobile) => {
-				const n = String(name || '').trim();
-				if (n) return n;
-				const m = String(mobile || '').trim();
-				if (m) return m;
-				return '商户用户';
-			};
-			subsidyTicker = recentRows.slice(0, 20).map((r, idx) => {
-				const userId = String(r.merchant_user_id || '');
-				const m = merchantMap.get(userId) || {};
-				return {
-					id: `${userId || 'u'}_${r.claimed_time || r.update_time || 0}_${idx}`,
-					name: displayName(m.wx_nickname, m.mobile),
-					avatar: String(m.wx_avatar || ''),
-					amount: Number(r.amount || 0).toFixed(2)
+				const recentRows = (recentClaimed.data || []).filter((x) => Number(x.amount || 0) > 0);
+				const userIds = [...new Set(recentRows.map((x) => String(x.merchant_user_id || '')).filter(Boolean))];
+				const merchantMap = new Map();
+				if (userIds.length) {
+					const merchantRows = await merchantCollection
+						.where({ user_id: db.command.in(userIds) })
+						.field({ user_id: true, wx_nickname: true, wx_avatar: true, mobile: true })
+						.get();
+					(merchantRows.data || []).forEach((m) => {
+						merchantMap.set(String(m.user_id || ''), m);
+					});
+				}
+				const displayName = (name, mobile) => {
+					const n = String(name || '').trim();
+					if (n) return n;
+					const m = String(mobile || '').trim();
+					if (m) return m;
+					return '商户用户';
 				};
-			});
-		} catch (e) {
-			console.error('build subsidyTicker failed', e);
+				subsidyTicker = recentRows.slice(0, 20).map((r, idx) => {
+					const userId = String(r.merchant_user_id || '');
+					const m = merchantMap.get(userId) || {};
+					return {
+						id: `${userId || 'u'}_${r.claimed_time || r.update_time || 0}_${idx}`,
+						name: displayName(m.wx_nickname, m.mobile),
+						avatar: String(m.wx_avatar || ''),
+						amount: Number(r.amount || 0).toFixed(2)
+					};
+				});
+				if (subsidyTicker.length) {
+					await redisH5.h5RedisSetJson(tickerKey, subsidyTicker, 120);
+				}
+			} catch (e) {
+				console.error('build subsidyTicker failed', e);
+			}
 		}
+
 		return {
 			code: 0,
 			message: 'ok',
@@ -18186,7 +18462,8 @@ async function h5IncomeList(data) {
 				summary: {
 					accountPoints: normalizePendingBalance(merchant).toFixed(2),
 					availableReward: h5DisplayWithdrawQuotaRemainingYuan(merchant).toFixed(2)
-				}
+				},
+				_sync: ranFullSync ? 'full' : 'light'
 			}
 		};
 	} catch (e) {
@@ -21311,7 +21588,7 @@ async function exchangeCouponGenerate(data, event) {
 		const validFrom = Number(data?.validFrom || now);
 		const validTo = Number(data?.validTo || (validFrom + 90 * 24 * 60 * 60 * 1000));
 		if (validTo <= validFrom) return { code: 400, message: '有效期结束时间必须大于开始时间' };
-		const operator = getOperator(event);
+		const operator = await getAdminDisplayName(event, event?.context || event || {}, data);
 		const rows = [];
 		for (let i = 0; i < count; i += 1) {
 			const code = await generateUniqueExchangeCode();
@@ -21324,8 +21601,8 @@ async function exchangeCouponGenerate(data, event) {
 				used: false,
 				used_merchant_id: '',
 				used_merchant_name: '',
-				used_time: 0,
-				generate_user: operator,
+				used_time: null,
+				generate_user: operator || '管理员',
 				is_deleted: false,
 				create_time: now,
 				update_time: now
@@ -21337,6 +21614,25 @@ async function exchangeCouponGenerate(data, event) {
 		console.error('exchangeCouponGenerate failed', e);
 		return { code: 500, message: '生成失败' };
 	}
+}
+
+async function resolveExchangeCouponGenerateUserName(raw) {
+	const s = safeText(raw, 80);
+	if (!s) return '';
+	if (s === 'system' || s === '管理员') return s;
+	const byId = await lookupUniIdUserDisplayName(s);
+	if (byId) return byId;
+	try {
+		const ru = await adminUserCollection
+			.where(db.command.or([{ username: s }, { nickname: s }]))
+			.field({ nickname: true, username: true })
+			.limit(1)
+			.get();
+		const row = ru.data && ru.data[0];
+		const n = safeText((row && (row.nickname || row.username)) || '', 80);
+		if (n) return n;
+	} catch (e) {}
+	return s;
 }
 
 async function exchangeCouponList(data) {
@@ -21360,19 +21656,34 @@ async function exchangeCouponList(data) {
 			.skip((page - 1) * pageSize)
 			.limit(pageSize)
 			.get();
-		const list = (listRes.data || []).map((x) => ({
-			id: x._id,
-			code: x.code || '',
-			generateTime: formatTime(x.generate_time || x.create_time),
-			validFrom: formatTime(x.valid_from || 0),
-			validTo: formatTime(x.valid_to || 0),
-			memberDays: Number(x.member_days || 0),
-			used: !!x.used,
-			usedText: x.used ? '已兑换' : '否',
-			usedMerchantName: safeText(x.used_merchant_name || '', 80),
-			usedTime: formatTime(x.used_time || 0),
-			generateUser: safeText(x.generate_user || '', 80)
-		}));
+		const rawList = listRes.data || [];
+		const userKeys = [
+			...new Set(rawList.map((x) => safeText(x.generate_user || '', 80)).filter(Boolean))
+		];
+		const userNameMap = new Map();
+		await Promise.all(
+			userKeys.map(async (key) => {
+				userNameMap.set(key, await resolveExchangeCouponGenerateUserName(key));
+			})
+		);
+		const list = rawList.map((x) => {
+			const usedFlag = !!x.used;
+			const usedTs = Number(x.used_time || 0);
+			const genKey = safeText(x.generate_user || '', 80);
+			return {
+				id: x._id,
+				code: x.code || '',
+				generateTime: formatTime(x.generate_time || x.create_time),
+				validFrom: formatTime(x.valid_from || 0),
+				validTo: formatTime(x.valid_to || 0),
+				memberDays: Number(x.member_days || 0),
+				used: usedFlag,
+				usedText: usedFlag ? '已兑换' : '否',
+				usedMerchantName: safeText(x.used_merchant_name || '', 80),
+				usedTime: usedFlag && usedTs > 0 ? formatTime(usedTs) : '',
+				generateUser: (userNameMap.get(genKey) || genKey || '').trim()
+			};
+		});
 		return { code: 0, message: 'ok', data: { list, total: totalRes.total || 0, page, pageSize } };
 	} catch (e) {
 		console.error('exchangeCouponList failed', e);
