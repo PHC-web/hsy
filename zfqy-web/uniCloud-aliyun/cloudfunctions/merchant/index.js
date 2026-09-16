@@ -1819,6 +1819,165 @@ async function persistSignedAgreementJpeg(merchantId, jpegBuffer) {
 	return fileID;
 }
 
+/** 签署热路径：仅上传小号签名图，供异步盖章任务使用 */
+async function persistSignaturePendingPng(merchantId, pngBuffer, ext = 'png') {
+	const mid = safeText(merchantId, 80) || 'm';
+	const safeExt = String(ext || 'png').replace(/[^a-z0-9]/gi, '') || 'png';
+	const cloudPath = `hsy/agreement/${mid}/sign_pending_${Date.now()}_${Math.random()
+		.toString(36)
+		.slice(2, 8)}.${safeExt}`;
+	const up = await uniCloud.uploadFile({
+		cloudPath,
+		fileContent: pngBuffer
+	});
+	const fileID = String(up.fileID || up.fileId || '').trim();
+	if (!fileID) throw new Error('签名图上传失败（无 fileID）');
+	return fileID;
+}
+
+/**
+ * 触发独立云函数实例做盖章合成+上传（不 await 完成）。
+ * 失败时可由管理端预览等接口再次拉起重试。
+ * @returns {Promise|null}
+ */
+function scheduleAgreementComposeJob(params = {}) {
+	try {
+		const invoke = uniCloud.callFunction({
+			name: 'merchant',
+			data: {
+				action: 'internalComposeSignedAgreement',
+				params: {
+					merchantId: safeText(params.merchantId, 80),
+					signatureFileId: safeText(params.signatureFileId, 500),
+					pdfRef: safeText(params.pdfRef, 500),
+					signedAtText: safeText(params.signedAtText, 80),
+					signedIp: safeText(params.signedIp, 80),
+					prevImg: safeText(params.prevImg, 500)
+				}
+			}
+		});
+		if (invoke && typeof invoke.then === 'function') {
+			invoke
+				.then((res) => {
+					const r = res && res.result;
+					if (r && Number(r.code) !== 0) {
+						console.error('internalComposeSignedAgreement result', r);
+					}
+				})
+				.catch((e) => console.error('internalComposeSignedAgreement invoke', e));
+			return invoke;
+		}
+	} catch (e) {
+		console.error('scheduleAgreementComposeJob', e);
+	}
+	return null;
+}
+
+/**
+ * 异步：底图盖章合成 → 上传签署 JPEG → 回写 agreement_img（清晰度规格不变）。
+ */
+async function internalComposeSignedAgreement(data = {}) {
+	const merchantId = safeText(data?.merchantId, 80);
+	const signatureFileId = safeText(data?.signatureFileId, 500);
+	if (!merchantId || !signatureFileId) {
+		return { code: 400, message: '缺少合成参数' };
+	}
+	try {
+		const merchant = await getMerchantByIdOrUserId(merchantId, { includeAgreementImg: true });
+		if (!merchant) return { code: 404, message: '商户不存在' };
+
+		const pendingRef = safeText(merchant.agreement_sign_pending_file_id || '', 500);
+		const status = safeText(merchant.agreement_compose_status || '', 20);
+		const existingImg = String(merchant.agreement_img || '').trim();
+
+		if (!pendingRef) {
+			if (existingImg) {
+				return { code: 0, message: 'already_done', data: { agreementImg: existingImg } };
+			}
+			// 无 pending 也无正式图：用入参签名文件兜底重试
+		} else if (pendingRef !== signatureFileId) {
+			return { code: 0, message: 'stale_job_ignored' };
+		}
+		const useSignRef = pendingRef || signatureFileId;
+		if (!useSignRef) {
+			return { code: 400, message: '缺少签名文件' };
+		}
+
+		if (status === 'composing') {
+			// 允许继续（可能上次中断）；避免直接放弃导致永远 pending
+		}
+
+		await merchantCollection.doc(merchant._id).update({
+			agreement_compose_status: 'composing',
+			update_time: nowTs()
+		});
+
+		const curAgreement = await getCurrentAgreement();
+		const pdfRef = safeText(data?.pdfRef || curAgreement?.pdf_file_id || '', 500);
+		let baseJpeg;
+		try {
+			baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef, { allowBuild: false });
+		} catch (e) {
+			if (e && e.code === 'BASE_NOT_READY') {
+				baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef, { allowBuild: true });
+			} else {
+				throw e;
+			}
+		}
+
+		const signBytes = await downloadBinaryFromFileRef(useSignRef);
+		const signParsed = {
+			ok: true,
+			kind: 'buffer',
+			buffer: signBytes,
+			ext: 'png',
+			mime: 'image/png'
+		};
+
+		await Promise.all([loadAgreementStampAssets(), getAgreementStampFonts()]);
+		const signedAtText =
+			safeText(data?.signedAtText, 80) ||
+			formatTime(merchant.agreement_signed_at) ||
+			new Date().toISOString();
+		const signedIp =
+			safeText(data?.signedIp, 80) || safeText(merchant.agreement_signed_ip, 80) || '';
+		const signedJpegBuffer = await stampSignatureOnBaseJpegBuffer(baseJpeg, signParsed, {
+			signedAtText,
+			signedIp
+		});
+		const agreementImgRef = await persistSignedAgreementJpeg(merchant._id, signedJpegBuffer);
+		const prevImg = safeText(data?.prevImg || existingImg, 500);
+
+		await merchantCollection.doc(merchant._id).update({
+			agreement_img: agreementImgRef,
+			agreement_compose_status: 'done',
+			agreement_sign_pending_file_id: '',
+			update_time: nowTs()
+		});
+
+		if (prevImg && prevImg !== agreementImgRef && isAgreementImgCloudFileId(prevImg)) {
+			safeDeleteAgreementCloudFile(prevImg).catch(() => {});
+		}
+		if (useSignRef && isAgreementImgCloudFileId(useSignRef)) {
+			safeDeleteAgreementCloudFile(useSignRef).catch(() => {});
+		}
+		return { code: 0, message: 'ok', data: { agreementImg: agreementImgRef } };
+	} catch (e) {
+		console.error('internalComposeSignedAgreement failed', e);
+		try {
+			if (merchantId) {
+				await merchantCollection.doc(merchantId).update({
+					agreement_compose_status: 'failed',
+					update_time: nowTs()
+				});
+			}
+		} catch (e2) {
+			/* ignore */
+		}
+		return { code: 500, message: safeText(e?.message || '签署图合成失败', 160) };
+	}
+}
+
 /** 读路径：cloud:// → 临时 https；data URL / http(s) 原样返回 */
 async function resolveAgreementImgDisplayUrl(raw) {
 	const s = String(raw || '').trim();
@@ -1931,7 +2090,40 @@ async function merchantAgreementImage(data = {}) {
 		const merchant = await getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		let img = String(merchant.agreement_img || '').trim();
-		if (!img) return { code: 404, message: '该商户未签署协议或签署图片不存在' };
+		if (!img) {
+			const pendingRef = safeText(merchant.agreement_sign_pending_file_id || '', 500);
+			const signedAt = Number(merchant.agreement_signed_at || 0);
+			const composeStatus = safeText(merchant.agreement_compose_status || '', 20);
+			if (signedAt > 0 && pendingRef) {
+				scheduleAgreementComposeJob({
+					merchantId: merchant._id,
+					signatureFileId: pendingRef,
+					pdfRef: '',
+					signedAtText: formatTime(signedAt) || '',
+					signedIp: safeText(merchant.agreement_signed_ip, 80) || '',
+					prevImg: ''
+				});
+				return {
+					code: 202,
+					message:
+						composeStatus === 'failed'
+							? '签署图片生成失败，已重新排队，请稍后刷新'
+							: '签署图片生成中，请稍后刷新查看',
+					data: {
+						merchantId: merchant._id,
+						wxNickname: safeText(merchant.wx_nickname || '', 60),
+						mobile: safeText(merchant.mobile || '', 20),
+						agreementImg: '',
+						agreementImgIsPdf: false,
+						agreementSignedAt: formatTime(merchant.agreement_signed_at),
+						agreementSignedIp: safeText(merchant.agreement_signed_ip, 80) || '',
+						agreementSignDevice: safeText(merchant.agreement_sign_device, 320) || '',
+						composing: true
+					}
+				};
+			}
+			return { code: 404, message: '该商户未签署协议或签署图片不存在' };
+		}
 		// 短暂 PDF 签署期遗留：转成长图后回写，管理端始终走图片预览（不再下载 PDF）
 		if (isAgreementPdfRef(img)) {
 			const migrated = await migrateAgreementPdfToJpegIfNeeded(merchant, img);
@@ -1989,15 +2181,21 @@ async function merchantAgreementClear(data = {}, event = {}) {
 		if (!merchant) return { code: 404, message: '商户不存在' };
 		const now = nowTs();
 		const prevImg = String(merchant.agreement_img || '').trim();
+		const prevPending = safeText(merchant.agreement_sign_pending_file_id || '', 500);
 		await merchantCollection.doc(merchant._id).update({
 			agreement_img: '',
 			agreement_signed_at: null,
 			agreement_version: '',
 			agreement_signed_ip: '',
 			agreement_sign_device: '',
+			agreement_sign_pending_file_id: '',
+			agreement_compose_status: '',
 			update_time: now
 		});
 		await safeDeleteAgreementCloudFile(prevImg);
+		if (prevPending && prevPending !== prevImg) {
+			await safeDeleteAgreementCloudFile(prevPending);
+		}
 		await operationLogCollection.add({
 			user_id: merchant.user_id || merchant._id,
 			user_name: merchant.wx_nickname || merchant.mobile || '商户',
@@ -11999,6 +12197,17 @@ async function h5AgreementSignedSnapshot(data) {
 		let img = String(merchant.agreement_img || '').trim();
 		const agreementSigned =
 			!!img || Number(merchant.agreement_signed_at || 0) > 0;
+		const pendingRef = safeText(merchant.agreement_sign_pending_file_id || '', 500);
+		if (!img && pendingRef && Number(merchant.agreement_signed_at || 0) > 0) {
+			scheduleAgreementComposeJob({
+				merchantId: merchant._id,
+				signatureFileId: pendingRef,
+				pdfRef: '',
+				signedAtText: formatTime(merchant.agreement_signed_at) || '',
+				signedIp: safeText(merchant.agreement_signed_ip, 80) || '',
+				prevImg: ''
+			});
+		}
 		if (img && isAgreementPdfRef(img)) {
 			const migrated = await migrateAgreementPdfToJpegIfNeeded(merchant, img);
 			if (migrated.ok && migrated.ref) {
@@ -14194,7 +14403,6 @@ async function h5SignAgreement(data, event = {}) {
 		const signatureImage = String(data?.signatureImage || '').trim();
 		if (!signatureImage) return { code: 400, message: '请先签名' };
 
-		// 并行：查商户 + 当前协议（缩短签署热路径）
 		const [merchant, curAgreement] = await Promise.all([
 			getMerchantByIdOrUserId(merchantKey, { includeAgreementImg: true }),
 			getCurrentAgreement()
@@ -14222,70 +14430,58 @@ async function h5SignAgreement(data, event = {}) {
 		const agreementSignDevice = buildAgreementSignDeviceRecord(data);
 		const now = nowTs();
 		const signedAtText = formatTime(now) || new Date(now).toISOString();
-
-		// 签署热路径：优先用后台已预热底图（内存/Redis/云存储），不现场渲 PDF。
-		// 若历史协议无底图，再兜底生成一次（仍保持高清规格）。
-		let baseJpeg;
-		try {
-			baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef, { allowBuild: false });
-		} catch (e) {
-			if (e && e.code === 'BASE_NOT_READY') {
-				try {
-					baseJpeg = await ensureAgreementBaseJpegBuffer(curAgreement, pdfRef, { allowBuild: true });
-				} catch (e2) {
-					console.error('h5SignAgreement ensure base fallback', e2);
-					return { code: 500, message: '协议底图未就绪，请后台重新发布协议后再试' };
-				}
-			} else {
-				console.error('h5SignAgreement ensure base', e);
-				return { code: 500, message: '协议底图加载失败，请稍后重试' };
-			}
-		}
-
-		let signedJpegBuffer;
-		try {
-			// 预加载印章/字体（通常预热已命中缓存）
-			await Promise.all([loadAgreementStampAssets(), getAgreementStampFonts()]);
-			signedJpegBuffer = await stampSignatureOnBaseJpegBuffer(baseJpeg, signParsed, {
-				signedAtText,
-				signedIp: agreementSignedIp
-			});
-		} catch (e) {
-			console.error('h5SignAgreement compose image', e);
-			return { code: 500, message: '协议与签名合成失败，请稍后重试' };
-		}
-
-		let agreementImgRef = '';
-		try {
-			agreementImgRef = await persistSignedAgreementJpeg(merchant._id, signedJpegBuffer);
-		} catch (e) {
-			console.error('h5SignAgreement upload signed image', e);
-			return { code: 500, message: safeText(e?.message || '签署图片上传失败', 160) };
-		}
-
 		const agreementVersion = safeText(data?.agreementVersion || curAgreement?.version || 'legacy', 40);
 		const prevImg = String(merchant.agreement_img || '').trim();
+		const prevPending = safeText(merchant.agreement_sign_pending_file_id || '', 500);
+
+		// 热路径：只上传签名小图 + 落库「已签署」；盖章合成与正式图上传异步（清晰度不变）
+		let signatureFileId = '';
+		try {
+			signatureFileId = await persistSignaturePendingPng(
+				merchant._id,
+				signParsed.buffer,
+				signParsed.ext || 'png'
+			);
+		} catch (e) {
+			console.error('h5SignAgreement upload signature', e);
+			return { code: 500, message: safeText(e?.message || '签名上传失败', 160) };
+		}
+
 		await merchantCollection.doc(merchant._id).update({
-			agreement_img: agreementImgRef,
 			agreement_signed_at: now,
 			agreement_version: agreementVersion,
 			agreement_signed_ip: agreementSignedIp,
 			agreement_sign_device: agreementSignDevice,
+			agreement_sign_pending_file_id: signatureFileId,
+			agreement_compose_status: 'pending',
 			update_time: now
 		});
-		if (prevImg && prevImg !== agreementImgRef && isAgreementImgCloudFileId(prevImg)) {
-			safeDeleteAgreementCloudFile(prevImg).catch(() => {});
+
+		if (prevPending && prevPending !== signatureFileId && isAgreementImgCloudFileId(prevPending)) {
+			safeDeleteAgreementCloudFile(prevPending).catch(() => {});
 		}
-		// 不在热路径换临时链接（管理端/我的页按需解析），缩短响应
+
+		scheduleAgreementComposeJob({
+			merchantId: merchant._id,
+			signatureFileId,
+			pdfRef,
+			signedAtText,
+			signedIp: agreementSignedIp,
+			prevImg
+		});
+		// 给子调用一点发出时间，避免主函数过早结束导致调度未发出
+		await new Promise((resolve) => setTimeout(resolve, 50));
+
 		return {
 			code: 0,
 			message: '签署成功',
 			data: {
-				agreementImg: agreementImgRef,
+				agreementImg: prevImg || '',
 				agreementImgIsPdf: false,
 				agreementSignedAt: now,
 				agreementSignedIp: agreementSignedIp,
-				agreementSignDevice: agreementSignDevice
+				agreementSignDevice: agreementSignDevice,
+				composing: true
 			}
 		};
 	} catch (e) {
@@ -22702,6 +22898,8 @@ exports.main = async (event, context) => {
 			return await applyH5GzipIfRequested(await h5HomeDashboard(actualData), actualData);
 		case 'h5SignAgreement':
 			return await h5SignAgreement(actualData, event);
+		case 'internalComposeSignedAgreement':
+			return await internalComposeSignedAgreement(actualData);
 		case 'agreementBuildBaseJpeg':
 			return await agreementBuildBaseJpeg(actualData);
 		case 'agreementEnsureBaseJpeg':

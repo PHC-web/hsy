@@ -245,7 +245,7 @@ export function h5EnsureAgreementBaseJpeg(payload = {}) {
 export function h5SignAgreement(payload) {
 	const meta = collectAgreementSignClientMeta();
 	return merchantCall('h5SignAgreement', merchantIdentity(Object.assign({}, meta, payload)), {
-		timeout: 60000
+		timeout: 20000
 	});
 }
 
