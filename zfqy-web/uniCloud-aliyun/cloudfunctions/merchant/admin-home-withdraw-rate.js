@@ -68,17 +68,27 @@ async function sumClaimedPointsInRange(deps, start, end) {
 	const _ = db.command;
 	const $ = db.command.aggregate;
 	try {
-		const agg = await incomePacketCollection
-			.aggregate()
-			.match(
-				_.and([
-					{ status: 'claimed' },
-					{ claimed_time: _.gte(start) },
-					{ claimed_time: _.lt(end) }
-				])
-			)
-			.group({ _id: null, total: $.sum('$amount') })
-			.end();
+		// 须走 status_claimed_time；未建索引时 hint 会失败，退回无 hint
+		const match = _.and([
+			{ status: 'claimed' },
+			{ claimed_time: _.gte(start) },
+			{ claimed_time: _.lt(end) }
+		]);
+		const run = (useHint) => {
+			let agg = incomePacketCollection.aggregate();
+			if (useHint && typeof agg.hint === 'function') {
+				agg = agg.hint('status_claimed_time') || agg;
+			}
+			return agg.match(match).group({ _id: null, total: $.sum('$amount') }).end();
+		};
+		let agg;
+		try {
+			agg = await run(true);
+		} catch (hintErr) {
+			const msg = String((hintErr && hintErr.message) || hintErr || '');
+			if (!/hint|index|索引/i.test(msg)) throw hintErr;
+			agg = await run(false);
+		}
 		return Number(((((agg || {}).data || [])[0] || {}).total || 0).toFixed(2));
 	} catch (e) {
 		console.error('sumClaimedPointsInRange', e);

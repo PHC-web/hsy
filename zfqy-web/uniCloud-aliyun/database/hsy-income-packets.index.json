@@ -1,5 +1,15 @@
 [
 	{
+		"IndexName": "status_claimed_time",
+		"MgoKeySchema": {
+			"MgoIndexKeys": [
+				{ "Name": "status", "Direction": "1", "Type": "string" },
+				{ "Name": "claimed_time", "Direction": "1", "Type": "long" }
+			],
+			"MgoIsUnique": false
+		}
+	},
+	{
 		"IndexName": "deleted_status_claimed_time_desc",
 		"MgoKeySchema": {
 			"MgoIndexKeys": [
