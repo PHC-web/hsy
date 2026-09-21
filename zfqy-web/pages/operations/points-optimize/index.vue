@@ -158,8 +158,37 @@
 				</view>
 
 				<view v-else class="card">
-					<view class="hint">仅记录：登录周优化执行/模拟、人工改片、白名单增删。对账原始片等不记入。</view>
-					<button size="mini" :loading="loading" @click="loadLogs">刷新日志</button>
+					<view class="hint">仅记录：登录周优化执行/模拟、人工改片、一键回到优化前、白名单增删。对账原始片等不记入。</view>
+					<view class="row">
+						<input
+							class="input"
+							v-model="logSearchDevice"
+							placeholder="机具号"
+							confirm-type="search"
+							@confirm="searchLogsByDevice"
+						/>
+						<button size="mini" type="primary" :disabled="loading" @click="searchLogsByDevice">搜索</button>
+						<button size="mini" :disabled="!logMerchant && !logSearchDevice" @click="clearLogSearch">清除</button>
+						<button size="mini" type="primary" :disabled="!logMerchant || logExporting" @click="exportMerchantLogs">
+							{{ logExporting ? '导出中…' : '导出全部日志' }}
+						</button>
+						<button size="mini" :loading="loading" @click="loadLogs">刷新日志</button>
+					</view>
+					<view v-if="logCandidates.length > 1" class="row">
+						<text class="hint">该机具对应多个商户，请选择：</text>
+						<button
+							v-for="m in logCandidates"
+							:key="m.id"
+							size="mini"
+							:type="logMerchant && logMerchant.id === m.id ? 'primary' : 'default'"
+							@click="pickLogMerchant(m)"
+						>
+							{{ m.name }}（{{ m.userId }}）
+						</button>
+					</view>
+					<view v-if="logMerchant" class="hint">
+						商户：{{ logMerchant.name }}　编号：{{ logMerchant.userId }}　机具号：{{ logSearchDevice }}　共 {{ logPage.total }} 条
+					</view>
 					<uni-table border stripe :loading="loading" empty-text="暂无日志">
 						<uni-tr>
 							<uni-th width="150">时间</uni-th>
@@ -323,7 +352,7 @@
 								{{ s.isClaimed ? '（已领）' : '' }}
 								{{ s.optSkip ? ' · 后续不优化' : '' }}
 							</text>
-							<text>原始 {{ s.original }} / 系统 {{ s.system }} / 生效 {{ s.effective }}</text>
+							<text>原始 {{ s.original }} / 优化后 {{ s.system }} / 生效 {{ s.effective }}</text>
 							<view v-if="!s.isClaimed" class="slice-edit">
 								<input v-model="s._edit" class="input slice-amt" type="digit" placeholder="人工金额" />
 								<button size="mini" type="primary" @click="saveSlice(s)">保存</button>
@@ -349,6 +378,7 @@
 </template>
 
 <script>
+import * as XLSX from 'xlsx';
 import { syncOpsListPageSize } from '@/pages/operations/utils/sync-page-size.js';
 
 export default {
@@ -379,6 +409,10 @@ export default {
 			flowWlPage: { currentPage: 1, pageSize: 20, total: 0 },
 			logList: [],
 			logPage: { currentPage: 1, pageSize: 20, total: 0 },
+			logSearchDevice: '',
+			logMerchant: null,
+			logCandidates: [],
+			logExporting: false,
 			flowLogList: [],
 			flowLogPage: { currentPage: 1, pageSize: 20, total: 0 },
 			logPageSizeRange: [20, 50, 100],
@@ -455,6 +489,7 @@ export default {
 				skip_disabled: '总开关关闭跳过',
 				manual_set: '人工改片',
 				manual_clear: '清人工/恢复系统',
+				restore_original_all: '一键回到优化前',
 				slice_opt_skip: '标记后续不优化',
 				slice_opt_unskip: '取消后续不优化',
 				whitelist_add: '加入白名单',
@@ -466,7 +501,7 @@ export default {
 		},
 		formatLogAmount(item) {
 			if (!item) return '-';
-			if (item.action === 'manual_set' || item.action === 'manual_clear') {
+			if (item.action === 'manual_set' || item.action === 'manual_clear' || item.action === 'restore_original_all') {
 				const b = Number(item.before_total);
 				const a = Number(item.after_total);
 				if (Number.isFinite(b) && Number.isFinite(a)) return `${b.toFixed(2)}→${a.toFixed(2)}`;
@@ -902,12 +937,17 @@ export default {
 		async loadLogs() {
 			this.loading = true;
 			try {
+				const payload = {
+					page: this.logPage.currentPage,
+					pageSize: this.logPage.pageSize
+				};
+				if (this.logMerchant) {
+					payload.merchantUserId = this.logMerchant.userId;
+					payload.merchantDocId = this.logMerchant.id;
+				}
 				const res = await this.$request(
 					'pointsOptimizeLogsList',
-					{
-						page: this.logPage.currentPage,
-						pageSize: this.logPage.pageSize
-					},
+					payload,
 					{ functionName: 'points-optimize-admin' }
 				);
 				if (res.code !== 0) {
@@ -919,6 +959,120 @@ export default {
 				syncOpsListPageSize(this.logPage, res.data);
 			} finally {
 				this.loading = false;
+			}
+		},
+		async searchLogsByDevice() {
+			const deviceId = String(this.logSearchDevice || '').trim();
+			if (!deviceId) {
+				uni.showToast({ title: '请输入机具号', icon: 'none' });
+				return;
+			}
+			this.logSearchDevice = deviceId;
+			this.loading = true;
+			try {
+				const res = await this.$request(
+					'pointsOptimizeLogsResolve',
+					{ deviceId },
+					{ functionName: 'points-optimize-admin' }
+				);
+				if (res.code !== 0) {
+					this.logMerchant = null;
+					this.logCandidates = [];
+					this.logList = [];
+					this.logPage.total = 0;
+					uni.showToast({ title: res.message || '未找到商户', icon: 'none' });
+					return;
+				}
+				const merchants = (res.data && res.data.merchants) || [];
+				this.logCandidates = merchants;
+				if (merchants.length === 1) {
+					this.logMerchant = merchants[0];
+					this.logPage.currentPage = 1;
+					await this.loadLogs();
+				} else {
+					this.logMerchant = null;
+					this.logList = [];
+					this.logPage.total = 0;
+					uni.showToast({ title: '请选择商户', icon: 'none' });
+				}
+			} catch (e) {
+				uni.showToast({ title: '搜索失败', icon: 'none' });
+			} finally {
+				this.loading = false;
+			}
+		},
+		async pickLogMerchant(m) {
+			if (!m) return;
+			this.logMerchant = m;
+			this.logPage.currentPage = 1;
+			await this.loadLogs();
+		},
+		clearLogSearch() {
+			this.logSearchDevice = '';
+			this.logMerchant = null;
+			this.logCandidates = [];
+			this.logPage.currentPage = 1;
+			this.loadLogs();
+		},
+		safeFilePart(v) {
+			return String(v || '')
+				.trim()
+				.replace(/[\\/:*?"<>|\s]+/g, '_')
+				.slice(0, 40) || '未知';
+		},
+		async exportMerchantLogs() {
+			if (!this.logMerchant) {
+				uni.showToast({ title: '请先按机具号搜索商户', icon: 'none' });
+				return;
+			}
+			this.logExporting = true;
+			try {
+				const res = await this.$request(
+					'pointsOptimizeLogsExport',
+					{
+						deviceId: this.logSearchDevice,
+						merchantUserId: this.logMerchant.userId,
+						merchantDocId: this.logMerchant.id
+					},
+					{ functionName: 'points-optimize-admin' }
+				);
+				if (res.code !== 0) {
+					uni.showToast({ title: res.message || '导出失败', icon: 'none' });
+					return;
+				}
+				if (res.data && res.data.needPick) {
+					this.logCandidates = res.data.merchants || [];
+					uni.showToast({ title: '请先选择商户', icon: 'none' });
+					return;
+				}
+				const list = (res.data && res.data.list) || [];
+				if (!list.length) {
+					uni.showToast({ title: '该商户没有可导出的日志', icon: 'none' });
+					return;
+				}
+				const rows = list.map((item) => ({
+					时间: this.fmtTs(item.create_time),
+					动作: this.logActionLabel(item.action),
+					商户名称: item.merchant_name || this.logMerchant.name || '',
+					商户编号: item.merchant_user_id || this.logMerchant.userId || '',
+					机具号: item.device_ids || this.logSearchDevice || '',
+					砍额: this.formatLogAmount(item),
+					周: this.formatLogWeek(item),
+					备注: item.remark || item.batch_id || ''
+				}));
+				const sheet = XLSX.utils.json_to_sheet(rows);
+				const book = XLSX.utils.book_new();
+				XLSX.utils.book_append_sheet(book, sheet, '任务日志');
+				const filename = `积分优化日志_${this.safeFilePart(this.logSearchDevice)}_${this.safeFilePart(this.logMerchant.name)}.xlsx`;
+				XLSX.writeFile(book, filename);
+				uni.showToast({
+					title: res.data && res.data.truncated ? res.message || '已截断导出' : `已导出 ${rows.length} 条`,
+					icon: 'none'
+				});
+			} catch (e) {
+				uni.showToast({ title: '导出失败', icon: 'none' });
+			} finally {
+				this.logExporting = false;
 			}
 		},
 		onLogPageChanged(page) {

@@ -217,6 +217,10 @@ exports.main = async (event) => {
 			return await pointsOptimizeApi.pointsOptimizeTaskStatus(actualData);
 		case 'pointsOptimizeLogsList':
 			return await pointsOptimizeApi.pointsOptimizeLogsList(actualData);
+		case 'pointsOptimizeLogsResolve':
+			return await pointsOptimizeApi.pointsOptimizeLogsResolve(actualData);
+		case 'pointsOptimizeLogsExport':
+			return await pointsOptimizeApi.pointsOptimizeLogsExport(actualData);
 		case 'pointsOptimizeWhitelistList':
 			return await pointsOptimizeApi.pointsOptimizeWhitelistList(actualData);
 		case 'pointsOptimizeWhitelistAdd':
@@ -233,6 +237,8 @@ exports.main = async (event) => {
 			return await pointsOptimizeApi.pointsSliceStateList(actualData);
 		case 'pointsSliceManualSet':
 			return await pointsOptimizeApi.pointsSliceManualSet(actualData, event);
+		case 'pointsSliceRestoreOriginalAll':
+			return await pointsOptimizeApi.pointsSliceRestoreOriginalAll(actualData, event);
 		case 'pointsSliceReconcile':
 			return await pointsOptimizeApi.pointsSliceReconcile(actualData, event);
 		default:

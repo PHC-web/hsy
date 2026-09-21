@@ -21,6 +21,7 @@ const TASK_LOG_ACTIONS = [
 	'skip_disabled',
 	'manual_set',
 	'manual_clear',
+	'restore_original_all',
 	'slice_opt_skip',
 	'slice_opt_unskip',
 	'whitelist_add',
@@ -265,7 +266,9 @@ function createPointsOptimizeApi(deps) {
 	}
 
 	/**
-	 * 理论分片 → 账本 original（不抬高已优化 system）
+	 * 理论分片 → 账本 original。
+	 * 已砍过的系统金额不抬回原始值；原始金额上涨时，把涨出的差额加到系统金额（有人工则一并加上），
+	 * 之后的周优化按加完后的生效值继续 ×0.75。原始下降且低于系统时，系统封顶为新原始。
 	 * 仅处理该商户，交易查询带 user_id 条件。
 	 */
 	async function reconcileOriginal(merchant, options = {}) {
@@ -281,6 +284,7 @@ function createPointsOptimizeApi(deps) {
 		}
 
 		const writeJobs = [];
+		const packetSync = [];
 		for (const [key, th] of theory.entries()) {
 			const row = existMap.get(key);
 			if (row && row.is_claimed) {
@@ -315,20 +319,46 @@ function createPointsOptimizeApi(deps) {
 				);
 				continue;
 			}
-			const prevSys = Number(row.system_amount != null ? row.system_amount : row.original_amount || 0);
-			let nextSys = prevSys;
-			if (th.original < prevSys - 1e-9) nextSys = th.original;
+			const nextOrig = floor2(th.original);
+			const prevOrig = floor2(row.original_amount);
+			const prevSys = floor2(row.system_amount != null ? row.system_amount : row.original_amount || 0);
+			const deltaCents = Math.round(nextOrig * 100) - Math.round(prevOrig * 100);
+			let nextSysCents = Math.round(prevSys * 100);
+			if (deltaCents > 0) {
+				nextSysCents += deltaCents;
+				const cap = Math.round(nextOrig * 100);
+				if (nextSysCents > cap) nextSysCents = cap;
+			} else if (nextOrig < prevSys - 1e-9) {
+				nextSysCents = Math.round(nextOrig * 100);
+			}
+			if (nextSysCents < 0) nextSysCents = 0;
+			const nextSys = nextSysCents / 100;
 			const hasManual = row.manual_amount != null && row.manual_amount !== '';
-			const nextEff = hasManual ? floor2(row.manual_amount) : floor2(nextSys);
-			writeJobs.push(() =>
-				sliceCol.doc(row._id).update({
-					original_amount: th.original,
-					system_amount: floor2(nextSys),
-					effective_amount: nextEff,
-					update_time: now,
-					version: Number(row.version || 0) + 1
-				})
-			);
+			let nextManual = hasManual ? floor2(row.manual_amount) : null;
+			if (hasManual && deltaCents > 0) {
+				nextManual = (Math.round(Number(row.manual_amount) * 100) + deltaCents) / 100;
+				if (nextManual < 0) nextManual = 0;
+			}
+			const nextEff = hasManual ? floor2(nextManual) : floor2(nextSys);
+			const patch = {
+				original_amount: nextOrig,
+				system_amount: floor2(nextSys),
+				effective_amount: nextEff,
+				update_time: now,
+				version: Number(row.version || 0) + 1
+			};
+			if (hasManual && deltaCents > 0) patch.manual_amount = floor2(nextManual);
+			writeJobs.push(() => sliceCol.doc(row._id).update(patch));
+			if (Math.abs(effectiveOf(row) - nextEff) >= 0.005) {
+				packetSync.push(
+					Object.assign({}, row, {
+						original_amount: nextOrig,
+						system_amount: floor2(nextSys),
+						manual_amount: hasManual ? floor2(nextManual) : null,
+						effective_amount: nextEff
+					})
+				);
+			}
 			existMap.delete(key);
 		}
 
@@ -342,6 +372,9 @@ function createPointsOptimizeApi(deps) {
 		}
 
 		await mapPool(writeJobs, DB_WRITE_CONCURRENCY, (job) => job());
+		if (packetSync.length) {
+			await syncPendingPacketsForSlices(merchantUserId, packetSync);
+		}
 
 		// 对账原始片：不写任务日志（仅登录周优化 / 人工改片 / 白名单记日志）
 		return { ok: true, upserted: writeJobs.length, theoryCount: theory.size };
@@ -1018,18 +1051,182 @@ function createPointsOptimizeApi(deps) {
 		});
 	}
 
-	async function pointsOptimizeLogsList(data = {}) {
-		const page = Math.max(1, Number(data.page) || 1);
-		const pageSize = Math.min(100, Math.max(1, Number(data.pageSize) || 20));
+	const LOG_EXPORT_CAP = 5000;
+	const LOG_EXPORT_PAGE = 200;
+
+	function merchantLogIdWhere(keys) {
+		const ids = [...new Set((keys || []).map((x) => String(x || '').trim()).filter(Boolean))];
+		if (!ids.length) return null;
+		if (ids.length === 1) return { merchant_user_id: ids[0] };
+		return _.or(ids.map((id) => ({ merchant_user_id: id })));
+	}
+
+	async function listMerchantsByDeviceId(deviceId) {
+		const val = safeText(deviceId, 80);
+		if (!val) return [];
+		const seen = new Map();
+		const addMerchant = (m) => {
+			if (!m || !m._id) return;
+			const id = String(m._id);
+			if (seen.has(id)) return;
+			seen.set(id, {
+				id,
+				userId: String(m.user_id || m._id || ''),
+				name: safeText(m.wx_nickname || m.mobile || '', 60) || '-',
+				mobile: safeText(m.mobile, 30)
+			});
+		};
+		try {
+			const mRes = await db
+				.collection('hsy-machine')
+				.where(
+					_.and([
+						{ device_id: val },
+						{ is_deleted: _.neq(true) },
+						{ is_bound: 1 },
+						{ bind_user_id: _.neq('') }
+					])
+				)
+				.field({ bind_user_id: true })
+				.limit(20)
+				.get();
+			const bindIds = [
+				...new Set((mRes.data || []).map((row) => String(row.bind_user_id || '').trim()).filter(Boolean))
+			];
+			if (bindIds.length) {
+				const mer = await merchantCollection
+					.where(_.or([{ user_id: _.in(bindIds) }, { _id: _.in(bindIds) }]))
+					.field({ _id: true, user_id: true, wx_nickname: true, mobile: true })
+					.limit(20)
+					.get();
+				for (const m of mer.data || []) addMerchant(m);
+			}
+		} catch (e) {
+			console.error('listMerchantsByDeviceId bind', e);
+		}
+		if (!seen.size) {
+			try {
+				const snap = await merchantCollection
+					.where({ device_id: val })
+					.field({ _id: true, user_id: true, wx_nickname: true, mobile: true })
+					.limit(5)
+					.get();
+				for (const m of snap.data || []) addMerchant(m);
+			} catch (e) {
+				console.error('listMerchantsByDeviceId snapshot', e);
+			}
+		}
+		return [...seen.values()];
+	}
+
+	async function pointsOptimizeLogsResolve(data = {}) {
+		const deviceId = safeText(data.deviceId || data.keyword, 80);
+		if (!deviceId) return { code: 400, message: '请输入机具号' };
+		const merchants = await listMerchantsByDeviceId(deviceId);
+		if (!merchants.length) return { code: 404, message: '未找到该机具绑定的商户' };
+		return { code: 0, message: 'ok', data: { deviceId, merchants } };
+	}
+
+	function buildTaskLogWhere(data = {}) {
 		const scope = String(data.scope || data.logScope || 'login').trim();
 		const defaultActions = scope === 'flow' ? FLOW_TASK_LOG_ACTIONS : TASK_LOG_ACTIONS;
 		const whereParts = [{ action: _.in(defaultActions) }];
 		if (data.action && TASK_LOG_ACTION_SET.has(String(data.action))) {
 			whereParts[0] = { action: String(data.action) };
 		}
-		if (data.merchantUserId) whereParts.push({ merchant_user_id: String(data.merchantUserId) });
+		const keys = [];
+		if (Array.isArray(data.merchantUserIds)) {
+			data.merchantUserIds.forEach((x) => {
+				const s = safeText(x, 80);
+				if (s) keys.push(s);
+			});
+		}
+		const one = safeText(data.merchantUserId, 80);
+		if (one) keys.push(one);
+		const docId = safeText(data.merchantDocId, 80);
+		if (docId) keys.push(docId);
+		const idWhere = merchantLogIdWhere(keys);
+		if (idWhere) whereParts.push(idWhere);
 		if (data.batchId) whereParts.push({ batch_id: String(data.batchId) });
-		const where = whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
+		return whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
+	}
+
+	async function pointsOptimizeLogsExport(data = {}) {
+		const deviceId = safeText(data.deviceId || data.keyword, 80);
+		let merchant = null;
+		const wantId = safeText(data.merchantUserId || data.merchantDocId, 80);
+		if (wantId && typeof getMerchantByIdOrUserId === 'function') {
+			const doc = await getMerchantByIdOrUserId(wantId);
+			if (doc) {
+				merchant = {
+					id: String(doc._id || ''),
+					userId: String(doc.user_id || doc._id || ''),
+					name: safeText(doc.wx_nickname || doc.mobile || '', 60) || '-'
+				};
+			}
+		}
+		if (!merchant) {
+			if (!deviceId) return { code: 400, message: '请先按机具号搜索商户' };
+			const merchants = await listMerchantsByDeviceId(deviceId);
+			if (!merchants.length) return { code: 404, message: '未找到该机具绑定的商户' };
+			if (merchants.length > 1 && !wantId) {
+				return { code: 0, message: '请选择商户', data: { needPick: true, deviceId, merchants } };
+			}
+			merchant = merchants[0];
+		}
+		const where = buildTaskLogWhere({
+			scope: 'login',
+			merchantUserId: merchant.userId,
+			merchantDocId: merchant.id
+		});
+		const countRes = await logCol.where(where).count();
+		const total = Number(countRes.total || 0);
+		const rows = [];
+		let skip = 0;
+		while (rows.length < LOG_EXPORT_CAP && skip < total) {
+			const pageRes = await logCol
+				.where(where)
+				.field({
+					create_time: true,
+					action: true,
+					merchant_user_id: true,
+					cut_total: true,
+					before_total: true,
+					after_total: true,
+					before_week: true,
+					after_week: true,
+					remark: true,
+					batch_id: true
+				})
+				.orderBy('create_time', 'desc')
+				.skip(skip)
+				.limit(LOG_EXPORT_PAGE)
+				.get();
+			const chunk = pageRes.data || [];
+			rows.push(...chunk);
+			if (chunk.length < LOG_EXPORT_PAGE) break;
+			skip += LOG_EXPORT_PAGE;
+		}
+		const truncated = total > rows.length;
+		const list = await enrichLogsWithMerchantInfo(rows.slice(0, LOG_EXPORT_CAP));
+		return {
+			code: 0,
+			message: truncated ? `日志超过 ${LOG_EXPORT_CAP} 条，仅导出最近 ${LOG_EXPORT_CAP} 条` : 'ok',
+			data: {
+				deviceId,
+				merchant,
+				list,
+				total,
+				exported: list.length,
+				truncated
+			}
+		};
+	}
+
+	async function pointsOptimizeLogsList(data = {}) {
+		const page = Math.max(1, Number(data.page) || 1);
+		const pageSize = Math.min(100, Math.max(1, Number(data.pageSize) || 20));
+		const where = buildTaskLogWhere(data);
 		const countRes = await logCol.where(where).count();
 		const listRes = await logCol
 			.where(where)
@@ -1423,6 +1620,73 @@ function createPointsOptimizeApi(deps) {
 		return { code: 0, message: '保存成功' };
 	}
 
+	/** 未领分片：生效金额全部改回原始（写入人工金额），系统金额不动 */
+	async function pointsSliceRestoreOriginalAll(data = {}, event = {}) {
+		const operator = getOperator(event);
+		const key = safeText(data.merchantUserId || data.userId || data.merchantId, 80);
+		if (!key) return { code: 400, message: '请传入商户ID' };
+		const m = await getMerchantByIdOrUserId(key);
+		if (!m) return { code: 404, message: '商户不存在' };
+		const merchantUserId = String(m.user_id || m._id || '');
+		const now = nowTs();
+		const curYm = subsidyEngine.monthNoFromTs(now);
+		const slices = await loadSlicesForMerchant(merchantUserId, { unclaimedOnly: true, minTargetYm: curYm });
+		const diffs = [];
+		const changedRows = [];
+		let beforeTotal = 0;
+		let afterTotal = 0;
+		for (const row of slices) {
+			if (!row || row.is_claimed) continue;
+			const before = effectiveOf(row);
+			const after = floor2(row.original_amount);
+			beforeTotal = floor2(beforeTotal + before);
+			afterTotal = floor2(afterTotal + after);
+			if (Math.abs(before - after) < 0.005) continue;
+			diffs.push({
+				sliceId: row._id,
+				target_ym: row.target_ym,
+				source_ym: row.source_ym,
+				slice_index: row.slice_index,
+				before,
+				after
+			});
+			changedRows.push(row);
+		}
+		if (!diffs.length) {
+			return { code: 0, message: '生效金额已是原始金额', data: { changed: 0 } };
+		}
+		await mapPool(changedRows, DB_WRITE_CONCURRENCY, async (row) => {
+			const after = floor2(row.original_amount);
+			await sliceCol.doc(row._id).update({
+				manual_amount: after,
+				effective_amount: after,
+				update_time: now,
+				version: _.inc(1)
+			});
+			row.manual_amount = after;
+			row.effective_amount = after;
+		});
+		await syncPendingPacketsForSlices(merchantUserId, changedRows);
+		await addLog({
+			action: 'restore_original_all',
+			merchant_user_id: merchantUserId,
+			operator,
+			before_total: beforeTotal,
+			after_total: afterTotal,
+			cut_total: floor2(beforeTotal - afterTotal),
+			remark: `一键回到优化前 ${diffs.length} 片`,
+			slice_diffs: diffs.slice(0, 200)
+		});
+		try {
+			if (typeof recalcFrozen === 'function') await recalcFrozen(merchantUserId);
+		} catch (e) {}
+		return {
+			code: 0,
+			message: `已将 ${diffs.length} 片生效金额恢复为原始`,
+			data: { changed: diffs.length, beforeTotal, afterTotal }
+		};
+	}
+
 	async function pointsSliceReconcile(data = {}, event = {}) {
 		const key = safeText(data.merchantUserId || data.userId || data.merchantId, 80);
 		if (!key) return { code: 400, message: '请传入商户ID' };
@@ -1451,6 +1715,8 @@ function createPointsOptimizeApi(deps) {
 		pointsOptimizeLoginSimulateWeek,
 		pointsOptimizeTaskStatus,
 		pointsOptimizeLogsList,
+		pointsOptimizeLogsResolve,
+		pointsOptimizeLogsExport,
 		pointsOptimizeWhitelistList,
 		pointsOptimizeWhitelistAdd,
 		pointsOptimizeWhitelistRemove,
@@ -1459,6 +1725,7 @@ function createPointsOptimizeApi(deps) {
 		pointsFlowOptimizeWhitelistRemove,
 		pointsSliceStateList,
 		pointsSliceManualSet,
+		pointsSliceRestoreOriginalAll,
 		pointsSliceReconcile,
 		onMerchantLoginAnchorReset,
 		reconcileOriginal,

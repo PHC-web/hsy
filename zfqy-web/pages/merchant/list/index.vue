@@ -412,7 +412,7 @@
 								{{ s.isClaimed ? '（已领）' : '' }}
 								{{ s.optSkip ? ' · 后续不优化' : '' }}
 							</text>
-							<text>原始 {{ s.original }} / 系统 {{ s.system }} / 生效 {{ s.effective }}</text>
+							<text>原始 {{ s.original }} / 优化后 {{ s.system }} / 生效 {{ s.effective }}</text>
 							<view v-if="!s.isClaimed" class="slice-edit">
 								<input v-model="s._edit" class="slice-input slice-amt" type="digit" placeholder="人工金额" />
 								<button size="mini" type="primary" :loading="sliceLoading" @click="saveSlice(s)">保存</button>
@@ -426,6 +426,9 @@
 					<view v-if="!sliceList.length" class="slice-hint">暂无分片（可先点对账）</view>
 				</scroll-view>
 				<view class="slice-actions">
+					<button size="mini" type="warn" :loading="sliceLoading" :disabled="!sliceList.length" @click="confirmRestoreOriginal">
+						一键回到优化前
+					</button>
 					<button size="mini" :loading="sliceLoading" @click="reconcileSlices">对账原始片</button>
 					<button size="mini" @click="closeSlices">关闭</button>
 				</view>
@@ -1704,6 +1707,42 @@ export default {
 		},
 		closeSlices() {
 			this.$refs.slicePopup && this.$refs.slicePopup.close();
+		},
+		confirmRestoreOriginal() {
+			const uid = this.sliceMerchant && this.sliceMerchant.userId;
+			if (!uid || this.sliceLoading) return;
+			const pending = (this.sliceList || []).filter((s) => s && !s.isClaimed);
+			if (!pending.length) {
+				uni.showToast({ title: '没有可恢复的未领分片', icon: 'none' });
+				return;
+			}
+			uni.showModal({
+				title: '回到优化前',
+				content: '确认后，未领取分片的生效金额将全部改为原始金额。已领取的片不会改动。',
+				confirmText: '确认恢复',
+				success: (r) => {
+					if (r.confirm) this.restoreOriginalAll();
+				}
+			});
+		},
+		async restoreOriginalAll() {
+			const uid = this.sliceMerchant && this.sliceMerchant.userId;
+			if (!uid) return;
+			this.sliceLoading = true;
+			try {
+				const res = await this.$request(
+					'pointsSliceRestoreOriginalAll',
+					{ merchantUserId: uid },
+					{ functionName: 'points-optimize-admin' }
+				);
+				uni.showToast({
+					title: res.code === 0 ? res.message || '已恢复' : res.message || '恢复失败',
+					icon: 'none'
+				});
+				if (res.code === 0) await this.loadSliceState(uid);
+			} finally {
+				this.sliceLoading = false;
+			}
 		},
 		async reconcileSlices() {
 			const uid = this.sliceMerchant.userId;
