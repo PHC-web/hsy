@@ -491,11 +491,16 @@ async function syncSubsidyPackets(db, merchant, nowTs, options = {}) {
 	const lookbackYm = addMonths(curYm, -(lookbackMonths - 1));
 	const { start: lookbackStart } = monthStartEndTs(lookbackYm);
 	const firstReleaseMinTs = Math.max(0, Number(nowTs) - claimValidMs - 24 * 60 * 60 * 1000);
-	const dedupSince = Math.min(lookbackStart || 0, firstReleaseMinTs || 0) || 0;
+	const upgradeClearedAt = Math.max(
+		0,
+		Number(options.minTradeCreateTime != null ? options.minTradeCreateTime : merchant.upgrade_points_cleared_at) || 0
+	);
+	const tradeMinTs = Math.max(lookbackStart || 0, upgradeClearedAt || 0);
+	const dedupSince = Math.min(tradeMinTs || 0, firstReleaseMinTs || 0) || 0;
 	const dedupSet = await existingDedupKeys(db, merchantUserId, { sinceTs: dedupSince > 0 ? dedupSince : 0 });
 	const tradeWhere = _.and([
 		buildEligibleSubsidyTradeWhere(db, merchantUserId),
-		lookbackStart > 0 ? { create_time: _.gte(lookbackStart) } : { create_time: _.gte(0) }
+		tradeMinTs > 0 ? { create_time: _.gte(tradeMinTs) } : { create_time: _.gte(0) }
 	]);
 	const tradesRaw = await fetchAllQueryPages(db, 'hsy-machine-trades', tradeWhere, {
 		field: { _id: true, trade_no: true, amount: true, release_amount: true, release_ratio: true, create_time: true },

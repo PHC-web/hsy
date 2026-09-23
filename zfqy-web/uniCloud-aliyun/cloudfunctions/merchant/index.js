@@ -1016,7 +1016,8 @@ async function listMerchants(data) {
 					agreement_signed_ip: true,
 					agreement_sign_device: true,
 					points_opt_whitelist: true,
-					points_flow_opt_whitelist: true
+					points_flow_opt_whitelist: true,
+					upgrade_points_cleared_at: true
 				})
 				.get(),
 			getBizSettings()
@@ -13166,6 +13167,52 @@ async function cancelPendingIncomePacketsOnUpgrade(merchantUserId, now, clearRea
 	return { count: details.length, totalAmount: Number(totalAmount.toFixed(4)), details };
 }
 
+/**
+ * 升级清零：软删升级前已入账红包，H5「奖励明细」不再展示。
+ * 保留 status=claimed 与金额，便于后台审计；is_deleted 后列表/补待提现统计不再计入。
+ */
+async function cancelClaimedIncomePacketsOnUpgrade(merchantUserId, now, clearReason = UPGRADE_POINTS_CLEAR_REASON) {
+	const uid = String(merchantUserId || '').trim();
+	if (!uid) return { count: 0, totalAmount: 0, details: [] };
+
+	const rows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-income-packets',
+		{ merchant_user_id: uid, is_deleted: false, status: 'claimed' },
+		{
+			field: {
+				amount: true,
+				title: true,
+				month_no: true,
+				subsidy_kind: true,
+				claimed_time: true
+			}
+		}
+	);
+
+	const details = [];
+	let totalAmount = 0;
+	for (const p of rows || []) {
+		const amt = Number(Number(p.amount || 0).toFixed(4));
+		totalAmount += amt;
+		await incomePacketCollection.doc(p._id).update({
+			is_deleted: true,
+			upgrade_clear_at: now,
+			upgrade_clear_reason: clearReason,
+			update_time: now
+		});
+		details.push({
+			_id: p._id,
+			title: String(p.title || ''),
+			month_no: String(p.month_no || ''),
+			subsidy_kind: String(p.subsidy_kind || ''),
+			claimed_time: Number(p.claimed_time || 0),
+			amount: amt
+		});
+	}
+	return { count: details.length, totalAmount: Number(totalAmount.toFixed(4)), details };
+}
+
 function formatUpgradeClearSliceYmText(byTargetYm) {
 	const parts = Object.keys(byTargetYm || {})
 		.sort()
@@ -13349,12 +13396,15 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 
 	const sliceClear = await snapshotAndClearMerchantSliceLedgerOnUpgrade(merchantUserId, now, clearReason);
 	const packetClear = await cancelPendingIncomePacketsOnUpgrade(merchantUserId, now, clearReason);
+	const claimedPacketClear = await cancelClaimedIncomePacketsOnUpgrade(merchantUserId, now, clearReason);
 
 	const merchantPatch = {
 		account_points: 0,
 		withdraw_pending_balance: 0,
 		pending_withdraw: 0,
 		frozen_amount: 0,
+		/** 清零纪元：此后无有效分片时禁止按升级前流水回填冻结/待返；H5 奖励明细也只展示此时间之后 */
+		upgrade_points_cleared_at: now,
 		update_time: now
 	};
 	await merchantCollection.doc(merchant._id).update(merchantPatch);
@@ -13379,7 +13429,10 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 		`清除待提现 ${beforeAp.toFixed(2)} 元`,
 		`冻结字段 ${beforeFrozen.toFixed(2)} 元`,
 		sliceClear.clearedCount > 0 ? `分片账本 ${sliceClear.totalEffective.toFixed(2)} 元（${sliceClear.clearedCount}片，${sliceYmText}）` : '分片账本 0 元',
-		packetClear.count > 0 ? `未领红包 ${packetClear.totalAmount.toFixed(2)} 元（${packetClear.count}个）` : '未领红包 0 元'
+		packetClear.count > 0 ? `未领红包 ${packetClear.totalAmount.toFixed(2)} 元（${packetClear.count}个）` : '未领红包 0 元',
+		claimedPacketClear.count > 0
+			? `已入账奖励明细 ${claimedPacketClear.totalAmount.toFixed(2)} 元（${claimedPacketClear.count}条）`
+			: '已入账奖励明细 0 条'
 	].join('；') + retroSuffix;
 	await operationLogCollection.add({
 		user_id: merchant.user_id || merchant._id,
@@ -13405,6 +13458,9 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 		cleared_pending_packet_count: packetClear.count,
 		cleared_pending_packet_amount: packetClear.totalAmount,
 		cleared_pending_packet_detail: (packetClear.details || []).slice(0, 50),
+		cleared_claimed_packet_count: claimedPacketClear.count,
+		cleared_claimed_packet_amount: claimedPacketClear.totalAmount,
+		cleared_claimed_packet_detail: (claimedPacketClear.details || []).slice(0, 50),
 		platform_no: safeText(ctx.orderNo || ctx.redeemCode || '', 64),
 		before_merchant_snapshot: {
 			account_points: beforeAp,
@@ -13429,7 +13485,9 @@ async function clearNormalMemberPointsAndFrozenOnUpgrade(merchant, ctx = {}) {
 		clearedPendingWithdraw: beforePendingWithdraw,
 		clearedSliceTotal: sliceClear.totalEffective,
 		clearedSliceByTargetYm: sliceClear.byTargetYm,
-		clearedPendingPacketAmount: packetClear.totalAmount
+		clearedPendingPacketAmount: packetClear.totalAmount,
+		clearedClaimedPacketAmount: claimedPacketClear.totalAmount,
+		clearedClaimedPacketCount: claimedPacketClear.count
 	};
 }
 
@@ -17821,8 +17879,18 @@ async function loadClaimedTradeFirstTradeNosByUids(uids) {
 }
 
 /**
+ * 普通会员升级清零后的「积分纪元」时间戳。
+ * 有该标记且当前没有未软删分片时，冻结/待返不得再按升级前流水理论回填。
+ */
+function merchantUpgradePointsClearedAt(merchant) {
+	const n = Number(merchant && merchant.upgrade_points_cleared_at);
+	return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
  * 商户列表批量：按流水理论计算「未来月待返」冻结额（不含积分优化）。
  * 仅「首期已领取」的流水才计入后几期；无分片账本时作为回退。
+ * 若商户带 upgrade_points_cleared_at：只计清零之后的流水，避免升级清零被回填。
  */
 async function batchComputeFutureDeferredFrozenFromTrades(merchantDocs, nowTsVal) {
 	const frozenByUid = new Map();
@@ -17905,9 +17973,11 @@ async function batchComputeFutureDeferredFrozenFromTrades(merchantDocs, nowTsVal
 			continue;
 		}
 		let userRows = rowsByUser.get(uid) || [];
+		const clearedAt = merchantUpgradePointsClearedAt(m);
 		const bt = bindTsForMerchant(m);
-		if (bt) {
-			userRows = userRows.filter((r) => Number(r.create_time || 0) >= bt);
+		const minTs = Math.max(clearedAt, bt || 0);
+		if (minTs > 0) {
+			userRows = userRows.filter((r) => Number(r.create_time || 0) >= minTs);
 		}
 		userRows = userRows.filter((r) => {
 			const tn = String(r.trade_no || '').trim();
@@ -17927,6 +17997,7 @@ async function batchComputeFutureDeferredFrozenFromTrades(merchantDocs, nowTsVal
  * 商户列表批量：「未来月」冻结额。
  * 优先用 hsy-points-slice-state 未领片的 effective_amount（含积分优化后生效值）；
  * 无分片账本的商户回退流水理论口径。
+ * 升级清零后（upgrade_points_cleared_at）：无有效分片时不回退升级前流水；流水回退若发生，也只计清零之后的流水。
  */
 async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTsVal) {
 	const frozenByUid = new Map();
@@ -17982,9 +18053,12 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTsV
 		}
 	}
 
+	// 升级清零且尚无新分片：保持 0，禁止用升级前流水把冻结加回来
 	const needFallback = rows.filter((m) => {
 		const uid = String(m.user_id || m._id || '').trim();
-		return uid && !hasLedger.has(uid);
+		if (!uid || hasLedger.has(uid)) return false;
+		if (merchantUpgradePointsClearedAt(m) > 0) return false;
+		return true;
 	});
 	if (needFallback.length) {
 		const fb = await batchComputeFutureDeferredFrozenFromTrades(needFallback, nowTsVal);
@@ -18171,6 +18245,15 @@ async function h5PendingReturnPoints(data) {
 		let fromSlice = slicePack.fromSlice;
 
 		if (!fromSlice) {
+			const clearedAt = merchantUpgradePointsClearedAt(merchant);
+			// 升级清零后、尚未重建分片：待返保持空，不用升级前流水估回冻结口径
+			if (clearedAt > 0) {
+				return {
+					code: 0,
+					message: 'ok',
+					data: buildPendingReturnPointsPayload(buckets, curYm, { fromSlice: true })
+				};
+			}
 			const tradeRows = await subsidyEngine.fetchAllQueryPages(
 				db,
 				'hsy-machine-trades',
@@ -18502,7 +18585,8 @@ async function h5IncomeList(data) {
 				const syncRet = await subsidyEngine.syncSubsidyPackets(db, merchant, now, {
 					claimValidDays: biz.incomePacketClaimValidDays,
 					optimizeConfig: biz.optimizeConfig,
-					lookbackMonths: 6
+					lookbackMonths: 6,
+					minTradeCreateTime: merchantUpgradePointsClearedAt(merchant)
 				});
 				ranFullSync = true;
 				await redisH5.h5RedisSetJson(syncKey, { at: now }, 90);
@@ -18545,7 +18629,9 @@ async function h5IncomeList(data) {
 					return 0;
 				}
 			})(),
-			fetchH5IncomeClaimedPage(merchantUserId, 1, 50),
+			fetchH5IncomeClaimedPage(merchantUserId, 1, 50, {
+				clearedAt: merchantUpgradePointsClearedAt(merchant)
+			}),
 			incomePacketCollection
 				.where({ merchant_user_id: merchantUserId, is_deleted: false, status: 'pending' })
 				.field({
@@ -18668,14 +18754,25 @@ async function h5IncomeList(data) {
 	}
 }
 
-async function fetchH5IncomeClaimedPage(merchantUserId, page, pageSize) {
+async function fetchH5IncomeClaimedPage(merchantUserId, page, pageSize, options = {}) {
 	const uid = String(merchantUserId || '').trim();
 	const size = Math.min(50, Math.max(1, Number(pageSize) || 50));
 	const p = Math.max(1, Number(page) || 1);
 	if (!uid) return { detailList: [], hasMore: false, page: p, pageSize: size };
 	const skip = (p - 1) * size;
+	const clearedAt = Number(options.clearedAt || 0);
+	const _ = db.command;
+	const whereParts = [
+		{ merchant_user_id: uid },
+		{ is_deleted: false },
+		{ status: 'claimed' }
+	];
+	// 升级清零纪元之后才展示；与软删升级前已领红包双保险
+	if (Number.isFinite(clearedAt) && clearedAt > 0) {
+		whereParts.push({ claimed_time: _.gte(clearedAt) });
+	}
 	const claimedRes = await incomePacketCollection
-		.where({ merchant_user_id: uid, is_deleted: false, status: 'claimed' })
+		.where(_.and(whereParts))
 		.field({
 			_id: true,
 			title: true,
@@ -18707,7 +18804,9 @@ async function h5IncomeClaimedList(data) {
 		const merchantUserId = merchant.user_id || merchant._id;
 		const page = Math.max(1, Number(data.page) || 1);
 		const pageSize = Math.min(50, Math.max(1, Number(data.pageSize) || 50));
-		const claimedPage = await fetchH5IncomeClaimedPage(merchantUserId, page, pageSize);
+		const claimedPage = await fetchH5IncomeClaimedPage(merchantUserId, page, pageSize, {
+			clearedAt: merchantUpgradePointsClearedAt(merchant)
+		});
 		return {
 			code: 0,
 			message: 'ok',

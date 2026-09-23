@@ -30,8 +30,8 @@
 							</view>
 						</view>
 					</view>
-					<view class="hero-foot">
-						<text class="hero-foot-txt">{{ mine.brandName || '-' }} · {{ deviceDisplayText }}</text>
+					<view class="hero-foot" @click.stop="onDeviceLineClick">
+						<text class="hero-foot-txt">{{ mine.brandName || '-' }} · {{ deviceLineText }}</text>
 					</view>
 				</view>
 
@@ -159,9 +159,47 @@ export default {
 			const p = Math.round((rem / total) * 1000) / 10;
 			return Math.min(100, Math.max(0, p));
 		},
-		deviceDisplayText() {
-			const d = this.mine.deviceDisplay || this.mine.deviceId || '未绑定';
-			return String(d);
+		deviceDisplayParsed() {
+			const raw = String(this.mine.deviceDisplay || this.mine.deviceId || '').trim();
+			if (!raw || raw === '未绑定') {
+				return { summary: '未绑定', ids: [], count: 0 };
+			}
+			const m = raw.match(/^(\d+)\s*个码牌\s*[：:]\s*(.*)$/);
+			if (m) {
+				const ids = String(m[2] || '')
+					.split(/[、,，\s]+/)
+					.map((x) => x.trim())
+					.filter((x) => x && x !== '…' && x !== '...');
+				const count = Math.max(Number(m[1]) || 0, ids.length);
+				return { summary: `${count}个码牌`, ids, count };
+			}
+			const ids = raw
+				.split(/[、,，]+/)
+				.map((x) => x.trim())
+				.filter((x) => x && x !== '…' && x !== '...');
+			if (ids.length > 1) {
+				return { summary: `${ids.length}个码牌`, ids, count: ids.length };
+			}
+			return { summary: ids[0] || raw, ids: ids.length ? ids : [], count: ids.length || 1 };
+		},
+		/** 1～2 个直接显示机具号；超过 2 个显示前 2 个 +「等N个码牌」 */
+		deviceLineText() {
+			const parsed = this.deviceDisplayParsed;
+			const ids = parsed.ids || [];
+			const count = Math.max(Number(parsed.count || 0), ids.length);
+			if (!count || parsed.summary === '未绑定') return '未绑定';
+			if (count <= 2) {
+				if (ids.length) return ids.slice(0, count).join('、');
+				return parsed.summary || '未绑定';
+			}
+			const head = ids.slice(0, 2);
+			if (head.length >= 2) return `${head[0]}、${head[1]}等${count}个码牌`;
+			if (head.length === 1) return `${head[0]}等${count}个码牌`;
+			return `等${count}个码牌`;
+		},
+		deviceLineClickable() {
+			const count = Number(this.deviceDisplayParsed.count || 0);
+			return count > 0 && this.deviceDisplayParsed.summary !== '未绑定';
 		},
 		showSilverTradeStat() {
 			return String(this.withdrawContext.role || '') === 'silver_member';
@@ -195,6 +233,13 @@ export default {
 		this.load(force);
 	},
 	methods: {
+		goDeviceManage() {
+			uni.navigateTo({ url: '/pages/h5/device/index' });
+		},
+		onDeviceLineClick() {
+			if (!this.deviceLineClickable) return;
+			this.goDeviceManage();
+		},
 		async load(force = false) {
 			this.pending = true;
 			const maskTimer = setTimeout(() => {
@@ -378,6 +423,7 @@ export default {
 .hero-foot-txt {
 	font-size: 12px;
 	color: #64748b;
+	word-break: break-all;
 }
 
 .silver-trade-card {

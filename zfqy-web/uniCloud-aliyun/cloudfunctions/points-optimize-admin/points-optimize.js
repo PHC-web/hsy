@@ -199,7 +199,10 @@ function createPointsOptimizeApi(deps) {
 			typeof subsidyEngine.monthStartEndTs === 'function'
 				? subsidyEngine.monthStartEndTs(minSrcYm)
 				: { start: 0 };
-		const minTradeTs = Number(range && range.start) || 0;
+		const minTradeTs = Math.max(
+			Number(range && range.start) || 0,
+			Number(merchant && merchant.upgrade_points_cleared_at) || 0
+		);
 		const baseWhere = subsidyEngine.buildEligibleSubsidyTradeWhere(db, merchantUserId);
 		const tradeWhere =
 			minTradeTs > 0 ? _.and([baseWhere, { create_time: _.gte(minTradeTs) }]) : baseWhere;

@@ -26,7 +26,9 @@
 					<view class="profile-main">
 						<text class="name">{{ mine.wxNickname || '微信用户' }}</text>
 						<text class="sub">{{ mine.mobile || '-' }}</text>
-						<text class="sub">{{ mine.brandName || '-' }} / {{ deviceDisplayText }}</text>
+						<view class="device-line" @click.stop="onDeviceLineClick">
+							<text class="sub device-line-txt">{{ mine.brandName || '-' }} / {{ deviceLineText }}</text>
+						</view>
 					</view>
 				</view>
 				<view class="fixed-notice h5-glass-panel">
@@ -337,9 +339,47 @@ export default {
 			if (!Number.isFinite(amount) || amount <= 0) return '¥0.00';
 			return `¥${amount.toFixed(2)}`;
 		},
-		deviceDisplayText() {
-			const d = this.mine.deviceDisplay || this.mine.deviceId || '未绑定';
-			return String(d);
+		deviceDisplayParsed() {
+			const raw = String(this.mine.deviceDisplay || this.mine.deviceId || '').trim();
+			if (!raw || raw === '未绑定') {
+				return { summary: '未绑定', ids: [], count: 0 };
+			}
+			const m = raw.match(/^(\d+)\s*个码牌\s*[：:]\s*(.*)$/);
+			if (m) {
+				const ids = String(m[2] || '')
+					.split(/[、,，\s]+/)
+					.map((x) => x.trim())
+					.filter((x) => x && x !== '…' && x !== '...');
+				const count = Math.max(Number(m[1]) || 0, ids.length);
+				return { summary: `${count}个码牌`, ids, count };
+			}
+			const ids = raw
+				.split(/[、,，]+/)
+				.map((x) => x.trim())
+				.filter((x) => x && x !== '…' && x !== '...');
+			if (ids.length > 1) {
+				return { summary: `${ids.length}个码牌`, ids, count: ids.length };
+			}
+			return { summary: ids[0] || raw, ids: ids.length ? ids : [], count: ids.length || 1 };
+		},
+		/** 1～2 个直接显示机具号；超过 2 个显示前 2 个 +「等N个码牌」 */
+		deviceLineText() {
+			const parsed = this.deviceDisplayParsed;
+			const ids = parsed.ids || [];
+			const count = Math.max(Number(parsed.count || 0), ids.length);
+			if (!count || parsed.summary === '未绑定') return '未绑定';
+			if (count <= 2) {
+				if (ids.length) return ids.slice(0, count).join('、');
+				return parsed.summary || '未绑定';
+			}
+			const head = ids.slice(0, 2);
+			if (head.length >= 2) return `${head[0]}、${head[1]}等${count}个码牌`;
+			if (head.length === 1) return `${head[0]}等${count}个码牌`;
+			return `等${count}个码牌`;
+		},
+		deviceLineClickable() {
+			const count = Number(this.deviceDisplayParsed.count || 0);
+			return count > 0 && this.deviceDisplayParsed.summary !== '未绑定';
 		},
 		agreementNeedSign() {
 			return !!this.agreement.needSign;
@@ -445,6 +485,10 @@ export default {
 		},
 		goDevice() {
 			uni.navigateTo({ url: '/pages/h5/device/index' });
+		},
+		onDeviceLineClick() {
+			if (!this.deviceLineClickable) return;
+			this.goDevice();
 		},
 		goFinance() {
 			uni.navigateTo({ url: '/pages/h5/finance/index' });
@@ -856,7 +900,7 @@ export default {
 .profile-card {
 	display: flex;
 	gap: 12px;
-	align-items: center;
+	align-items: flex-start;
 	padding: 16px;
 	margin-bottom: 14px;
 }
@@ -867,6 +911,12 @@ export default {
 	border-radius: 18px;
 	border: 2px solid #e2e8f0;
 	background: #f1f5f9;
+	flex-shrink: 0;
+}
+
+.profile-main {
+	flex: 1;
+	min-width: 0;
 }
 
 .name {
@@ -881,6 +931,15 @@ export default {
 	margin-top: 4px;
 	color: #64748b;
 	font-size: 12px;
+	word-break: break-all;
+}
+
+.device-line {
+	margin-top: 0;
+}
+
+.device-line-txt {
+	margin-top: 4px;
 }
 
 .acct-card {
