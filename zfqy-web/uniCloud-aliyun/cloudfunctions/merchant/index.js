@@ -17997,7 +17997,7 @@ async function batchComputeFutureDeferredFrozenFromTrades(merchantDocs, nowTsVal
  * 商户列表批量：「未来月」冻结额。
  * 优先用 hsy-points-slice-state 未领片的 effective_amount（含积分优化后生效值）；
  * 无分片账本的商户回退流水理论口径。
- * 升级清零后（upgrade_points_cleared_at）：无有效分片时不回退升级前流水；流水回退若发生，也只计清零之后的流水。
+ * 升级清零后若还没有新分片，同样回退流水理论，且只计清零之后、首期已领取的流水。
  */
 async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTsVal) {
 	const frozenByUid = new Map();
@@ -18053,12 +18053,11 @@ async function batchComputeFutureDeferredFrozenForMerchants(merchantDocs, nowTsV
 		}
 	}
 
-	// 升级清零且尚无新分片：保持 0，禁止用升级前流水把冻结加回来
+	// 无分片账本时回退流水理论。升级清零后的商户同样回退，但 batchComputeFutureDeferredFrozenFromTrades
+	// 只计 upgrade_points_cleared_at 之后、且首期已领取的流水，不会把升级前冻结加回来。
 	const needFallback = rows.filter((m) => {
 		const uid = String(m.user_id || m._id || '').trim();
-		if (!uid || hasLedger.has(uid)) return false;
-		if (merchantUpgradePointsClearedAt(m) > 0) return false;
-		return true;
+		return !!(uid && !hasLedger.has(uid));
 	});
 	if (needFallback.length) {
 		const fb = await batchComputeFutureDeferredFrozenFromTrades(needFallback, nowTsVal);
@@ -18246,31 +18245,26 @@ async function h5PendingReturnPoints(data) {
 
 		if (!fromSlice) {
 			const clearedAt = merchantUpgradePointsClearedAt(merchant);
-			// 升级清零后、尚未重建分片：待返保持空，不用升级前流水估回冻结口径
-			if (clearedAt > 0) {
-				return {
-					code: 0,
-					message: 'ok',
-					data: buildPendingReturnPointsPayload(buckets, curYm, { fromSlice: true })
-				};
-			}
+			const _ = db.command;
+			const tradeWhere = subsidyEngine.buildEligibleSubsidyTradeWhere(db, merchantUserId);
 			const tradeRows = await subsidyEngine.fetchAllQueryPages(
 				db,
 				'hsy-machine-trades',
-				subsidyEngine.buildEligibleSubsidyTradeWhere(db, merchantUserId),
+				clearedAt > 0 ? _.and([tradeWhere, { create_time: _.gte(clearedAt) }]) : tradeWhere,
 				{
 					field: { amount: true, cashback: true, release_amount: true, release_ratio: true, create_time: true },
 					orderBy: { field: 'create_time', direction: 'asc' }
 				}
 			);
+			const packetWhere = {
+				merchant_user_id: merchantUserId,
+				is_deleted: false,
+				subsidy_kind: 'release_pool_history'
+			};
 			const deferredPackets = await subsidyEngine.fetchAllQueryPages(
 				db,
 				'hsy-income-packets',
-				{
-					merchant_user_id: merchantUserId,
-					is_deleted: false,
-					subsidy_kind: 'release_pool_history'
-				},
+				clearedAt > 0 ? _.and([packetWhere, { create_time: _.gte(clearedAt) }]) : packetWhere,
 				{
 					field: {
 						month_no: true,
@@ -18935,6 +18929,22 @@ async function claimPackets(merchant, packetIds) {
 			await machineCollection.doc(m._id).update({
 				pending_amount: floorYuan2(Number(m.pending_amount || 0) + claimedAmount)
 			});
+		}
+		const claimedFirst = rows.some(
+			(row) => claimedIds.includes(row._id) && String(row.subsidy_kind || '') === 'trade_first'
+		);
+		if (claimedFirst) {
+			try {
+				await uniCloud.callFunction({
+					name: 'points-optimize-admin',
+					data: {
+						action: 'pointsSliceReconcile',
+						data: { merchantUserId: String(merchantUserId) }
+					}
+				});
+			} catch (e) {
+				console.error('reconcile slices after trade_first claim', e);
+			}
 		}
 		await recalcAndPersistFrozenAmountForMerchantById(merchant._id);
 		return {
