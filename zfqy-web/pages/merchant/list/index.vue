@@ -97,6 +97,7 @@
 										优化白名单
 									</button>
 									<button class="act-btn act-btn--device" @click="openDeviceManage(item)">机具维护</button>
+									<button v-if="canAdjustMembership(item)" class="act-btn act-btn--member" @click="openMembershipAdjust(item)">会员调整</button>
 									<button class="act-btn act-btn--refund" @click="openRefundWindow(item)">退款窗口</button>
 									<button
 										v-if="item.agreementSigned"
@@ -125,6 +126,46 @@
 		<!-- #ifndef H5 -->
 		<fix-window />
 		<!-- #endif -->
+		<uni-popup ref="membershipAdjustPopup" type="dialog">
+			<view class="offline-popup membership-adjust-popup">
+				<view class="offline-title">会员调整</view>
+				<view class="offline-merchant-preview">
+					<text>商户：{{ membershipAdjust.name || membershipAdjust.userId || '-' }}</text>
+					<text> · 当前：{{ membershipAdjust.currentLevel || '-' }}</text>
+				</view>
+				<view class="offline-tip">
+					已消耗额度 {{ moneyText(membershipAdjust.consumed) }}（原额度 {{ moneyText(membershipAdjust.oldCap) }} − 当前剩余 {{ moneyText(membershipAdjust.currentRemaining) }}）。调整后剩余额度 = 新档位额度 − 已消耗。待提现、已提现、冻结金额、本月待解锁不变。
+				</view>
+				<scroll-view class="offline-packages" scroll-y>
+					<radio-group>
+						<label
+							v-for="opt in membershipAdjust.options"
+							:key="opt.key"
+							class="offline-package-item"
+							@click="membershipAdjust.target = opt.key"
+						>
+							<radio :value="opt.key" :checked="membershipAdjust.target === opt.key" />
+							<view class="offline-package-content">
+								<view class="offline-package-main">
+									{{ opt.name }}
+									<text v-if="opt.kind === 'paid'"> · 充值 {{ moneyText(opt.price) }} · 额度 {{ moneyText(opt.quotaCap) }}</text>
+									<text v-else-if="opt.kind === 'silver'"> · 额度 {{ moneyText(opt.quotaCap) }} · 充值 0</text>
+									<text v-else> · 剩余额度与充值金额清零</text>
+								</view>
+								<view class="offline-package-desc" :class="{ 'membership-adjust-short': opt.blocked }">
+									<text v-if="opt.blocked">已消耗 {{ moneyText(membershipAdjust.consumed) }}，该等级额度 {{ moneyText(opt.quotaCap) }}，扣减后为负数，不能调整到此等级</text>
+									<text v-else>调整后剩余额度 {{ moneyText(opt.nextRemaining) }}，充值金额 {{ moneyText(opt.nextRechargeAmount) }}（最高可退款同充值金额）</text>
+								</view>
+							</view>
+						</label>
+					</radio-group>
+				</scroll-view>
+				<view class="offline-actions">
+					<button size="mini" @click="closeMembershipAdjust">取消</button>
+					<button size="mini" type="primary" :loading="membershipAdjust.saving" @click="submitMembershipAdjust">保存</button>
+				</view>
+			</view>
+		</uni-popup>
 		<uni-popup ref="editPendingPopup" type="dialog">
 			<view class="offline-popup">
 				<view class="offline-title">修改待提现积分</view>
@@ -567,6 +608,18 @@ export default {
 				newDeviceId: '',
 				loading: false,
 				submitting: false
+			},
+			membershipAdjust: {
+				id: '',
+				userId: '',
+				name: '',
+				currentLevel: '',
+				currentRemaining: 0,
+				oldCap: 0,
+				consumed: 0,
+				options: [],
+				target: '',
+				saving: false
 			},
 			editPendingSubmitting: false,
 			editPendingForm: {
@@ -1858,6 +1911,105 @@ export default {
 			const n = Number(String(raw == null ? '' : raw).replace(/[￥¥,\s]/g, '').trim());
 			return Number.isFinite(n) ? n : 0;
 		},
+		canAdjustMembership(item) {
+			const level = String((item && item.membershipLevel) || '').trim();
+			return !!level && level !== '普通会员';
+		},
+		moneyText(n) {
+			const v = Number(n || 0);
+			return `￥${(Number.isFinite(v) ? v : 0).toFixed(2)}`;
+		},
+		async openMembershipAdjust(item) {
+			if (!item || !(item.userId || item.id)) return;
+			const userId = item.userId || item.id;
+			uni.showLoading({ title: '加载中...', mask: true });
+			try {
+				const ret = await this.$request(
+					'adminAdjustMerchantMembership',
+					{ merchantId: item.id || userId, userId, apply: false },
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) {
+					uni.showToast({ title: ret.message || '加载失败', icon: 'none' });
+					return;
+				}
+				const d = ret.data || {};
+				const options = Array.isArray(d.options) ? d.options : [];
+				const currentName = String(d.currentLevel || item.membershipLevel || '').trim();
+				const matched = options.find((x) => x.name === currentName);
+				this.membershipAdjust = {
+					id: d.merchantId || item.id || '',
+					userId: d.userId || userId,
+					name: d.name || String(item.wxUser || '').replace(/\n/g, ' / '),
+					currentLevel: currentName || '普通会员',
+					currentRemaining: Number(d.currentRemaining || 0),
+					oldCap: Number(d.oldCap || 0),
+					consumed: Number(d.consumed || 0),
+					options,
+					target: matched ? matched.key : options[0] ? options[0].key : '',
+					saving: false
+				};
+				this.$refs.membershipAdjustPopup && this.$refs.membershipAdjustPopup.open();
+			} catch (e) {
+				uni.showToast({ title: '加载失败', icon: 'none' });
+			} finally {
+				uni.hideLoading();
+			}
+		},
+		closeMembershipAdjust() {
+			if (this.$refs.membershipAdjustPopup) this.$refs.membershipAdjustPopup.close();
+		},
+		async submitMembershipAdjust() {
+			const form = this.membershipAdjust || {};
+			const target = String(form.target || '').trim();
+			if (!form.userId || !target) {
+				uni.showToast({ title: '请选择会员等级', icon: 'none' });
+				return;
+			}
+			const opt = (form.options || []).find((x) => x.key === target);
+			if (opt && opt.blocked) {
+				const consumed = Number(form.consumed || 0);
+				const cap = Number(opt.quotaCap || 0);
+				const lack = Number((consumed - cap).toFixed(2));
+				uni.showModal({
+					title: '无法调整',
+					content: `已消耗 ${consumed.toFixed(2)} 元，${opt.name}额度只有 ${cap.toFixed(2)} 元，扣减后为 -${lack.toFixed(2)} 元，不能改成该等级。请选择额度不低于已消耗的等级，或改为普通会员。`,
+					showCancel: false
+				});
+				return;
+			}
+			const ok = await new Promise((resolve) => {
+				uni.showModal({
+					title: '确认调整会员',
+					content: `调整为「${opt ? opt.name : target}」？剩余额度变为 ${this.moneyText(opt && opt.nextRemaining)}，充值金额变为 ${this.moneyText(opt && opt.nextRechargeAmount)}。待提现、已提现、冻结金额、本月待解锁不变。`,
+					success: (res) => resolve(!!res.confirm)
+				});
+			});
+			if (!ok) return;
+			this.membershipAdjust.saving = true;
+			try {
+				const ret = await this.$request(
+					'adminAdjustMerchantMembership',
+					{ merchantId: form.id || form.userId, userId: form.userId, target, apply: true },
+					{ functionName: 'merchant' }
+				);
+				if (ret.code !== 0) {
+					uni.showModal({
+						title: '无法调整',
+						content: ret.message || '保存失败',
+						showCancel: false
+					});
+					return;
+				}
+				uni.showToast({ title: '已调整', icon: 'success' });
+				this.closeMembershipAdjust();
+				this.search();
+			} catch (e) {
+				uni.showToast({ title: '保存失败', icon: 'none' });
+			} finally {
+				this.membershipAdjust.saving = false;
+			}
+		},
 		openEditPending(item) {
 			if (!item || !(item.userId || item.id)) return;
 			const current = this.parseMoneyText(item.pendingWithdraw);
@@ -2712,6 +2864,22 @@ export default {
 	border-color: #6ee7b7;
 }
 
+.membership-adjust-popup {
+	width: 560px;
+	max-width: 92vw;
+}
+.membership-adjust-short {
+	color: #b45309;
+}
+.act-btn--member {
+	color: #6d28d9;
+	background: #f5f3ff;
+	border-color: #ddd6fe;
+}
+.act-btn--member:hover {
+	background: #ede9fe;
+	border-color: #c4b5fd;
+}
 .act-btn--refund {
 	color: #c2410c;
 	background: #fff7ed;

@@ -1064,6 +1064,20 @@ async function listMerchants(data) {
 			// 后台商户列表「剩余额度」：DB 真实剩余（随提现扣减），与 H5 充值会员展示口径一致。
 			const remainingQuotaYuan = normalizeAdminRemainingQuota(item);
 			const membership = resolveMerchantMembershipForAdmin(item, rechargePackages);
+			const packagePrice = Number(item.recharge_package_price || 0);
+			let rechargeYuan = Number(item.recharge_amount != null ? item.recharge_amount : item.recharge_total_yuan || 0);
+			if (packagePrice > 0 && Math.abs(rechargeYuan - packagePrice) > 0.009 && item._id) {
+				rechargeYuan = Number(packagePrice.toFixed(2));
+				try {
+					await merchantCollection.doc(item._id).update({
+						recharge_amount: rechargeYuan,
+						recharge_total_yuan: rechargeYuan,
+						update_time: nowTs()
+					});
+				} catch (e) {
+					console.error('listMerchants persist recharge amount', e);
+				}
+			}
 			return {
 			id: item._id,
 			userId: item.user_id || item._id,
@@ -1074,7 +1088,7 @@ async function listMerchants(data) {
 			deviceDisplay,
 			wxUser: `${item.wx_nickname || '-'}\n${item.mobile || '-'}`,
 			remainingQuota: toMoney(remainingQuotaYuan),
-			rechargeAmount: toMoney(Number(item.recharge_amount || item.recharge_total_yuan || 0)),
+			rechargeAmount: toMoney(rechargeYuan),
 			pendingWithdraw: toMoney(normalizePendingBalance(item)),
 			withdrawn: toMoney(withdrawnYuan),
 			frozenAmount: toMoney(frozenYuan),
@@ -10541,25 +10555,9 @@ async function applyRechargeByOrder(orderDoc) {
 	const nextAvailableReward = Number((targetReward > 0 ? targetReward : grantYuanByRechargePrice(targetPrice, biz.rechargeRules)).toFixed(2));
 	const volAdd = Number(custom.add_quota || 0);
 	const addPaidYuan = Number(Number(custom.paid_amount || 0).toFixed(2));
-	const prevTrackedTotal = Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0);
-	let baseRechargeTotal = Number.isFinite(prevTrackedTotal) && prevTrackedTotal > 0 ? prevTrackedTotal : 0;
-	if (baseRechargeTotal <= 0 && addPaidYuan > 0) {
-		const logRes = await operationLogCollection
-			.where({
-				user_id: merchant.user_id || merchant._id,
-				action: 'h5_quota_recharge',
-				refunded: false
-			})
-			.field({ package_price: true })
-			.limit(500)
-			.get();
-		let fromLogs = 0;
-		(logRes.data || []).forEach((x) => {
-			fromLogs += Number(x.package_price || 0);
-		});
-		baseRechargeTotal = Number(fromLogs.toFixed(2));
-	}
-	const nextRechargeTotalYuan = Number((baseRechargeTotal + addPaidYuan).toFixed(2));
+	// 列表充值金额 = 当前套餐价格，不累加调整前或历史已清零的充值流水
+	const nextRechargeTotalYuan =
+		targetPrice > 0 ? Number(Number(targetPrice).toFixed(2)) : Number(addPaidYuan.toFixed(2));
 	const targetMembershipName = safeText(custom.target_membership_name || '', 40);
 	let nextMembershipName = targetMembershipName;
 	if (!nextMembershipName) {
@@ -10842,29 +10840,10 @@ function compactMerchantInfo(row, options = {}) {
 async function ensureMerchantRechargeAmountAccurate(merchant) {
 	try {
 		if (!merchant || !merchant._id) return merchant;
+		const packagePrice = Number(merchant.recharge_package_price || 0);
+		if (!(packagePrice > 0)) return merchant;
 		const current = Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0);
-		const merchantUserId = String(merchant.user_id || merchant._id || '');
-		if (!merchantUserId) return merchant;
-		const logRes = await operationLogCollection
-			.where({
-				user_id: merchantUserId,
-				action: 'h5_quota_recharge',
-				refunded: false
-			})
-			.field({ package_price: true, platform_no: true, create_time: true })
-			.limit(1000)
-			.get();
-		const rows = (logRes.data || []).slice().sort((a, b) => Number(a.create_time || 0) - Number(b.create_time || 0));
-		const seenTradeNo = new Set();
-		let trackedByLogs = 0;
-		rows.forEach((x, idx) => {
-			const tradeNo = safeText(x.platform_no || '', 80) || `idx_${idx}`;
-			if (seenTradeNo.has(tradeNo)) return;
-			seenTradeNo.add(tradeNo);
-			trackedByLogs += Number(x.package_price || 0);
-		});
-		const tracked = Number(trackedByLogs.toFixed(2));
-		if (!(Number.isFinite(tracked) && tracked > 0)) return merchant;
+		const tracked = Number(packagePrice.toFixed(2));
 		if (Math.abs(current - tracked) < 0.0001) return merchant;
 		await merchantCollection.doc(merchant._id).update({
 			recharge_amount: tracked,
@@ -14981,11 +14960,20 @@ function resolveMerchantRefundCycleDays(merchant, globalRefundCycle = DEFAULT_BI
 
 function merchantHasRechargeMembership(merchant) {
 	if (!merchant) return false;
+	const name = String(merchant.membership_name || '').trim();
+	const price = Number(merchant.recharge_package_price || 0);
+	const total = Number(merchant.recharge_total_yuan || merchant.recharge_amount || 0);
+	const reward = Number(merchant.recharge_package_reward || 0);
+	const pkgQuota = Number(merchant.recharge_package_quota || 0);
+	// 管理员降为普通会员后，周期起点可能仍在；金额与套餐已清空时不再视为充值会员
+	if (name === '普通会员' && !(price > 0) && !(total > 0) && !(reward > 0) && !(pkgQuota > 0)) {
+		return false;
+	}
 	if (Number(merchant.recharge_total_yuan || 0) > 0) return true;
-	if (Number(merchant.recharge_package_price || 0) > 0) return true;
+	if (price > 0) return true;
 	if (Number(merchant.recharge_cycle_start || 0) > 0) return true;
-	if (Number(merchant.recharge_package_reward || 0) > 0) return true;
-	if (Number(merchant.recharge_package_quota || 0) > 0) return true;
+	if (reward > 0) return true;
+	if (pkgQuota > 0) return true;
 	if (Number(merchant.estimated_free_quota || 0) > 0 && Number(merchant.available_reward || merchant.withdraw_quota_balance || 0) > 0) {
 		return true;
 	}
@@ -22826,6 +22814,210 @@ async function debugGetEgressIp() {
 	return { code: 500, message: '未获取到出口IP，请稍后重试', data: { ip: '', probes: results } };
 }
 
+/**
+ * 管理员调整会员等级。
+ * 剩余额度 = 新档位额度 − 已消耗（已消耗 = 原档位额度 − 当前剩余，不小于 0）。
+ * 不改待提现、已提现、冻结金额、分片（本月待解锁）。
+ */
+function membershipAdjustQuotaCap(merchant, packages) {
+	const reward = Number(merchant?.recharge_package_reward || 0);
+	if (reward > 0) return Number(reward.toFixed(2));
+	const pkg = resolveMerchantConfiguredPackage(merchant, packages);
+	const pkgReward = Number(pkg && (pkg.rewardYuan != null ? pkg.rewardYuan : pkg.real_quota) || 0);
+	if (pkgReward > 0) return Number(pkgReward.toFixed(2));
+	if (hasH5SilverMemberIdentity(merchant) || merchant?.silver_member === true) {
+		return silverExchangeQuotaGrantYuan();
+	}
+	return Number(normalizeWithdrawQuotaBalance(merchant).toFixed(2));
+}
+
+function buildMembershipAdjustOptions(merchant, packages, consumed) {
+	const used = Number(consumed || 0);
+	const remainOf = (cap) => Number((Number(cap || 0) - used).toFixed(2));
+	const paidOption = (cap, extra) => {
+		const raw = remainOf(cap);
+		return Object.assign({}, extra, {
+			quotaCap: Number(Number(cap || 0).toFixed(2)),
+			nextRemaining: raw < 0 ? 0 : raw,
+			blocked: raw < 0,
+			shortfall: raw < 0 ? Number((-raw).toFixed(2)) : 0
+		});
+	};
+	const options = [
+		{
+			key: 'normal',
+			kind: 'normal',
+			name: '普通会员',
+			price: 0,
+			quotaCap: 0,
+			nextRemaining: 0,
+			nextRechargeAmount: 0,
+			blocked: false,
+			shortfall: 0
+		},
+		paidOption(silverExchangeQuotaGrantYuan(), {
+			key: 'silver',
+			kind: 'silver',
+			name: '白银会员',
+			price: 0,
+			nextRechargeAmount: 0
+		})
+	];
+	const list = (Array.isArray(packages) ? packages : [])
+		.filter((x) => x && Number(x.price || 0) > 0 && !isDeprecatedTestQuotaPackageRow(x))
+		.slice()
+		.sort((a, b) => Number(a.sortOrder || 0) - Number(b.sortOrder || 0) || Number(a.price || 0) - Number(b.price || 0));
+	for (const pkg of list) {
+		const cap = Number(pkg.rewardYuan || 0);
+		const price = Number(Number(pkg.price || 0).toFixed(2));
+		options.push(
+			paidOption(cap, {
+				key: String(pkg.id || ''),
+				kind: 'paid',
+				name: packageMembershipName(pkg) || String(pkg.title || '付费会员'),
+				packageId: String(pkg.id || ''),
+				price,
+				volumeQuota: Number(pkg.quota || 0),
+				nextRechargeAmount: price
+			})
+		);
+	}
+	return options;
+}
+
+async function adminAdjustMerchantMembership(data = {}, event = {}) {
+	try {
+		const merchantKey = safeText(data.merchantId || data.merchantUserId || data.userId, 80);
+		if (!merchantKey) return { code: 400, message: '缺少商户' };
+		const merchant = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchant) return { code: 404, message: '商户不存在' };
+		const packages = await loadRechargePackagesFromQuota();
+		const currentRemaining = Number(normalizeWithdrawQuotaBalance(merchant).toFixed(2));
+		const oldCap = membershipAdjustQuotaCap(merchant, packages);
+		const consumed = Number(Math.max(0, oldCap - currentRemaining).toFixed(2));
+		const membership = resolveMerchantMembershipForAdmin(merchant, packages);
+		const options = buildMembershipAdjustOptions(merchant, packages, consumed);
+		const preview = {
+			merchantId: merchant._id,
+			userId: String(merchant.user_id || merchant._id || ''),
+			name: merchant.wx_nickname || merchant.mobile || '',
+			currentLevel: membership.level || '普通会员',
+			currentRemaining,
+			oldCap,
+			consumed,
+			currentRechargeAmount: Number(
+				Number(merchant.recharge_amount != null ? merchant.recharge_amount : merchant.recharge_total_yuan || 0).toFixed(2)
+			),
+			options
+		};
+		const apply = data.apply === true || data.apply === 1 || data.apply === '1';
+		if (String(preview.currentLevel || '') === '普通会员') {
+			return { code: 400, message: '普通会员不能调整等级' };
+		}
+		if (!apply) return { code: 0, message: 'ok', data: preview };
+
+		const targetKey = safeText(data.target || data.optionKey, 40);
+		const picked = options.find((x) => x.key === targetKey);
+		if (!picked) return { code: 400, message: '请选择会员等级' };
+		if (picked.blocked) {
+			return {
+				code: 400,
+				message: `已消耗 ${consumed.toFixed(2)} 元，${picked.name}额度只有 ${Number(picked.quotaCap || 0).toFixed(2)} 元，扣减后为 -${Number(picked.shortfall || 0).toFixed(2)} 元，不能改成该等级`
+			};
+		}
+		const now = nowTs();
+		const patch = { update_time: now, membership_name: picked.name };
+		if (picked.kind === 'normal') {
+			Object.assign(patch, {
+				silver_member: false,
+				recharge_package_id: '',
+				recharge_package_price: 0,
+				recharge_package_quota: 0,
+				recharge_package_reward: 0,
+				estimated_free_quota: 0,
+				remaining_quota: 0,
+				available_reward: 0,
+				withdraw_quota_balance: 0,
+				recharge_amount: 0,
+				recharge_total_yuan: 0,
+				recharge_cycle_start: 0,
+				recharge_cycle_days: 0,
+				recharge_window_days: 0,
+				recharge_update_time: 0
+			});
+		} else if (picked.kind === 'silver') {
+			Object.assign(patch, {
+				silver_member: true,
+				silver_member_start_at: Number(merchant.silver_member_start_at || 0) > 0 ? Number(merchant.silver_member_start_at) : now,
+				silver_member_end_at: 0,
+				recharge_package_id: '',
+				recharge_package_price: 0,
+				recharge_package_quota: 0,
+				recharge_package_reward: 0,
+				estimated_free_quota: 0,
+				remaining_quota: picked.nextRemaining,
+				available_reward: picked.nextRemaining,
+				withdraw_quota_balance: picked.nextRemaining,
+				recharge_amount: 0,
+				recharge_total_yuan: 0,
+				recharge_cycle_start: 0,
+				recharge_cycle_days: 0,
+				recharge_window_days: 0,
+				recharge_update_time: 0
+			});
+		} else {
+			Object.assign(patch, {
+				silver_member: false,
+				recharge_package_id: picked.packageId,
+				recharge_package_price: picked.price,
+				recharge_package_quota: Number(picked.volumeQuota || 0),
+				recharge_package_reward: picked.quotaCap,
+				estimated_free_quota: Number(picked.volumeQuota || 0),
+				remaining_quota: picked.nextRemaining,
+				available_reward: picked.nextRemaining,
+				withdraw_quota_balance: picked.nextRemaining,
+				recharge_amount: picked.price,
+				recharge_total_yuan: picked.price,
+				recharge_update_time: now
+			});
+		}
+		await merchantCollection.doc(merchant._id).update(patch);
+		try {
+			await operationLogCollection.add({
+				user_id: merchant.user_id || merchant._id,
+				user_name: merchant.wx_nickname || merchant.mobile || '商户',
+				action: 'admin_membership_adjust',
+				module: 'merchant',
+				target_id: merchant._id,
+				target_name: merchant.wx_nickname || merchant.mobile || merchant._id,
+				content: `会员调整：${preview.currentLevel} → ${picked.name}；已消耗 ${consumed.toFixed(2)}；剩余额度 ${currentRemaining.toFixed(2)} → ${Number(picked.nextRemaining).toFixed(2)}；充值金额 → ${Number(picked.nextRechargeAmount).toFixed(2)}。待提现/已提现/冻结/本月待解锁未改。`,
+				operator_source: 'admin',
+				operator: getOperator(event),
+				create_time: now
+			});
+		} catch (e) {
+			console.error('adminAdjustMerchantMembership log', e);
+		}
+		try {
+			await invalidateH5MerchantCaches(merchant);
+		} catch (e) {}
+		return {
+			code: 0,
+			message: '已调整会员等级',
+			data: {
+				...preview,
+				target: picked.key,
+				nextRemaining: picked.nextRemaining,
+				nextRechargeAmount: picked.nextRechargeAmount,
+				nextLevel: picked.name
+			}
+		};
+	} catch (e) {
+		console.error('adminAdjustMerchantMembership', e);
+		return { code: 500, message: safeText(e?.message || '调整失败', 180) };
+	}
+}
+
 exports.main = async (event, context) => {
 	const { action, data, params } = event;
 	const actualData = data || params;
@@ -22925,6 +23117,8 @@ exports.main = async (event, context) => {
 			return await adminRepairMerchantRefundState(actualData, event);
 		case 'adminSetMerchantRechargeAmount':
 			return await adminSetMerchantRechargeAmount(actualData, event);
+		case 'adminAdjustMerchantMembership':
+			return await adminAdjustMerchantMembership(actualData, event);
 		case 'adminRestorePendingFromClaimedPackets':
 			return await adminRestorePendingFromClaimedPackets(actualData, event);
 		case 'adminSilverFlowMonthFirstReleaseCreditPending':
