@@ -180,6 +180,38 @@ function createPointsOptimizeApi(deps) {
 		return all;
 	}
 
+	/** 已领分期待返：目标月|来源月|片序。对账时不能把这些片再写成未领。 */
+	async function loadClaimedDeferredSliceKeys(merchantUserId) {
+		const uid = String(merchantUserId || '');
+		const keys = new Set();
+		if (!uid) return keys;
+		const rows = await subsidyEngine.fetchAllQueryPages(
+			db,
+			'hsy-income-packets',
+			_.and([
+				{ merchant_user_id: uid },
+				{ subsidy_kind: 'release_pool_history' },
+				{ status: 'claimed' },
+				{ is_deleted: _.neq(true) }
+			]),
+			{
+				field: {
+					month_no: true,
+					subsidy_flow_month: true,
+					subsidy_block_index: true
+				}
+			}
+		);
+		for (const row of rows || []) {
+			const target = String(row.month_no || '').trim();
+			const source = String(row.subsidy_flow_month || '').trim();
+			const idx = Number(row.subsidy_block_index);
+			if (!target || !source || !Number.isFinite(idx)) continue;
+			keys.add(`${target}|${source}|${idx}`);
+		}
+		return keys;
+	}
+
 	/**
 	 * 仅根据流水算出理论待返分片（不写库），供预览估算砍额。
 	 */
@@ -280,6 +312,7 @@ function createPointsOptimizeApi(deps) {
 		const { theory, curYm, merchantUserId, now } = built;
 
 		const existing = await loadSlicesForMerchant(merchantUserId);
+		const claimedSliceKeys = await loadClaimedDeferredSliceKeys(merchantUserId);
 		const existMap = new Map();
 		for (const row of existing) {
 			const key = `${row.target_ym}|${row.source_ym}|${row.slice_index}`;
@@ -290,10 +323,13 @@ function createPointsOptimizeApi(deps) {
 		const packetSync = [];
 		for (const [key, th] of theory.entries()) {
 			const row = existMap.get(key);
-			if (row && row.is_claimed) {
+			const alreadyClaimed = !!(row && row.is_claimed) || claimedSliceKeys.has(key);
+			if (row && alreadyClaimed) {
 				writeJobs.push(() =>
 					sliceCol.doc(row._id).update({
 						original_amount: th.original,
+						is_claimed: true,
+						packet_status: 'claimed',
 						update_time: now
 					})
 				);
@@ -311,9 +347,9 @@ function createPointsOptimizeApi(deps) {
 						system_amount: th.original,
 						manual_amount: null,
 						effective_amount: th.original,
-						is_claimed: false,
+						is_claimed: alreadyClaimed,
 						packet_id: '',
-						packet_status: '',
+						packet_status: alreadyClaimed ? 'claimed' : '',
 						version: 0,
 						is_deleted: false,
 						create_time: now,

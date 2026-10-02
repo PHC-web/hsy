@@ -18130,6 +18130,87 @@ async function recalcAndPersistFrozenAmountForMerchantById(merchantIdOrUserId) {
 	return { ok: true, frozenAmount: Number(nextFrozen.toFixed(4)), merchantId: merchant._id, userId: uid };
 }
 
+function deferredSliceClaimKey(targetYm, sourceYm, sliceIndex) {
+	const target = String(targetYm || '').trim();
+	const source = String(sourceYm || '').trim();
+	const idx = Number(sliceIndex);
+	if (!target || !source || !Number.isFinite(idx)) return '';
+	return `${target}|${source}|${idx}`;
+}
+
+/** 已领分期待返红包 → 分片键。待返月金额只统计未领片，领取后必须把对应片标成已领。 */
+async function loadClaimedDeferredSliceKeySet(merchantUserId) {
+	const uid = String(merchantUserId || '').trim();
+	const keys = new Set();
+	if (!uid) return keys;
+	const _ = db.command;
+	const rows = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-income-packets',
+		_.and([
+			{ merchant_user_id: uid },
+			{ subsidy_kind: 'release_pool_history' },
+			{ status: 'claimed' },
+			{ is_deleted: _.neq(true) }
+		]),
+		{
+			field: {
+				month_no: true,
+				subsidy_flow_month: true,
+				subsidy_block_index: true
+			}
+		}
+	);
+	for (const row of rows || []) {
+		const key = deferredSliceClaimKey(row.month_no, row.subsidy_flow_month, row.subsidy_block_index);
+		if (key) keys.add(key);
+	}
+	return keys;
+}
+
+/**
+ * 把已领分期红包对应的分片标为已领。
+ * 分片账本存在时，待返页只汇总 is_claimed != true 的片；不标已领则领取后月份金额不会减少。
+ */
+async function syncDeferredSliceClaimedFlags(merchantUserId, claimedKeys) {
+	const uid = String(merchantUserId || '').trim();
+	if (!uid) return { marked: 0 };
+	const keys = claimedKeys || (await loadClaimedDeferredSliceKeySet(uid));
+	if (!keys.size) return { marked: 0 };
+	const _ = db.command;
+	const sliceCol = db.collection('hsy-points-slice-state');
+	const slices = await subsidyEngine.fetchAllQueryPages(
+		db,
+		'hsy-points-slice-state',
+		_.and([{ merchant_user_id: uid }, { is_deleted: _.neq(true) }, { is_claimed: _.neq(true) }]),
+		{
+			field: {
+				target_ym: true,
+				source_ym: true,
+				slice_index: true
+			}
+		}
+	);
+	const now = nowTs();
+	const jobs = [];
+	for (const row of slices || []) {
+		const key = deferredSliceClaimKey(row.target_ym, row.source_ym, row.slice_index);
+		if (!key || !keys.has(key) || !row._id) continue;
+		jobs.push(() =>
+			sliceCol.doc(row._id).update({
+				is_claimed: true,
+				packet_status: 'claimed',
+				update_time: now
+			})
+		);
+	}
+	const chunkSize = 20;
+	for (let i = 0; i < jobs.length; i += chunkSize) {
+		await Promise.all(jobs.slice(i, i + chunkSize).map((job) => job()));
+	}
+	return { marked: jobs.length };
+}
+
 /**
  * 从 hsy-points-slice-state 读取未领分片的 effective_amount，按目标月汇总。
  * 与后台「冻结金额」、积分优化设计一致（对外一律用 effective）。
@@ -18158,6 +18239,12 @@ async function loadEffectivePendingReturnBucketsFromSliceState(merchantUserId, n
 	}
 
 	if (!hasLedger) return { buckets, curYm, fromSlice: false };
+
+	try {
+		await syncDeferredSliceClaimedFlags(uid);
+	} catch (e) {
+		console.error('syncDeferredSliceClaimedFlags', e);
+	}
 
 	try {
 		const sumAgg = await sliceCol
@@ -18917,6 +19004,21 @@ async function claimPackets(merchant, packetIds) {
 			await machineCollection.doc(m._id).update({
 				pending_amount: floorYuan2(Number(m.pending_amount || 0) + claimedAmount)
 			});
+		}
+		const claimedDeferred = rows.filter(
+			(row) => claimedIds.includes(row._id) && String(row.subsidy_kind || '') === 'release_pool_history'
+		);
+		if (claimedDeferred.length) {
+			try {
+				const keys = new Set();
+				for (const row of claimedDeferred) {
+					const key = deferredSliceClaimKey(row.month_no, row.subsidy_flow_month, row.subsidy_block_index);
+					if (key) keys.add(key);
+				}
+				await syncDeferredSliceClaimedFlags(merchantUserId, keys);
+			} catch (e) {
+				console.error('mark slices claimed after deferred claim', e);
+			}
 		}
 		const claimedFirst = rows.some(
 			(row) => claimedIds.includes(row._id) && String(row.subsidy_kind || '') === 'trade_first'
