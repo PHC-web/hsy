@@ -1783,64 +1783,72 @@ async function getRiskList(data) {
 			sortOrder = ''
 		} = data || {};
 
-		let query = tradeCollection.where({
-			is_risk_trade: true,
-			stats_eligible: true,
-			trade_type: 'real'
-		});
-		// 列表无 device_id：须走 risk_stats_type_create_time 索引；勿依赖 stats_eligible+device_id+create_time
+		const _ = db.command;
+		// 多次 where 会互相覆盖，搜索条件必须和风险条件放在同一次 and 里
+		const whereParts = [
+			{ is_risk_trade: true },
+			{ stats_eligible: true },
+			{ trade_type: 'real' }
+		];
 
 		if (userKeyword) {
 			const r = new RegExp(escapeReg(userKeyword), 'i');
-			query = query.where(db.command.or([{ user_name: r }, { user_mobile: r }]));
+			whereParts.push(_.or([{ user_name: r }, { user_mobile: r }]));
 		}
 		if (snTradeKeyword) {
 			const r = new RegExp(escapeReg(snTradeKeyword), 'i');
-			query = query.where(db.command.or([{ device_id: r }, { trade_no: r }]));
+			whereParts.push(_.or([{ device_id: r }, { trade_no: r }]));
 		}
 
 		const minOk = amountMin !== '' && amountMin !== undefined && Number.isFinite(Number(amountMin));
 		const maxOk = amountMax !== '' && amountMax !== undefined && Number.isFinite(Number(amountMax));
 		if (minOk && maxOk) {
-			query = query.where(
-				db.command.and([
-					{ amount: db.command.gte(Number(amountMin)) },
-					{ amount: db.command.lte(Number(amountMax)) }
-				])
-			);
+			whereParts.push({
+				amount: _.and([_.gte(Number(amountMin)), _.lte(Number(amountMax))])
+			});
 		} else if (minOk) {
-			query = query.where({ amount: db.command.gte(Number(amountMin)) });
+			whereParts.push({ amount: _.gte(Number(amountMin)) });
 		} else if (maxOk) {
-			query = query.where({ amount: db.command.lte(Number(amountMax)) });
+			whereParts.push({ amount: _.lte(Number(amountMax)) });
 		}
 
 		const stArr = Array.isArray(statusList)
-			? [...new Set(statusList.map((x) => String(x)))]
+			? [...new Set(statusList.map((x) => String(x)).filter((x) => x && x !== 'none'))]
 			: [];
 		if (stArr.length === 1) {
-			query = query.where({ risk_audit_status: stArr[0] });
+			whereParts.push({ risk_audit_status: stArr[0] });
 		} else if (stArr.length > 1) {
-			query = query.where({ risk_audit_status: db.command.in(stArr) });
-		} else if (status) {
-			query = query.where({ risk_audit_status: String(status) });
+			whereParts.push({ risk_audit_status: _.in(stArr) });
+		} else if (status && String(status) !== 'none') {
+			whereParts.push({ risk_audit_status: String(status) });
+		} else {
+			whereParts.push({ risk_audit_status: _.neq('none') });
 		}
 
 		if (scenarioKeyword) {
-			query = query.where({ paychannel_text: new RegExp(escapeReg(scenarioKeyword), 'i') });
+			whereParts.push({ paychannel_text: new RegExp(escapeReg(scenarioKeyword), 'i') });
 		}
 
-		if (createTimeStart) {
-			query = query.where({ create_time: db.command.gte(Number(createTimeStart)) });
+		if (createTimeStart && createTimeEnd) {
+			whereParts.push({
+				create_time: _.and([_.gte(Number(createTimeStart)), _.lte(Number(createTimeEnd))])
+			});
+		} else if (createTimeStart) {
+			whereParts.push({ create_time: _.gte(Number(createTimeStart)) });
+		} else if (createTimeEnd) {
+			whereParts.push({ create_time: _.lte(Number(createTimeEnd)) });
 		}
-		if (createTimeEnd) {
-			query = query.where({ create_time: db.command.lte(Number(createTimeEnd)) });
+		if (updateTimeStart && updateTimeEnd) {
+			whereParts.push({
+				risk_audit_time: _.and([_.gte(Number(updateTimeStart)), _.lte(Number(updateTimeEnd))])
+			});
+		} else if (updateTimeStart) {
+			whereParts.push({ risk_audit_time: _.gte(Number(updateTimeStart)) });
+		} else if (updateTimeEnd) {
+			whereParts.push({ risk_audit_time: _.lte(Number(updateTimeEnd)) });
 		}
-		if (updateTimeStart) {
-			query = query.where({ risk_audit_time: db.command.gte(Number(updateTimeStart)) });
-		}
-		if (updateTimeEnd) {
-			query = query.where({ risk_audit_time: db.command.lte(Number(updateTimeEnd)) });
-		}
+
+		const query = tradeCollection.where(whereParts.length > 1 ? _.and(whereParts) : whereParts[0]);
 
 		let orderByField = 'create_time';
 		let orderByDir = 'desc';
