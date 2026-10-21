@@ -35,11 +35,6 @@
 					</view>
 				</view>
 
-				<view v-if="showSilverTradeStat" class="h5-glass-panel silver-trade-card">
-					<text class="silver-trade-title">当月流水统计</text>
-					<text class="silver-trade-value">¥{{ silverMonthTradeYuan }}</text>
-				</view>
-
 				<!-- 提现统计 -->
 				<view class="section-label">
 					<text class="section-title">提现累积</text>
@@ -136,7 +131,6 @@ export default {
 			mine: {},
 			membership: { tier: 'normal', name: '普通会员', accent: '#94a3b8' },
 			withdraw: { today: '0.00', month: '0.00', year: '0.00' },
-			withdrawContext: { role: '', silverMonthTradeYuan: 0 },
 			pendingWithdraw: '0.00',
 			quota: { remaining: '0.00', totalGrantedYuan: 0, usedYuan: '0.00' },
 			prestorePackages: [],
@@ -201,12 +195,6 @@ export default {
 			const count = Number(this.deviceDisplayParsed.count || 0);
 			return count > 0 && this.deviceDisplayParsed.summary !== '未绑定';
 		},
-		showSilverTradeStat() {
-			return String(this.withdrawContext.role || '') === 'silver_member';
-		},
-		silverMonthTradeYuan() {
-			return Number(this.withdrawContext.silverMonthTradeYuan || 0).toFixed(2);
-		},
 		hasGiftPackage() {
 			return (this.prestorePackages || []).some((x) => packageRequiresGiftChoice(x));
 		},
@@ -257,7 +245,6 @@ export default {
 					deviceDisplay: d.device?.display || (d.merchant && d.merchant.deviceId) || ''
 				});
 				this.membership = d.membership || this.membership;
-				this.withdrawContext = d.withdrawContext || this.withdrawContext;
 				this.withdraw = d.withdraw || this.withdraw;
 				this.pendingWithdraw = d.pendingWithdraw || '0.00';
 				this.quota = Object.assign({}, this.quota, d.quota || {});
@@ -424,24 +411,6 @@ export default {
 	font-size: 12px;
 	color: #64748b;
 	word-break: break-all;
-}
-
-.silver-trade-card {
-	margin-bottom: 14px;
-	padding: 14px 16px;
-}
-.silver-trade-title {
-	display: block;
-	font-size: 12px;
-	color: #64748b;
-}
-.silver-trade-value {
-	display: block;
-	margin-top: 6px;
-	font-size: 24px;
-	font-weight: 800;
-	color: #059669;
-	letter-spacing: 0.02em;
 }
 
 .section-label {
