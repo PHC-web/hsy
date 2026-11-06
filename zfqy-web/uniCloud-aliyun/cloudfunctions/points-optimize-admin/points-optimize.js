@@ -160,10 +160,24 @@ function createPointsOptimizeApi(deps) {
 	}
 
 	/** 按商户拉片：强制 merchant_user_id 等值条件 + 分页，避免慢查 */
+	function sliceStateKey(targetYm, sourceYm, sliceIndex) {
+		const target = String(targetYm || '').trim();
+		const source = String(sourceYm || '').trim();
+		const idx = Number(sliceIndex);
+		if (!target || !source || !Number.isFinite(idx)) return '';
+		return `${target}|${source}|${idx}`;
+	}
+
+	function isDuplicateKeyError(e) {
+		const msg = String((e && (e.message || e.errMsg)) || e || '');
+		return /E11000|duplicate key|dup key/i.test(msg);
+	}
+
 	async function loadSlicesForMerchant(merchantUserId, opts = {}) {
 		const uid = String(merchantUserId || '');
 		if (!uid) return [];
-		const whereParts = [{ merchant_user_id: uid }, { is_deleted: _.neq(true) }];
+		const whereParts = [{ merchant_user_id: uid }];
+		if (!opts.includeDeleted) whereParts.push({ is_deleted: _.neq(true) });
 		if (opts.unclaimedOnly) whereParts.push({ is_claimed: _.neq(true) });
 		if (opts.minTargetYm) whereParts.push({ target_ym: _.gte(String(opts.minTargetYm)) });
 		const where = whereParts.length === 1 ? whereParts[0] : _.and(whereParts);
@@ -178,6 +192,85 @@ function createPointsOptimizeApi(deps) {
 			if (skip >= 200000) break;
 		}
 		return all;
+	}
+
+	/** 升级清零或金额被抹掉的软删片：按当前理论金额重新生效，避免再 insert 撞唯一索引。 */
+	function sliceWasWiped(row) {
+		if (!row || !row.is_deleted) return false;
+		if (String(row.packet_status || '') === 'void_upgrade') return true;
+		const sys = floor2(row.system_amount);
+		const manualEmpty = row.manual_amount == null || row.manual_amount === '';
+		return !(sys > 0) && manualEmpty;
+	}
+
+	async function insertSliceOrRevive(merchantUserId, th, alreadyClaimed, now) {
+		const sliceIndex = Number(th.sliceIndex);
+		const doc = {
+			merchant_user_id: merchantUserId,
+			target_ym: th.targetYm,
+			source_ym: th.sourceYm,
+			slice_index: sliceIndex,
+			original_amount: th.original,
+			system_amount: th.original,
+			manual_amount: null,
+			effective_amount: th.original,
+			is_claimed: !!alreadyClaimed,
+			packet_id: '',
+			packet_status: alreadyClaimed ? 'claimed' : '',
+			version: 0,
+			is_deleted: false,
+			create_time: now,
+			update_time: now
+		};
+		try {
+			await sliceCol.add(doc);
+			return;
+		} catch (e) {
+			if (!isDuplicateKeyError(e)) throw e;
+		}
+		const found = await sliceCol
+			.where(
+				_.and([
+					{ merchant_user_id: merchantUserId },
+					{ target_ym: th.targetYm },
+					{ source_ym: th.sourceYm },
+					{ slice_index: sliceIndex }
+				])
+			)
+			.limit(1)
+			.get();
+		const row = found.data && found.data[0];
+		if (!row || !row._id) return;
+		const claimed = !!alreadyClaimed || !!row.is_claimed;
+		if (claimed) {
+			await sliceCol.doc(row._id).update({
+				original_amount: th.original,
+				is_claimed: true,
+				packet_status: 'claimed',
+				update_time: now
+			});
+			return;
+		}
+		if (row.is_deleted || sliceWasWiped(row)) {
+			await sliceCol.doc(row._id).update({
+				original_amount: th.original,
+				system_amount: th.original,
+				manual_amount: null,
+				effective_amount: th.original,
+				is_claimed: false,
+				is_deleted: false,
+				packet_id: '',
+				packet_status: '',
+				opt_skip: false,
+				update_time: now,
+				version: Number(row.version || 0) + 1
+			});
+			return;
+		}
+		await sliceCol.doc(row._id).update({
+			original_amount: th.original,
+			update_time: now
+		});
 	}
 
 	/** 已领分期待返：目标月|来源月|片序。对账时不能把这些片再写成未领。 */
@@ -311,12 +404,14 @@ function createPointsOptimizeApi(deps) {
 		if (!built.ok) return { ok: false, reason: 'no_uid' };
 		const { theory, curYm, merchantUserId, now } = built;
 
-		const existing = await loadSlicesForMerchant(merchantUserId);
+		const existing = await loadSlicesForMerchant(merchantUserId, { includeDeleted: true });
 		const claimedSliceKeys = await loadClaimedDeferredSliceKeys(merchantUserId);
 		const existMap = new Map();
 		for (const row of existing) {
-			const key = `${row.target_ym}|${row.source_ym}|${row.slice_index}`;
-			existMap.set(key, row);
+			const key = sliceStateKey(row.target_ym, row.source_ym, row.slice_index);
+			if (!key) continue;
+			const prev = existMap.get(key);
+			if (!prev || (prev.is_deleted && !row.is_deleted)) existMap.set(key, row);
 		}
 
 		const writeJobs = [];
@@ -336,25 +431,28 @@ function createPointsOptimizeApi(deps) {
 				existMap.delete(key);
 				continue;
 			}
-			if (!row) {
+			if (row && row.is_deleted && sliceWasWiped(row)) {
 				writeJobs.push(() =>
-					sliceCol.add({
-						merchant_user_id: merchantUserId,
-						target_ym: th.targetYm,
-						source_ym: th.sourceYm,
-						slice_index: th.sliceIndex,
+					sliceCol.doc(row._id).update({
 						original_amount: th.original,
 						system_amount: th.original,
 						manual_amount: null,
 						effective_amount: th.original,
-						is_claimed: alreadyClaimed,
-						packet_id: '',
-						packet_status: alreadyClaimed ? 'claimed' : '',
-						version: 0,
+						is_claimed: false,
 						is_deleted: false,
-						create_time: now,
-						update_time: now
+						packet_id: '',
+						packet_status: '',
+						opt_skip: false,
+						update_time: now,
+						version: Number(row.version || 0) + 1
 					})
+				);
+				existMap.delete(key);
+				continue;
+			}
+			if (!row) {
+				writeJobs.push(() =>
+					insertSliceOrRevive(merchantUserId, th, alreadyClaimed, now)
 				);
 				continue;
 			}
@@ -386,6 +484,7 @@ function createPointsOptimizeApi(deps) {
 				update_time: now,
 				version: Number(row.version || 0) + 1
 			};
+			if (row.is_deleted) patch.is_deleted = false;
 			if (hasManual && deltaCents > 0) patch.manual_amount = floor2(nextManual);
 			writeJobs.push(() => sliceCol.doc(row._id).update(patch));
 			if (Math.abs(effectiveOf(row) - nextEff) >= 0.005) {
@@ -403,9 +502,9 @@ function createPointsOptimizeApi(deps) {
 
 		// 理论已消失且未领取：软删
 		for (const [, row] of existMap.entries()) {
-			if (row.is_claimed) continue;
+			if (row.is_deleted || row.is_claimed) continue;
 			if (String(row.target_ym || '').localeCompare(curYm) < 0) continue;
-			if (!theory.has(`${row.target_ym}|${row.source_ym}|${row.slice_index}`)) {
+			if (!theory.has(sliceStateKey(row.target_ym, row.source_ym, row.slice_index))) {
 				writeJobs.push(() => sliceCol.doc(row._id).update({ is_deleted: true, update_time: now }));
 			}
 		}
