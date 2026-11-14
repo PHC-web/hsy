@@ -284,6 +284,7 @@ export default {
 			this.loading = true;
 			try {
 				const res = await h5IncomeList();
+				if (res.code === 460) return;
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 					return;

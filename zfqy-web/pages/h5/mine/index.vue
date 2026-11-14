@@ -449,6 +449,7 @@ export default {
 						accountPoints: d.pendingWithdraw != null ? String(d.pendingWithdraw) : this.account.accountPoints
 					});
 				}
+				if (mineRes.code === 460 || dashboardRes.code === 460) return;
 				if (mineRes.code !== 0 && dashboardRes.code !== 0) {
 					uni.showToast({ title: mineRes.message || dashboardRes.message || '获取失败', icon: 'none' });
 					return;
@@ -778,6 +779,7 @@ export default {
 					agreementVersion: this.agreement.currentVersion || '',
 					agreementPdfFileId: this.agreement.pdfFileId || ''
 				});
+				if (res.code === 460) return;
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '签署失败', icon: 'none' });
 					return;

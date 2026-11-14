@@ -165,6 +165,10 @@ export default {
 		},
 		async loadOptions() {
 			const res = await h5RechargeOptions();
+			if (res.code === 460) {
+				this.gateText = '请先绑定机具号';
+				return;
+			}
 			if (res.code !== 0) {
 				this.gateText = res.message || '加载失败';
 				uni.showToast({ title: res.message || '加载失败', icon: 'none' });

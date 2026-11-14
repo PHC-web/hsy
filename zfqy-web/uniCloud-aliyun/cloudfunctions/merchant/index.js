@@ -1601,6 +1601,10 @@ async function persistAgreementBaseJpeg(agreementId, jpegBuffer) {
  */
 async function agreementEnsureBaseJpeg(data = {}) {
 	try {
+		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const bindMerchant = await getMerchantByIdOrUserId(merchantKey);
+		const bindBlock = await assertH5MerchantMachineBound(bindMerchant);
+		if (bindBlock) return bindBlock;
 		let agreementId = safeText(data?.agreementId || data?.id || '', 80);
 		let doc = null;
 		if (agreementId) {
@@ -1900,6 +1904,8 @@ async function internalComposeSignedAgreement(data = {}) {
 	try {
 		const merchant = await getMerchantByIdOrUserId(merchantId, { includeAgreementImg: true });
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 
 		const pendingRef = safeText(merchant.agreement_sign_pending_file_id || '', 500);
 		const status = safeText(merchant.agreement_compose_status || '', 20);
@@ -10965,6 +10971,15 @@ async function merchantHasBoundMachine(merchant) {
 	return rows.length > 0;
 }
 
+/** 未绑定机具时拦截 H5 业务页。460 由前端弹回绑定页。 */
+const H5_NEED_BIND_MACHINE_CODE = 460;
+
+async function assertH5MerchantMachineBound(merchant) {
+	if (!merchant) return { code: 404, message: '商户不存在' };
+	if (await merchantHasBoundMachine(merchant)) return null;
+	return { code: H5_NEED_BIND_MACHINE_CODE, message: '请先绑定机具号' };
+}
+
 async function refreshMerchantPrimaryMachine(merchantId) {
 	const merchant = await getMerchantByIdOrUserId(merchantId);
 	if (!merchant) return null;
@@ -12081,6 +12096,8 @@ async function h5MineInfo(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		const merchantUserId = merchant.user_id || merchant._id;
 		const unapplied = await uniPayOrderCollection
 			.where({ user_id: merchantUserId, type: 'h5_quota_recharge', status: 1, user_order_success: true })
@@ -14285,6 +14302,8 @@ async function h5HomeDashboard(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		// 本地会话直进首页不会再走鉴权：在此刷新「最后登录」（1 小时内节流）
 		await markMerchantLastLogin(merchant);
 		const now = nowTs();
@@ -14445,6 +14464,8 @@ async function h5SignAgreement(data, event = {}) {
 			getCurrentAgreement()
 		]);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 
 		const signParsed = parseAgreementImageInput(signatureImage);
 		if (!signParsed.ok) return { code: 400, message: signParsed.message || '签名图无效' };
@@ -15195,6 +15216,8 @@ async function h5RechargeOptions(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		let merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		const biz = await getBizSettings();
 		const now = nowTs();
 		const syncRecharge = await syncMerchantMembershipCycles(merchant, { biz, now });
@@ -18310,6 +18333,8 @@ async function h5PendingReturnPoints(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		const merchantUserId = String(merchant.user_id || merchant._id || '');
 		const now = nowTs();
 
@@ -18636,6 +18661,8 @@ async function h5IncomeList(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		const merchantUserId = merchant.user_id || merchant._id;
 		const now = nowTs();
 		const biz = await getBizSettings();
@@ -18870,6 +18897,8 @@ async function h5IncomeClaimedList(data) {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		const merchantUserId = merchant.user_id || merchant._id;
 		const page = Math.max(1, Number(data.page) || 1);
 		const pageSize = Math.min(50, Math.max(1, Number(data.pageSize) || 50));
@@ -19079,6 +19108,8 @@ async function h5IncomeClaim(data) {
 		if (!packetId) return { code: 400, message: '缺少红包标识' };
 		const merchant = await getMerchantByIdOrUserId(merchantKey);
 		if (!merchant) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchant);
+		if (bindBlock) return bindBlock;
 		const result = await claimPackets(merchant, [packetId]);
 		if (!result.claimedCount) {
 			return {
@@ -19100,6 +19131,10 @@ async function h5IncomeClaim(data) {
 async function h5IncomeClaimAll(data) {
 	try {
 		const merchantKey = data?.merchantId || data?.merchantUserId || data?.userId;
+		const merchantBound = await getMerchantByIdOrUserId(merchantKey);
+		if (!merchantBound) return { code: 404, message: '商户不存在' };
+		const bindBlock = await assertH5MerchantMachineBound(merchantBound);
+		if (bindBlock) return bindBlock;
 		let totalClaimedCount = 0;
 		let totalClaimedAmount = 0;
 		for (;;) {

@@ -235,6 +235,7 @@ export default {
 			}, 320);
 			try {
 				const res = await h5HomeDashboardCached({ maxAgeMs: 5 * 60 * 1000, force: !!force });
+				if (res.code === 460) return;
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '加载失败', icon: 'none' });
 					return;

@@ -1,5 +1,5 @@
 import pako from 'pako';
-import { getSession } from './session';
+import { getSession, saveSession } from './session';
 
 function b64ToU8(b64) {
 	const binary = atob(b64);
@@ -20,6 +20,26 @@ function unpackH5CompressedResult(r) {
 	}
 }
 
+const H5_NEED_BIND_MACHINE_CODE = 460;
+let h5BindRedirecting = false;
+
+function redirectToBindMachine() {
+	if (h5BindRedirecting) return;
+	h5BindRedirecting = true;
+	saveSession({ deviceId: '', brandName: '' });
+	removeCached('home_dashboard');
+	removeCached('mine_info');
+	setTimeout(() => {
+		uni.showToast({ title: '请先绑定机具号', icon: 'none', duration: 1500 });
+		setTimeout(() => {
+			uni.reLaunch({ url: '/pages/h5/auth/index' });
+			setTimeout(() => {
+				h5BindRedirecting = false;
+			}, 800);
+		}, 600);
+	}, 80);
+}
+
 function merchantCall(action, params = {}, opts = {}) {
 	const payload = {
 		name: 'merchant',
@@ -32,7 +52,11 @@ function merchantCall(action, params = {}, opts = {}) {
 	if (Number.isFinite(timeout) && timeout > 0) payload.timeout = timeout;
 	return uniCloud
 		.callFunction(payload)
-		.then((r) => unpackH5CompressedResult(r.result || {}));
+		.then((r) => {
+			const res = unpackH5CompressedResult(r.result || {});
+			if (res && res.code === H5_NEED_BIND_MACHINE_CODE) redirectToBindMachine();
+			return res;
+		});
 }
 
 function merchantIdentity(extra = {}) {
@@ -47,7 +71,7 @@ function merchantIdentity(extra = {}) {
 }
 
 const H5_CACHE_TTL_MS = 5 * 60 * 1000;
-const H5_CACHE_PREFIX = 'h5_cache_v1';
+const H5_CACHE_PREFIX = 'h5_cache_v2';
 
 function cacheKey(name) {
 	const s = getSession() || {};

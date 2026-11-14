@@ -83,6 +83,7 @@ export default {
 		async ensureSigned() {
 			const mineRes = await h5MineInfoCached({ force: true, maxAgeMs: 0 });
 			if (!mineRes || mineRes.code !== 0) {
+				if (mineRes && mineRes.code === 460) return false;
 				uni.showToast({ title: mineRes?.message || '获取用户信息失败', icon: 'none' });
 				return false;
 			}
@@ -316,6 +317,7 @@ export default {
 					agreementVersion: this.agreement.currentVersion || '',
 					agreementPdfFileId: this.agreement.pdfFileId || ''
 				});
+				if (res.code === 460) return;
 				if (res.code !== 0) {
 					uni.showToast({ title: res.message || '签署失败', icon: 'none' });
 					return;
