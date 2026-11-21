@@ -9513,7 +9513,7 @@ function isValidNotifyUrl(url) {
 }
 
 /** 平台已接入的微信商户号（证书在 pay.config / 环境变量中预置） */
-const WX_MCH_FANFAN = '1111130439';
+const WX_MCH_FANFAN = '1674459879';
 const WX_MCH_ZHIFAN = '1646399792';
 const WX_PAY_MCH_OPTIONS = [
 	{ mchId: WX_MCH_FANFAN, label: '帆帆电子' },
@@ -12660,11 +12660,20 @@ function resolveWithdrawMinPoints(member, biz, historyCount) {
 	return Number(wm.nonMember7Plus || defWm.nonMember7Plus);
 }
 
+/** 提现次数（用于分段最低额）：只计已打款/待打款/审核中；已退回、已失效、审核拒绝不计 */
 async function countMerchantWithdrawTimes(merchantUserId) {
 	const uid = safeText(merchantUserId, 80);
 	if (!uid) return 0;
 	try {
-		const cRes = await withdrawCollection.where({ merchant_user_id: uid, is_deleted: false }).count();
+		const _ = db.command;
+		const cRes = await withdrawCollection
+			.where({
+				merchant_user_id: uid,
+				is_deleted: _.neq(true),
+				arrival_status: _.nin(['returned', 'expired']),
+				audit_status: _.neq('rejected')
+			})
+			.count();
 		return Number(cRes?.total || 0);
 	} catch (e) {
 		console.error('countMerchantWithdrawTimes failed', e);

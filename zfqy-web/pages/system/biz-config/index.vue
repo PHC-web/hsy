@@ -422,7 +422,7 @@
 
 <script>
 const defaultWxPayMch = () => ({
-	recharge: '1111130439',
+	recharge: '1674459879',
 	refund: '1646399792',
 	withdraw: '1646399792'
 });
@@ -484,7 +484,7 @@ export default {
 			redisUpdatedAtText: '',
 			redisAlive: false,
 			wxPayMchOptions: [
-				{ mchId: '1111130439', label: '帆帆电子' },
+				{ mchId: '1674459879', label: '帆帆电子' },
 				{ mchId: '1646399792', label: '志帆科技' }
 			]
 		};
