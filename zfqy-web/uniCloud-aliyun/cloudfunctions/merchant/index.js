@@ -9512,50 +9512,144 @@ function isValidNotifyUrl(url) {
 	return /^https:\/\/[^#\s]+$/i.test(s);
 }
 
-/** 平台已接入的微信商户号（证书在 pay.config / 环境变量中预置） */
+/** 平台已接入的微信商户号（证书在 pay.config / 环境变量中预置；优先读 WX_PAY_MERCHANTS 数组） */
 const WX_MCH_FANFAN = '1674459879';
 const WX_MCH_ZHIFAN = '1646399792';
-const WX_PAY_MCH_OPTIONS = [
-	{ mchId: WX_MCH_FANFAN, label: '帆帆电子' },
-	{ mchId: WX_MCH_ZHIFAN, label: '志帆科技' }
-];
+
+function normalizeWxMerchantScenes(scenes) {
+	const all = ['recharge', 'refund', 'withdraw'];
+	if (!Array.isArray(scenes) || !scenes.length) return all.slice();
+	const set = new Set();
+	for (const s of scenes) {
+		const key = safeText(s, 20);
+		if (all.includes(key)) set.add(key);
+	}
+	return set.size ? Array.from(set) : all.slice();
+}
+
+function buildWxPayMerchantRegistry() {
+	const fromArray = Array.isArray(payLocal.WX_PAY_MERCHANTS) ? payLocal.WX_PAY_MERCHANTS : [];
+	const list = [];
+	const seen = new Set();
+	const push = (raw, fallbackLabel) => {
+		if (!raw || typeof raw !== 'object') return;
+		const mchId = safeText(raw.mchId || raw.mch_id, 40);
+		if (!mchId || seen.has(mchId)) return;
+		const appId = safeText(raw.appId || raw.appid, 80) || WX_PAY_APPID || WX_MP_APPID;
+		const mchApiV3Key = safeText(raw.mchApiV3Key || raw.apiV3Key, 120);
+		const mchSerialNo = safeText(raw.mchSerialNo || raw.serialNo, 80);
+		const privateKey = String(raw.privateKey || '').trim();
+		const platformCert = String(raw.platformCert || raw.cert || '').trim();
+		if (!appId || !mchApiV3Key || !mchSerialNo || !privateKey || !platformCert) return;
+		seen.add(mchId);
+		list.push({
+			mchId,
+			label: safeText(raw.label, 80) || fallbackLabel || mchId,
+			appId,
+			mchApiV3Key,
+			mchSerialNo,
+			privateKey,
+			platformCert,
+			scenes: normalizeWxMerchantScenes(raw.scenes)
+		});
+	};
+	for (const item of fromArray) push(item);
+	// 兼容旧版双字段：数组缺失或未覆盖时补齐
+	push(
+		{
+			mchId: WX_PAY_RECHARGE_MCH_ID,
+			label: '帆帆电子',
+			appId: WX_PAY_RECHARGE_APPID,
+			mchApiV3Key: WX_PAY_RECHARGE_MCH_API_V3_KEY,
+			mchSerialNo: WX_PAY_RECHARGE_MCH_SERIAL_NO,
+			privateKey: WX_PAY_RECHARGE_PRIVATE_KEY,
+			platformCert: WX_PAY_RECHARGE_PLATFORM_CERT,
+			scenes: ['recharge', 'refund', 'withdraw']
+		},
+		'帆帆电子'
+	);
+	push(
+		{
+			mchId: WX_PAY_MCH_ID,
+			label: '志帆科技',
+			appId: WX_PAY_APPID,
+			mchApiV3Key: WX_PAY_MCH_API_V3_KEY,
+			mchSerialNo: WX_PAY_MCH_SERIAL_NO,
+			privateKey: WX_PAY_PRIVATE_KEY,
+			platformCert: WX_PAY_PLATFORM_CERT,
+			scenes: ['recharge', 'refund', 'withdraw']
+		},
+		'志帆科技'
+	);
+	return list;
+}
+
+const WX_PAY_MERCHANT_LIST = buildWxPayMerchantRegistry();
+const WX_PAY_MERCHANT_MAP = (() => {
+	const map = Object.create(null);
+	for (const m of WX_PAY_MERCHANT_LIST) map[m.mchId] = m;
+	return map;
+})();
+const WX_PAY_MCH_OPTIONS = WX_PAY_MERCHANT_LIST.map((m) => ({ mchId: m.mchId, label: m.label }));
+const WX_PAY_MCH_ID_SET = new Set(WX_PAY_MERCHANT_LIST.map((m) => m.mchId));
 
 function wxCredentialsForZhifan() {
-	return {
-		mchId: WX_PAY_MCH_ID,
-		appId: WX_PAY_APPID,
-		mchApiV3Key: WX_PAY_MCH_API_V3_KEY,
-		mchSerialNo: WX_PAY_MCH_SERIAL_NO,
-		privateKey: WX_PAY_PRIVATE_KEY,
-		platformCert: WX_PAY_PLATFORM_CERT
-	};
+	return (
+		wxCredentialsByRegisteredMchId(WX_MCH_ZHIFAN) ||
+		wxCredentialsByRegisteredMchId(WX_PAY_MCH_ID) || {
+			mchId: WX_PAY_MCH_ID,
+			appId: WX_PAY_APPID,
+			mchApiV3Key: WX_PAY_MCH_API_V3_KEY,
+			mchSerialNo: WX_PAY_MCH_SERIAL_NO,
+			privateKey: WX_PAY_PRIVATE_KEY,
+			platformCert: WX_PAY_PLATFORM_CERT
+		}
+	);
 }
 
 function wxCredentialsForFanfan() {
-	const fallback = wxCredentialsForZhifan();
-	return {
-		mchId: WX_PAY_RECHARGE_MCH_ID || fallback.mchId,
-		appId: WX_PAY_RECHARGE_APPID || fallback.appId,
-		mchApiV3Key: WX_PAY_RECHARGE_MCH_API_V3_KEY || fallback.mchApiV3Key,
-		mchSerialNo: WX_PAY_RECHARGE_MCH_SERIAL_NO || fallback.mchSerialNo,
-		privateKey: WX_PAY_RECHARGE_PRIVATE_KEY || fallback.privateKey,
-		platformCert: WX_PAY_RECHARGE_PLATFORM_CERT || fallback.platformCert
-	};
+	return (
+		wxCredentialsByRegisteredMchId(WX_MCH_FANFAN) ||
+		wxCredentialsByRegisteredMchId(WX_PAY_RECHARGE_MCH_ID) ||
+		wxCredentialsForZhifan()
+	);
 }
 
 function wxCredentialsByRegisteredMchId(mchId) {
 	const id = safeText(mchId, 40);
-	if (id === WX_MCH_FANFAN) return wxCredentialsForFanfan();
-	if (id === WX_MCH_ZHIFAN) return wxCredentialsForZhifan();
-	return null;
+	const hit = id ? WX_PAY_MERCHANT_MAP[id] : null;
+	if (!hit) return null;
+	return {
+		mchId: hit.mchId,
+		appId: hit.appId,
+		mchApiV3Key: hit.mchApiV3Key,
+		mchSerialNo: hit.mchSerialNo,
+		privateKey: hit.privateKey,
+		platformCert: hit.platformCert
+	};
+}
+
+function isRegisteredWxPayMchId(mchId) {
+	const id = safeText(mchId, 40);
+	return !!(id && WX_PAY_MCH_ID_SET.has(id));
 }
 
 /** 与 pay.config 一致：未写入业务参数时的默认商户号 */
 function resolveDefaultWxPayMchIds() {
+	const cfgDefaults =
+		payLocal.WX_PAY_DEFAULTS && typeof payLocal.WX_PAY_DEFAULTS === 'object' ? payLocal.WX_PAY_DEFAULTS : {};
+	const fallbackRecharge = safeText(WX_PAY_RECHARGE_MCH_ID || WX_PAY_MCH_ID, 40) || WX_MCH_FANFAN;
+	const fallbackWithdraw = safeText(WX_PAY_MCH_ID, 40) || WX_MCH_ZHIFAN;
+	const pickDefault = (key, fallback) => {
+		const id = safeText(cfgDefaults[key], 40);
+		if (isRegisteredWxPayMchId(id)) return id;
+		if (isRegisteredWxPayMchId(fallback)) return fallback;
+		return WX_PAY_MERCHANT_LIST[0]?.mchId || fallback;
+	};
 	return {
-		recharge: safeText(WX_PAY_RECHARGE_MCH_ID || WX_PAY_MCH_ID, 40) || WX_MCH_FANFAN,
-		refund: safeText(WX_PAY_MCH_ID, 40) || WX_MCH_ZHIFAN,
-		withdraw: safeText(WX_PAY_MCH_ID, 40) || WX_MCH_ZHIFAN
+		recharge: pickDefault('recharge', fallbackRecharge),
+		refund: pickDefault('refund', fallbackWithdraw),
+		withdraw: pickDefault('withdraw', fallbackWithdraw)
 	};
 }
 
@@ -9564,7 +9658,10 @@ function sanitizeWxPayMchSelection(raw, defaults) {
 	const src = raw && typeof raw === 'object' ? raw : {};
 	const pick = (key) => {
 		const id = safeText(src[key], 40);
-		if (id === WX_MCH_FANFAN || id === WX_MCH_ZHIFAN) return id;
+		if (isRegisteredWxPayMchId(id)) {
+			const m = WX_PAY_MERCHANT_MAP[id];
+			if (!m.scenes || m.scenes.includes(key)) return id;
+		}
 		return defs[key] || defs.withdraw;
 	};
 	return {

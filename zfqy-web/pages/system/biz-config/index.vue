@@ -485,7 +485,8 @@ export default {
 			redisAlive: false,
 			wxPayMchOptions: [
 				{ mchId: '1674459879', label: '帆帆电子' },
-				{ mchId: '1646399792', label: '志帆科技' }
+				{ mchId: '1646399792', label: '志帆科技' },
+				{ mchId: '1645847186', label: '帆帆科技(1645847186)' }
 			]
 		};
 	},
